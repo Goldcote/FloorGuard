@@ -223,6 +223,9 @@ contract VaultRaffleTest is Base {
         raffle.resetDraw(raffleId);
         assertEq(uint8(_status()), uint8(VaultRaffle.Status.Open));
 
+        vm.expectRevert(abi.encodeWithSelector(VaultRaffle.TooEarly.selector, block.timestamp + 1 hours));
+        raffle.draw(raffleId);
+        skip(1 hours);
         raffle.draw(raffleId);
         randomness.fulfill(2, 0);
         (,,,,, address winner) = raffle.raffles(raffleId);

@@ -81,6 +81,7 @@ contract Marketplace is Ownable2Step, ReentrancyGuard {
     error ProceedsTooLow(uint256 proceeds, uint256 minProceeds);
     error TooHigh();
     error TransferFailed();
+    error NotAContract();
 
     constructor(address owner_, ITreasury treasury_) Ownable(owner_) {
         treasury = treasury_;
@@ -173,8 +174,9 @@ contract Marketplace is Ownable2Step, ReentrancyGuard {
             }
         }
         bool supported = isSupported[offer.collection];
+        uint256 toBudget;
         if (fee != 0) {
-            if (supported) treasury.depositFee{value: fee}(offer.collection);
+            if (supported) toBudget = treasury.depositFee{value: fee}(offer.collection);
             else _send(address(treasury), fee);
         }
         _send(msg.sender, proceeds);
@@ -183,10 +185,11 @@ contract Marketplace is Ownable2Step, ReentrancyGuard {
             if (offer.collectionWide && address(saleRecorder) != address(0)) {
                 saleRecorder.recordSale(offer.collection, price);
             }
-            if (address(points) != address(0) && fee != 0) {
-                // points are a bonus; a failure there must never block a trade
-                try points.creditFee(msg.sender, fee) {} catch {}
-                try points.creditFee(offer.offerer, fee) {} catch {}
+            if (address(points) != address(0) && toBudget != 0) {
+                // Points follow what reached the buyback budget, not the project's share of the fee.
+                // They are a bonus; a failure there must never block a trade.
+                try points.creditFee(msg.sender, toBudget) {} catch {}
+                try points.creditFee(offer.offerer, toBudget) {} catch {}
             }
         }
         emit OfferAccepted(offerId, msg.sender, offer.collection, tokenId, price, fee, royalty);
@@ -217,6 +220,7 @@ contract Marketplace is Ownable2Step, ReentrancyGuard {
     }
 
     function setPoints(IPoints points_) external onlyOwner {
+        if (address(points_) != address(0) && address(points_).code.length == 0) revert NotAContract();
         points = points_;
         emit PointsSet(address(points_));
     }

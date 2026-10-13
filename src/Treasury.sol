@@ -58,7 +58,7 @@ contract Treasury is ITreasury, Ownable2Step {
     }
 
     /// @inheritdoc ITreasury
-    function depositFee(address collection) external payable {
+    function depositFee(address collection) external payable returns (uint256 toBudget) {
         ProjectShare memory share = projectShareOf[collection];
         uint256 toProject = msg.value * share.bps / BPS;
         if (toProject != 0) {
@@ -66,18 +66,25 @@ contract Treasury is ITreasury, Ownable2Step {
             totalOwed += toProject;
             emit ProjectShareAccrued(collection, share.recipient, toProject);
         }
-        budgetOf[collection] += msg.value - toProject;
-        emit Deposited(collection, msg.sender, msg.value - toProject);
+        toBudget = msg.value - toProject;
+        budgetOf[collection] += toBudget;
+        emit Deposited(collection, msg.sender, toBudget);
     }
 
     /// @notice Withdraw the project shares accrued to the caller.
     function claimProjectShare() external {
+        claimProjectShareTo(payable(msg.sender));
+    }
+
+    /// @notice Withdraw the caller's accrued project shares to another address, for recipients that
+    ///         cannot receive ETH themselves.
+    function claimProjectShareTo(address payable to) public {
         uint256 amount = owedTo[msg.sender];
         if (amount == 0) revert NothingOwed();
         owedTo[msg.sender] = 0;
         totalOwed -= amount;
         emit ProjectShareClaimed(msg.sender, amount);
-        (bool ok,) = msg.sender.call{value: amount}("");
+        (bool ok,) = to.call{value: amount}("");
         if (!ok) revert TransferFailed();
     }
 

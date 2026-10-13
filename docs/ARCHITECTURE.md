@@ -157,9 +157,11 @@ paid to the Treasury as a fee for the collection the player chose to back. The
 rest is played at fair odds against the house bankroll, so the bankroll has no
 expected gain or loss and the whole house take funds buybacks.
 
-The house's side of each bet is set aside when the bet is placed and one bet can
-risk at most 1% of the free bankroll, so every outcome can always be paid. A bet
-whose randomness never arrives is refunded after a day. The bankroll can only
+The house's side of each bet is set aside when the bet is placed, so every
+outcome can always be paid. One bet can risk at most 1% of the free bankroll and
+all open bets together at most 20% of the house's funds. A bet whose randomness
+has not arrived within a day is refunded, and randomness that arrives later than
+that is ignored, so nobody can choose between a late result and a refund. The bankroll can only
 leave to winning players or to the Treasury.
 
 Each bet costs the operator one randomness request, which on Ethereum mainnet is
@@ -167,8 +169,9 @@ likely to exceed the fee on a small wager. Set `minBet` accordingly.
 
 ## Points and raffles
 
-Points are credited per ETH of **fees generated**, not per ETH of volume, at a
-rate set per module. On the Marketplace both buyer and seller are credited for
+Points are credited per ETH of **fees that reach the buyback budget**, not per
+ETH of volume, at a rate set per module. A project's share of a fee earns no
+points. On the Marketplace both buyer and seller are credited for
 the sale's fee, and in Games the player is credited for the edge on each wager. On the PredictionMarket winners are credited for the fee they
 pay, and losers for the fee their stake funded. Because points follow fees,
 farming them always pays into buyback budgets.
@@ -186,8 +189,10 @@ random point reads at most 96 slots and never loops over users.
 passed, and freezes point weights until the randomness arrives. Points cannot be
 activated in that window, so they count from the next raffle. Without the
 freeze, anyone who saw the random word before it landed could add just enough
-points to steer the result. The winner keeps 20% of their points. A request
-abandoned through `resetDraw` is never accepted later.
+points to steer the result. The winner keeps 20% of their points. Randomness
+that arrives more than a day late resets the draw instead of picking a winner,
+a request abandoned through `resetDraw` is never accepted later, and a reset
+draw cannot be requested again for an hour.
 
 ## Oracles
 

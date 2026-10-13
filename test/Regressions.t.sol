@@ -5,7 +5,11 @@ import {Base} from "./Base.t.sol";
 import {PredictionMarket} from "../src/PredictionMarket.sol";
 import {Points} from "../src/Points.sol";
 import {VaultRaffle} from "../src/VaultRaffle.sol";
-import {MockNFT} from "./mocks/MockNFT.sol";
+import {Games} from "../src/Games.sol";
+import {Treasury} from "../src/Treasury.sol";
+import {MockNFT, RejectETH} from "./mocks/MockNFT.sol";
+import {MockRandomness} from "./mocks/MockRandomness.sol";
+import {IRandomnessProvider, IPoints} from "../src/interfaces/IFloorGuard.sol";
 
 /// @dev Regression tests for the issues found in the first independent review.
 contract RegressionsTest is Base {
@@ -57,6 +61,7 @@ contract RegressionsTest is Base {
         raffle.draw(raffleId); // request 1
         skip(1 days);
         raffle.resetDraw(raffleId);
+        skip(1 hours);
         raffle.draw(raffleId); // request 2
 
         vm.expectRevert(VaultRaffle.StaleRequest.selector);
@@ -152,5 +157,140 @@ contract RegressionsTest is Base {
         uint256 gasBefore = gasleft();
         raffle.fulfillRandomness(1, 599e18);
         assertLt(gasBefore - gasleft(), 400_000);
+    }
+
+    // ------------------------------------------------------------------ second review
+
+    /// Randomness arriving after the refund window refunds the bet instead of settling it, so nobody
+    /// can pick between a late result and a refund.
+    function test_lateGameRandomnessRefundsInsteadOfSettling() public {
+        games.fundBankroll{value: 1_000 ether}();
+        vm.prank(alice);
+        uint256 id = games.play{value: 1 ether}(address(nft), 5_000);
+        skip(1 days);
+
+        uint256 before = alice.balance;
+        randomness.fulfill(id, 0); // would have been a win
+        assertEq(alice.balance - before, 1 ether);
+        assertEq(games.bankroll(), 1_000 ether);
+        assertEq(games.reserved(), 0);
+        assertEq(treasury.budgetOf(address(nft)), 0);
+    }
+
+    function test_lateRaffleRandomnessResetsInsteadOfPickingAWinner() public {
+        uint256 raffleId = _openRaffle();
+        _earn(bob, 1 ether);
+        skip(7 days);
+        raffle.draw(raffleId);
+        skip(1 days);
+        randomness.fulfill(1, 0);
+
+        (,,,, VaultRaffle.Status status, address winner) = raffle.raffles(raffleId);
+        assertEq(uint8(status), uint8(VaultRaffle.Status.Open));
+        assertEq(winner, address(0));
+        assertEq(points.freezeCount(), 0);
+    }
+
+    /// After a reset the next draw must wait, leaving a window in which points can be activated.
+    function test_redrawCooldownLeavesAWindowToActivatePoints() public {
+        uint256 raffleId = _openRaffle();
+        _earn(bob, 1 ether);
+        skip(7 days);
+        raffle.draw(raffleId);
+        points.creditFee(carol, 1 ether);
+        skip(1 days);
+        raffle.resetDraw(raffleId);
+
+        vm.expectRevert(abi.encodeWithSelector(VaultRaffle.TooEarly.selector, block.timestamp + 1 hours));
+        raffle.draw(raffleId);
+        points.flush(carol);
+        assertEq(points.pointsOf(carol), 1_000e18);
+    }
+
+    function test_raffleCannotBeReplacedMidDraw() public {
+        uint256 raffleId = _openRaffle();
+        _earn(bob, 1 ether);
+        skip(7 days);
+        raffle.draw(raffleId);
+        vm.prank(gov);
+        vm.expectRevert(Points.Frozen.selector);
+        points.setRaffle(address(1));
+    }
+
+    /// A replacement randomness provider cannot overwrite a bet that is still open.
+    function test_gameRequestIdCannotBeReused() public {
+        games.fundBankroll{value: 1_000 ether}();
+        vm.prank(alice);
+        uint256 id = games.play{value: 1 ether}(address(nft), 5_000);
+
+        MockRandomness fresh = new MockRandomness(); // its ids also start at 1
+        vm.prank(gov);
+        games.setRandomness(IRandomnessProvider(address(fresh)));
+        vm.prank(bob);
+        vm.expectRevert(Games.RequestIdInUse.selector);
+        games.play{value: 0.01 ether}(address(nft), 5_000);
+
+        skip(1 days);
+        games.refund(id); // alice's bet is intact and refundable
+        assertEq(games.reserved(), 0);
+    }
+
+    /// Open bets together can put at most 20% of the house's funds at risk.
+    function test_gameTotalExposureIsCapped() public {
+        games.fundBankroll{value: 100 ether}();
+        uint256 placed;
+        vm.startPrank(alice);
+        while (true) {
+            (bool ok,) =
+                address(games).call{value: 0.005 ether}(abi.encodeCall(Games.play, (address(nft), 100)));
+            if (!ok) break;
+            ++placed;
+        }
+        vm.stopPrank();
+        assertGt(placed, 10);
+        assertLe(games.reserved(), 20 ether);
+        assertGe(games.bankroll(), 80 ether);
+    }
+
+    /// Points are earned on the part of the fee that funds buybacks, not on the project's share.
+    function test_pointsExcludeTheProjectShare() public {
+        address project = makeAddr("project");
+        vm.prank(gov);
+        treasury.setProjectShare(address(nft), project, 5_000);
+
+        _mintApproved(alice, 1, address(marketplace));
+        vm.prank(bob);
+        uint256 id = marketplace.makeOffer{value: 50 ether}(address(nft), 1, block.timestamp + 1 days);
+        vm.prank(alice);
+        marketplace.acceptOffer(id, 1, 0);
+
+        // 1 ETH fee, half to the project: each side earns points on 0.5 ETH
+        assertEq(treasury.budgetOf(address(nft)), 0.5 ether);
+        assertEq(points.pendingOf(alice), 0.5 ether * POINTS_RATE / 1 ether);
+        assertEq(points.pendingOf(bob), 0.5 ether * POINTS_RATE / 1 ether);
+    }
+
+    function test_projectShareCanBeClaimedToAnotherAddress() public {
+        address project = address(new RejectETH());
+        vm.prank(gov);
+        treasury.setProjectShare(address(nft), project, 5_000);
+        treasury.depositFee{value: 2 ether}(address(nft));
+
+        vm.prank(project);
+        vm.expectRevert(Treasury.TransferFailed.selector);
+        treasury.claimProjectShare();
+
+        vm.prank(project);
+        treasury.claimProjectShareTo(payable(carol));
+        assertEq(treasury.owedTo(project), 0);
+        assertEq(treasury.totalOwed(), 0);
+    }
+
+    function test_setPointsRejectsAddressWithoutCode() public {
+        vm.startPrank(gov);
+        vm.expectRevert(Games.NotAContract.selector);
+        games.setPoints(IPoints(address(0xdead)));
+        games.setPoints(IPoints(address(0))); // turning points off is allowed
+        vm.stopPrank();
     }
 }
