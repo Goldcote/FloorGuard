@@ -49,7 +49,8 @@ flowchart LR
    are their odds of winning NFTs raffled from the Vault.
 
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains each contract and lists
-where the code departs from the concept document.
+where the code departs from the concept document. [docs/FAIRNESS.md](docs/FAIRNESS.md)
+explains how the games' results can be checked.
 
 ## Status
 
