@@ -128,13 +128,18 @@ the sale's fee. On the PredictionMarket winners are credited for the fee they
 pay, and losers for the fee their stake funded. Because points follow fees,
 farming them always pays into buyback budgets.
 
-Balances are the leaves of a 16-ary sum tree, six levels deep (about 16.7 million
-holders). Crediting writes seven slots. Picking the holder of a random point
-reads at most 96 slots and never loops over users.
+Earning points is a single storage write to `pendingOf`, which keeps trades
+cheap enough for Ethereum mainnet. Pending points do not count in raffles until
+they are activated with `flush(user)`, which anyone can call for anyone. The
+seven-day announce period before each draw is the time to do it.
+
+Activated balances are the leaves of a 16-ary sum tree, six levels deep (about
+16.7 million holders). Activating writes seven slots. Picking the holder of a
+random point reads at most 96 slots and never loops over users.
 
 `VaultRaffle.draw` requests randomness once the seven-day announce period has
-passed, and freezes point weights until the randomness arrives. Points earned in
-that window are held in `pendingOf` and count from the next raffle. Without the
+passed, and freezes point weights until the randomness arrives. Points cannot be
+activated in that window, so they count from the next raffle. Without the
 freeze, anyone who saw the random word before it landed could add just enough
 points to steer the result. The winner keeps 20% of their points. A request
 abandoned through `resetDraw` is never accepted later.
@@ -164,6 +169,13 @@ reads the push oracle.
 | Points per ETH of volume | Points per ETH of fees | Volume can be wash traded for free in some modules; fees cannot |
 | Snapshot of points at raffle time | Weights frozen from the draw request until randomness arrives | Same effect as a snapshot without copying every balance |
 | Royalties not mentioned | ERC-2981 honoured, capped | The 2024 paper's starting point was zero-royalty venues |
+
+## Chains
+
+The contracts are plain Solidity 0.8.28 compiled for the Cancun EVM, pay in
+native ETH and trade standard ERC-721 tokens. They deploy unchanged to Ethereum
+mainnet and to EVM rollups such as Base, Arbitrum and Optimism. The largest
+contract is about 7 KB, well under the 24 KB limit.
 
 ## Not built yet
 

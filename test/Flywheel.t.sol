@@ -35,6 +35,8 @@ contract FlywheelTest is Base {
         assertEq(treasury.budgetOf(address(nft)), 10 ether);
         (uint256 floor,) = salesOracle.floorPrice(address(nft));
         assertEq(floor, 10 ether);
+        points.flush(alice);
+        points.flush(bob);
         assertEq(points.pointsOf(alice), points.pointsOf(bob));
         assertEq(points.totalPoints(), 2 * 10 * POINTS_RATE);
 

@@ -26,7 +26,7 @@ contract RegressionsTest is Base {
     /// Points earned while a draw is in flight cannot change that draw's weights.
     function test_raffleWeightsAreFrozenDuringDraw() public {
         uint256 raffleId = _openRaffle();
-        points.creditFee(bob, 1 ether);
+        _earn(bob, 1 ether);
         skip(7 days);
         raffle.draw(raffleId);
 
@@ -49,24 +49,10 @@ contract RegressionsTest is Base {
         assertEq(points.pendingOf(carol), 0);
     }
 
-    function test_pendingPointsJoinTheNextCredit() public {
-        uint256 raffleId = _openRaffle();
-        points.creditFee(bob, 1 ether);
-        skip(7 days);
-        raffle.draw(raffleId);
-        points.creditFee(carol, 2 ether);
-        skip(1 days);
-        raffle.resetDraw(raffleId); // unfreezes
-
-        points.creditFee(carol, 1 ether);
-        assertEq(points.pointsOf(carol), 3_000e18);
-        assertEq(points.pendingOf(carol), 0);
-    }
-
     /// A randomness request abandoned by `resetDraw` is never accepted later.
     function test_abandonedRandomnessRequestIsRejected() public {
         uint256 raffleId = _openRaffle();
-        points.creditFee(bob, 1 ether);
+        _earn(bob, 1 ether);
         skip(7 days);
         raffle.draw(raffleId); // request 1
         skip(1 days);
@@ -119,7 +105,7 @@ contract RegressionsTest is Base {
         vm.prank(alice);
         marketplace.acceptOffer(id, 1, 0);
 
-        assertEq(points.totalPoints(), 0);
+        assertEq(points.pendingOf(alice) + points.pendingOf(bob), 0);
         assertEq(salesOracle.saleCount(address(junk)), 0);
         assertEq(treasury.budgetOf(address(junk)), 0);
         assertEq(treasury.unallocated(), 0.2 ether);
@@ -158,7 +144,7 @@ contract RegressionsTest is Base {
     function test_fulfilGasWithManyHolders() public {
         uint256 raffleId = _openRaffle();
         for (uint256 i; i < 600; ++i) {
-            points.creditFee(address(uint160(0x5000 + i)), 0.001 ether);
+            _earn(address(uint160(0x5000 + i)), 0.001 ether);
         }
         skip(7 days);
         raffle.draw(raffleId);
