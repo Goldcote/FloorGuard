@@ -1,0 +1,158 @@
+// Every transaction the UI can send, as plain builders. The tabs pass these to the transaction
+// runner (tx.tsx); test/flows.anvil.test.ts sends the same objects with a local test account.
+import type { Abi, Address } from "viem";
+import {
+  buybackEngineAbi,
+  erc721Abi,
+  marketplaceAbi,
+  pointsAbi,
+  predictionMarketAbi,
+  vaultAbi,
+  vaultRaffleAbi,
+} from "../generated/abis";
+import type { Deployment } from "../generated/addresses";
+
+export type Call = {
+  address: Address;
+  abi: Abi;
+  functionName: string;
+  args: readonly unknown[];
+  value?: bigint;
+};
+
+/** Approve `operator` (marketplace or buyback engine) for a single token. */
+export const approveCall = (collection: Address, operator: Address, tokenId: bigint): Call => ({
+  address: collection,
+  abi: erc721Abi,
+  functionName: "approve",
+  args: [operator, tokenId],
+});
+
+// ---------------------------------------------------------------- marketplace
+
+export const makeOfferCall = (
+  d: Deployment,
+  collection: Address,
+  tokenId: bigint,
+  expiry: bigint,
+  price: bigint,
+): Call => ({
+  address: d.marketplace,
+  abi: marketplaceAbi,
+  functionName: "makeOffer",
+  args: [collection, tokenId, expiry],
+  value: price,
+});
+
+/** The contract derives the per-item price as `msg.value / quantity`, so the value is the total. */
+export const makeCollectionOfferCall = (
+  d: Deployment,
+  collection: Address,
+  quantity: bigint,
+  expiry: bigint,
+  pricePerItem: bigint,
+): Call => ({
+  address: d.marketplace,
+  abi: marketplaceAbi,
+  functionName: "makeCollectionOffer",
+  args: [collection, quantity, expiry],
+  value: pricePerItem * quantity,
+});
+
+export const acceptOfferCall = (d: Deployment, offerId: bigint, tokenId: bigint, minProceeds: bigint): Call => ({
+  address: d.marketplace,
+  abi: marketplaceAbi,
+  functionName: "acceptOffer",
+  args: [offerId, tokenId, minProceeds],
+});
+
+export const cancelOfferCall = (d: Deployment, offerId: bigint): Call => ({
+  address: d.marketplace,
+  abi: marketplaceAbi,
+  functionName: "cancelOffer",
+  args: [offerId],
+});
+
+// ---------------------------------------------------------------- floor bid
+
+export const sellCall = (d: Deployment, collection: Address, tokenId: bigint, minPrice: bigint): Call => ({
+  address: d.buybackEngine,
+  abi: buybackEngineAbi,
+  functionName: "sell",
+  args: [collection, tokenId, minPrice],
+});
+
+// ---------------------------------------------------------------- predictions
+
+export const placeBetCall = (d: Deployment, marketId: bigint, higher: boolean, amount: bigint): Call => ({
+  address: d.predictionMarket,
+  abi: predictionMarketAbi,
+  functionName: "placeBet",
+  args: [marketId, higher],
+  value: amount,
+});
+
+export const resolveMarketCall = (d: Deployment, marketId: bigint): Call => ({
+  address: d.predictionMarket,
+  abi: predictionMarketAbi,
+  functionName: "resolve",
+  args: [marketId],
+});
+
+export const claimMarketCall = (d: Deployment, marketId: bigint): Call => ({
+  address: d.predictionMarket,
+  abi: predictionMarketAbi,
+  functionName: "claim",
+  args: [marketId],
+});
+
+// ---------------------------------------------------------------- vault
+
+export const unlockCall = (d: Deployment, vaultId: bigint): Call => ({
+  address: d.vault,
+  abi: vaultAbi,
+  functionName: "unlock",
+  args: [vaultId],
+});
+
+export const startAuctionCall = (d: Deployment, vaultId: bigint): Call => ({
+  address: d.vault,
+  abi: vaultAbi,
+  functionName: "startAuction",
+  args: [vaultId],
+});
+
+/** `price` is the auction price just read; it only falls, and the contract refunds any excess. */
+export const buyCall = (d: Deployment, vaultId: bigint, price: bigint): Call => ({
+  address: d.vault,
+  abi: vaultAbi,
+  functionName: "buy",
+  args: [vaultId],
+  value: price,
+});
+
+// ---------------------------------------------------------------- points
+
+/** Activate a user's pending points so they count in raffles. Anyone may call it for anyone. */
+export const flushPointsCall = (d: Deployment, user: Address): Call => ({
+  address: d.points,
+  abi: pointsAbi,
+  functionName: "flush",
+  args: [user],
+});
+
+// ---------------------------------------------------------------- raffles
+
+export const drawRaffleCall = (d: Deployment, raffleId: bigint): Call => ({
+  address: d.vaultRaffle,
+  abi: vaultRaffleAbi,
+  functionName: "draw",
+  args: [raffleId],
+});
+
+export const claimRaffleCall = (d: Deployment, raffleId: bigint): Call => ({
+  address: d.vaultRaffle,
+  abi: vaultRaffleAbi,
+  functionName: "claim",
+  args: [raffleId],
+});
