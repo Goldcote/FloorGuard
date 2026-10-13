@@ -8,10 +8,14 @@ import {BuybackEngine} from "../src/BuybackEngine.sol";
 import {Vault} from "../src/Vault.sol";
 import {SalesFloorOracle} from "../src/oracles/SalesFloorOracle.sol";
 import {PushFloorOracle} from "../src/oracles/PushFloorOracle.sol";
+import {PredictionMarket} from "../src/PredictionMarket.sol";
+import {Points} from "../src/Points.sol";
+import {VaultRaffle} from "../src/VaultRaffle.sol";
 import {MockNFT} from "./mocks/MockNFT.sol";
+import {MockRandomness} from "./mocks/MockRandomness.sol";
 
-/// @dev Deploys and wires the core protocol. The Vault reads the push oracle so tests control the floor;
-///      the sales oracle is fed by the Marketplace and the BuybackEngine.
+/// @dev Deploys and wires the whole protocol. The Vault and the PredictionMarket read the push oracle so
+///      tests control the floor; the sales oracle is fed by the Marketplace and the BuybackEngine.
 abstract contract Base is Test {
     address internal gov = makeAddr("gov");
     address internal alice = makeAddr("alice");
@@ -24,7 +28,14 @@ abstract contract Base is Test {
     Vault internal vault;
     SalesFloorOracle internal salesOracle;
     PushFloorOracle internal pushOracle;
+    PredictionMarket internal prediction;
+    Points internal points;
+    VaultRaffle internal raffle;
+    MockRandomness internal randomness;
     MockNFT internal nft;
+
+    /// 2,500 points (18 decimals) per ETH of fees: 50 points per ETH traded at the 2% marketplace fee.
+    uint256 internal constant POINTS_RATE = 2_500e18;
 
     function setUp() public virtual {
         vm.warp(1_760_000_000);
@@ -43,9 +54,22 @@ abstract contract Base is Test {
         salesOracle.setReporter(address(marketplace), true);
         salesOracle.setReporter(address(engine), true);
         pushOracle.setReporter(gov, true);
+
+        randomness = new MockRandomness();
+        points = new Points(gov);
+        prediction = new PredictionMarket(gov, treasury, pushOracle);
+        raffle = new VaultRaffle(gov, points, address(vault), randomness);
+        vault.setRaffle(raffle);
+        points.setRaffle(address(raffle));
+        points.setRate(address(marketplace), POINTS_RATE);
+        points.setRate(address(prediction), POINTS_RATE);
+        marketplace.setPoints(points);
+        prediction.setPoints(points);
         vm.stopPrank();
 
         nft = new MockNFT();
+        vm.prank(gov);
+        prediction.setCollectionSupport(address(nft), true);
         vm.deal(alice, 1_000 ether);
         vm.deal(bob, 1_000 ether);
         vm.deal(carol, 1_000 ether);
