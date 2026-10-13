@@ -28,7 +28,8 @@ flowchart LR
 
 1. **Marketplace.** Buyers post ETH offers on a token or on a whole collection,
    and holders accept. There are no listings to undercut. A 2% fee goes to the
-   Treasury, and ERC-2981 royalties are paid up to a cap.
+   Treasury, and ERC-2981 royalties are paid up to a cap. A project can also be
+   given a share of the fees its collection generates.
 2. **Buyback.** The protocol quotes a standing bid for each collection. It rises
    over time until a holder sells into it, then steps down and rises again, so it
    finds the floor without an oracle.
@@ -37,7 +38,9 @@ flowchart LR
    to the budget, or raffled.
 4. **Prediction markets.** Anyone can bet on a collection's floor going up or
    down. 3% of winnings funds buybacks.
-5. **Points and raffles.** Users earn points for the fees they generate. Points
+5. **Games.** Dice and coinflip against a house bankroll. The 2% edge on every
+   wager funds buybacks for the collection the player backs.
+6. **Points and raffles.** Users earn points for the fees they generate. Points
    are their odds of winning NFTs raffled from the Vault.
 
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains each contract and lists
@@ -49,12 +52,12 @@ where the code departs from the concept document.
 |---|---|
 | Contracts in `src/` | Implemented, with unit, fuzz and invariant tests |
 | Chainlink VRF adapter | Written, not tested against a live coordinator |
-| Deployment | Local chain only; no testnet or mainnet deployment exists |
+| Deployment | Local chain only; simulated on Base Sepolia, not broadcast. See [docs/TESTNET.md](docs/TESTNET.md) |
 | Web app in `app/` | Reads and transactions tested against a local chain; not yet tested with a browser wallet. See [app/README.md](app/README.md) |
 | Audit | None |
 
-Casino games, IP licensing and a governance token from the concept document are
-not built. The full list is at the end of the architecture document.
+Slots, lotteries, IP licensing and a governance token from the concept document
+are not built. The full list is at the end of the architecture document.
 
 ## Getting started
 
@@ -91,15 +94,7 @@ Addresses are written to `deployments/31337.json`.
 
 ### Deploy to a testnet
 
-Copy `.env.example` to `.env`, fill in the RPC URL and the Chainlink VRF
-settings, then:
-
-```bash
-forge script script/Deploy.s.sol --rpc-url base_sepolia --broadcast --account <your-keystore-account>
-```
-
-If `OWNER` is set to another address, that address must call `acceptOwnership()`
-on each contract.
+Follow [docs/TESTNET.md](docs/TESTNET.md).
 
 ## Repository layout
 

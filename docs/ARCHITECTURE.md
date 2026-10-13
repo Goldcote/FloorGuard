@@ -10,10 +10,11 @@ code are right. The differences are listed at the end.
 | Contract | Role |
 |---|---|
 | `Marketplace` | Escrowed ETH offers on one token or on any token of a collection. A holder accepts to swap. 2% fee to the Treasury, ERC-2981 royalties honoured up to a cap. |
-| `Treasury` | Holds fees as a separate buyback budget per collection. Only the BuybackEngine can spend. |
+| `Treasury` | Holds fees as a separate buyback budget per collection, after an optional share for the NFT project. Only the BuybackEngine can spend. |
 | `BuybackEngine` | Quotes a standing bid per collection that rises until a holder sells into it. Pays from the collection's budget and sends the NFT to the Vault. |
 | `Vault` | Locks bought NFTs. Unlock needs 180 days and a floor at 130% of the purchase price. Then raffle, relock or Dutch auction. |
 | `PredictionMarket` | Pooled higher/lower bets on a collection's floor. 3% fee on winnings to the Treasury. |
+| `Games` | Dice and coinflip against a house bankroll. The edge on each wager goes to the Treasury. |
 | `Points` | Non-transferable points earned per ETH of fees generated. Raffle weights. |
 | `VaultRaffle` | Raffles vault NFTs to points holders using a randomness provider. |
 | `SalesFloorOracle` | Floor from the protocol's own floor-type sales (lower median of the last 7). |
@@ -68,6 +69,34 @@ trading a collection funds the defence of that collection's floor and one
 collection cannot spend another's fees. ETH sent without a collection sits in
 `unallocated` until the owner assigns it with `allocate`.
 
+### Where the money sits
+
+| Pot | Filled by | Leaves to | Who decides |
+|---|---|---|---|
+| Collection budget (`budgetOf`) | Fees on that collection, vault auction proceeds, donations | Holders who sell into the floor bid | Nobody per payment; the owner sets the bid curve |
+| Project share (`owedTo`) | The owner-set share of a collection's fees, at most 50% | The project's recipient address, when it claims | The owner sets recipient and share |
+| Unallocated | Plain ETH transfers, fees from unsupported collections, withdrawn games bankroll | A collection budget | The owner, with `allocate` |
+| Games bankroll | Anyone, with `fundBankroll`; losing stakes | Winning players, or the Treasury's unallocated pool | The owner can only move it to the Treasury |
+| Marketplace escrow | Open offers | The seller on acceptance, or back to the offerer | The offerer and the seller |
+| Prediction pools | Bets | Winners, or refunds when void | The oracle price |
+
+There is no team wallet, staking pool or token. Vault auction proceeds are
+recycled capital and are not split with the project.
+
+### Who controls it
+
+Every contract has one `owner`, set at deployment. The owner cannot withdraw from
+the Treasury, but it chooses the spender, the oracles and the randomness
+providers, so it has to be fully trusted. Before any real use it should be a
+multisig behind a timelock. Each NFT project can also deploy its own instance of
+the protocol and be its own owner.
+
+Adding a collection is an owner action: mark it supported on the Marketplace,
+set its bid curve on the BuybackEngine, and optionally set a project share and
+enable predictions and games. `script/AddCollection.s.sol` does all of it in one
+run. After that, buybacks need no operator or bot: holders sell into the bid
+themselves.
+
 ## BuybackEngine: the rising bid
 
 The engine needs to buy at the floor without being told what the floor is. For
@@ -120,11 +149,27 @@ price the market will settle on.
 - A market is void, with full refunds, if one side has no bets, the price is
   unchanged, or the oracle has no fresh price for three days after settlement.
 
+## Games
+
+`Games` is one dice game: the player picks a chance of winning from 1% to 95%,
+and a coinflip is a 50% roll. The edge (default 2%) is taken from the wager and
+paid to the Treasury as a fee for the collection the player chose to back. The
+rest is played at fair odds against the house bankroll, so the bankroll has no
+expected gain or loss and the whole house take funds buybacks.
+
+The house's side of each bet is set aside when the bet is placed and one bet can
+risk at most 1% of the free bankroll, so every outcome can always be paid. A bet
+whose randomness never arrives is refunded after a day. The bankroll can only
+leave to winning players or to the Treasury.
+
+Each bet costs the operator one randomness request, which on Ethereum mainnet is
+likely to exceed the fee on a small wager. Set `minBet` accordingly.
+
 ## Points and raffles
 
 Points are credited per ETH of **fees generated**, not per ETH of volume, at a
 rate set per module. On the Marketplace both buyer and seller are credited for
-the sale's fee. On the PredictionMarket winners are credited for the fee they
+the sale's fee, and in Games the player is credited for the edge on each wager. On the PredictionMarket winners are credited for the fee they
 pay, and losers for the fee their stake funded. Because points follow fees,
 farming them always pays into buyback budgets.
 
@@ -179,7 +224,7 @@ contract is about 7 KB, well under the 24 KB limit.
 
 ## Not built yet
 
-- Casino games (coinflip, dice, slots) and paid-ticket raffles
+- Slots, lotteries and paid-ticket raffles
 - IP licensing of vault NFTs
 - A governance token; the owner is a single address, meant to be a multisig
 - Burning vault NFTs

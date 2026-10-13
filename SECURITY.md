@@ -31,6 +31,10 @@ its findings fixed (`test/Regressions.t.sol`); that is not an audit.
 - **Late information in prediction markets.** Betting closes at most halfway
   through a market and settlement needs a price published after the settlement
   time, but later bettors still see more recent prices than earlier ones.
+- **Games.** Operating games of chance is regulated or prohibited in many
+  jurisdictions; deploying `Games` is the operator's legal responsibility. The
+  bankroll carries variance: a run of player wins can shrink it. The fairness of
+  every bet rests on the randomness provider.
 - **Non-standard NFTs.** Collections with transfer hooks, blocklists or
   non-standard ERC-721 behaviour have not been considered.
 
