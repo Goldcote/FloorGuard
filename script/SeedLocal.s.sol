@@ -57,6 +57,14 @@ contract SeedLocal is Script {
         games.setCollectionSupport(address(nft), true);
         games.fundBankroll{value: 50 ether}();
 
+        _seedRaffleAndLicences(json, nft);
+        vm.stopBroadcast();
+
+        vm.writeJson(vm.toString(address(nft)), path, ".demoCollection");
+        console2.log("Demo collection", address(nft));
+    }
+
+    function _seedRaffleAndLicences(string memory json, MockNFT nft) private {
         // token 10 is raffled: 0.05 ETH a ticket, 5 to 40 tickets, for three days
         TicketRaffle ticketRaffle = TicketRaffle(json.readAddress(".ticketRaffle"));
         ticketRaffle.setCollectionSupport(address(nft), true);
@@ -69,9 +77,5 @@ contract SeedLocal is Script {
         licenses.setTier(address(nft), 0, 0, 30 days, true);
         licenses.setTier(address(nft), 1, 0.1 ether, 90 days, true);
         licenses.setTier(address(nft), 2, 0.5 ether, 365 days, true);
-        vm.stopBroadcast();
-
-        vm.writeJson(vm.toString(address(nft)), path, ".demoCollection");
-        console2.log("Demo collection", address(nft));
     }
 }
