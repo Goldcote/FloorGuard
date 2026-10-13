@@ -214,7 +214,11 @@ contract Review8GamesInvariantTest is Base {
             owed += games.owedTo(handler.eoas(i));
         }
         assertEq(games.reserved(), exposures, "reserved != open exposures");
-        assertEq(address(games).balance, games.bankroll() + games.reserved() + wagers + owed, "games balance");
+        assertEq(
+            address(games).balance,
+            games.bankroll() + games.reserved() + wagers + owed + games.totalPendingDeposits(),
+            "games balance"
+        );
     }
 
     /// every settlement moved the bankroll by stake + exposure - payout + kept, and the Treasury by

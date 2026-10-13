@@ -19,7 +19,7 @@ contract GamesTest is Base {
 
     /// Everything the contract holds is bankroll, an open bet or owed winnings.
     function _assertAccounted(uint256 openBets, uint256 owed) internal view {
-        assertEq(address(games).balance, games.bankroll() + openBets + owed);
+        assertEq(address(games).balance, games.bankroll() + openBets + owed + games.totalPendingDeposits());
     }
 
     function test_coinflip_winPaysFairOddsOnTheStakeAfterEdge() public {
@@ -127,13 +127,15 @@ contract GamesTest is Base {
         assertEq(games.previewRedeem(shares), 1_000 ether);
 
         vm.prank(bob);
-        uint256 bobShares = games.deposit{value: 100 ether}(0);
+        uint256 bobShares = games.deposit{value: 100 ether}(0); // no bet open: converted at once
+        assertEq(bobShares, games.sharesOf(bob));
         assertApproxEqAbs(games.previewRedeem(bobShares), 100 ether, 1e6);
 
         uint256 before = bob.balance;
         vm.prank(bob);
-        games.redeem(bobShares, 99.99 ether, payable(bob));
-        assertApproxEqAbs(bob.balance - before, 100 ether, 1e6);
+        uint256 paid = games.redeem(bobShares, 99.99 ether, payable(bob));
+        assertApproxEqAbs(paid, 100 ether, 1e6);
+        assertEq(bob.balance - before, paid);
         assertEq(games.sharesOf(bob), 0);
         _assertAccounted(0, 0);
     }
@@ -149,71 +151,176 @@ contract GamesTest is Base {
         assertApproxEqAbs(games.previewRedeem(shares), 1_000 ether, 1e6);
     }
 
-    /// A deposit is priced as if the house wins every open bet, and a redemption as if it loses them
-    /// all, so neither can be timed around a result seen in advance.
-    function test_house_cannotBeTimedAroundAKnownResult() public {
-        uint256 id = _play(alice, 10 ether, 5_000); // 9.8 ETH stake, 9.8 ETH of house money at risk
+    /// A deposit made while a bet is open waits for that bet, and is then priced after its result.
+    function test_house_depositWaitsForOpenBetsAndIsPricedAfterThem() public {
+        uint256 id = _play(alice, 10 ether, 5_000);
 
         // bob sees that alice is about to lose and deposits first
         vm.prank(bob);
-        uint256 bobShares = games.deposit{value: 100 ether}(0);
-        randomness.fulfill(id, 9_999);
-        assertLe(games.previewRedeem(bobShares), 100 ether); // he bought in at the post-win price
+        assertEq(games.deposit{value: 100 ether}(0), 0); // pending, not shares
+        assertEq(games.pendingDepositOf(bob), 100 ether);
+        assertEq(games.sharesOf(bob), 0);
+        _assertAccounted(10 ether + 9.8 ether, 0);
+        vm.prank(bob);
+        vm.expectRevert(Games.BetsStillOpen.selector);
+        games.executeDeposit(0);
 
-        // carol holds shares and sees that alice is about to win; redeeming first gains her nothing
+        randomness.fulfill(id, 9_999); // the house wins 9.8 ETH
+        vm.prank(bob);
+        uint256 bobShares = games.executeDeposit(0);
+        // bob bought in at the price after the win: his shares are worth what he paid, no more
+        assertApproxEqAbs(games.previewRedeem(bobShares), 100 ether, 1e6);
+        assertApproxEqAbs(games.previewRedeem(games.sharesOf(address(this))), 1_009.8 ether, 1e6);
+    }
+
+    /// A redemption requested while a bet is open waits for it too, so leaving before a known loss does
+    /// not avoid the loss.
+    function test_house_redeemWaitsForOpenBetsAndSharesTheirResult() public {
         vm.prank(carol);
         uint256 carolShares = games.deposit{value: 100 ether}(0);
-        id = _play(alice, 10 ether, 5_000);
-        uint256 beforeLoss = games.previewRedeem(carolShares);
-        randomness.fulfill(id, 0);
-        assertLe(beforeLoss, games.previewRedeem(carolShares) + 1e6); // she would have got no more by leaving early
+        uint256 id = _play(alice, 10 ether, 5_000);
+
+        // carol sees that alice is about to win and asks to leave first
+        vm.prank(carol);
+        assertEq(games.redeem(carolShares, 0, payable(carol)), 0); // pending
+        vm.prank(carol);
+        vm.expectRevert(Games.BetsStillOpen.selector);
+        games.executeRedeem(0, payable(carol));
+
+        randomness.fulfill(id, 0); // the house loses 9.8 ETH
+        uint256 before = carol.balance;
+        vm.prank(carol);
+        games.executeRedeem(0, payable(carol));
+        // she bears her eleventh of the loss
+        assertApproxEqAbs(carol.balance - before, 100 ether - uint256(9.8 ether) * 100 / 1_100, 1e6);
     }
 
-    function test_house_redeemValidationAndSlippage() public {
-        vm.prank(bob);
-        uint256 bobShares = games.deposit{value: 10 ether}(0);
+    /// Bets opened by someone else after a request cannot move the price the requester gets: neither
+    /// by piling up wagers before a deposit nor by locking up the reserve before a redemption.
+    function test_house_laterBetsCannotMoveARequestersPrice() public {
+        vm.prank(carol);
+        uint256 carolShares = games.deposit{value: 100 ether}(0);
+
+        // mallory opens near-certain bets (large wagers) and long shots (large reserve)
+        for (uint256 i; i < 20; ++i) {
+            _play(alice, 10 ether, 9_500);
+        }
+        for (uint256 i; i < 10; ++i) {
+            _play(alice, 0.01 ether, 100);
+        }
+        assertGt(games.openWagers(), 200 ether);
+        assertGt(games.reserved(), 15 ether);
+
+        // no bet was open when these requests' predecessors closed: both go through at the full value
+        assertApproxEqAbs(games.previewDeposit(100 ether), carolShares, carolShares / 1e6);
+        assertApproxEqAbs(games.previewRedeem(carolShares), 100 ether, 1e6);
+    }
+
+    /// A redemption is paid from the free bankroll; what open bets have locked up is redeemed later.
+    function test_house_redeemPaysWhatIsFreeAndKeepsTheRestPending() public {
+        uint256 all = games.sharesOf(address(this)); // the whole house: 1,000 ETH
+        uint256 first = _play(alice, 1 ether, 5_000);
+        assertEq(games.redeem(all, 0, payable(bob)), 0); // waits for the open bet
+        randomness.fulfill(first, 9_999); // the house wins the 0.98 ETH stake
+
+        // long shots placed after the request lock up part of the house's funds
+        uint256[] memory later = new uint256[](8);
+        for (uint256 i; i < 8; ++i) {
+            later[i] = _play(alice, 0.08 ether, 100); // each sets aside about 7.8 ETH
+        }
+        uint256 locked = games.reserved();
+        assertGt(locked, 60 ether);
+
+        uint256 before = bob.balance;
+        uint256 paid = games.executeRedeem(0, payable(bob));
+        assertEq(bob.balance - before, paid);
+        assertApproxEqAbs(paid, 1_000.98 ether - locked, 1e9); // everything that was free
+        assertGt(games.pendingRedeemOf(address(this)), 0); // the rest is still requested
+        assertLt(games.bankroll(), 1e9);
+
+        for (uint256 i; i < 8; ++i) {
+            randomness.fulfill(later[i], 9_999); // the long shots lose
+        }
+        paid = games.executeRedeem(0, payable(bob));
+        assertApproxEqAbs(paid, locked + 8 * 0.0784 ether, 1e9);
+        assertEq(games.sharesOf(address(this)), 0);
+    }
+
+    function test_house_cancelAndValidation() public {
+        uint256 id = _play(alice, 1 ether, 5_000);
         vm.startPrank(bob);
+        games.deposit{value: 10 ether}(0);
+        uint256 before = bob.balance;
+        games.cancelDeposit();
+        assertEq(bob.balance - before, 10 ether);
+        vm.expectRevert(Games.NothingPending.selector);
+        games.cancelDeposit();
+        vm.expectRevert(Games.NothingPending.selector);
+        games.executeDeposit(0);
         vm.expectRevert(Games.InsufficientShares.selector);
-        games.redeem(bobShares + 1, 0, payable(bob));
-        vm.expectRevert(Games.SlippageExceeded.selector);
-        games.redeem(bobShares, 11 ether, payable(bob));
+        games.redeem(1, 0, payable(bob));
+        vm.expectRevert(Games.NothingPending.selector);
+        games.cancelRedeem();
+        vm.stopPrank();
+        randomness.fulfill(id, 0);
+
+        vm.prank(bob);
         vm.expectRevert(Games.SlippageExceeded.selector);
         games.deposit{value: 1 ether}(type(uint256).max);
-        vm.stopPrank();
     }
 
-    function test_house_openBetsStayFundedWhenEveryoneRedeems() public {
+    function test_house_openBetsStayFundedWhenHoldersLeave() public {
         _play(alice, 1 ether, 5_000);
-        games.redeem(games.sharesOf(address(this)), 0, payable(bob));
-        assertEq(address(games).balance, 1.98 ether); // the 1.96 ETH a win would pay plus the 0.02 ETH fee
+        // the request is made after the bet and waits for it; the bet's payout stays set aside
+        assertEq(games.redeem(games.sharesOf(address(this)), 0, payable(bob)), 0);
         assertEq(games.reserved(), 0.98 ether);
+        _assertAccounted(1.98 ether, 0);
     }
 
-    /// Whatever depositors, redeemers and players do, the first depositor cannot be robbed by share
-    /// price games and the contract always holds what it owes.
-    function testFuzz_house_sharesNeverPayOutMoreThanTheBankroll(
-        uint64 dep,
-        uint64 wager,
-        uint256 word,
-        bool bobFirst
-    ) public {
+    /// Bets that close out of order still release the requests waiting on them, and no earlier.
+    function test_house_requestsFollowBetsClosingOutOfOrder() public {
+        uint256 first = _play(alice, 1 ether, 5_000);
+        uint256 second = _play(alice, 1 ether, 5_000);
+        vm.prank(bob);
+        games.deposit{value: 10 ether}(0);
+        uint256 third = _play(alice, 1 ether, 5_000); // placed after the request: does not hold it up
+
+        randomness.fulfill(second, 9_999);
+        vm.prank(bob);
+        vm.expectRevert(Games.BetsStillOpen.selector);
+        games.executeDeposit(0);
+        randomness.fulfill(first, 9_999);
+        vm.prank(bob);
+        assertGt(games.executeDeposit(0), 0);
+        randomness.fulfill(third, 9_999);
+    }
+
+    /// Whatever depositors, redeemers and players do, holders can never take out more than the house
+    /// has, and the contract always holds what it owes.
+    function testFuzz_house_accounting(uint64 dep, uint64 wager, uint256 word, bool requestWhileOpen) public {
         uint256 d = bound(dep, 1e9, 500 ether);
         uint256 w = bound(wager, 0.001 ether, 5 ether);
-        vm.prank(bob);
-        uint256 bobShares = games.deposit{value: d}(0);
-        uint256 id = _play(alice, w, 5_000);
-        if (bobFirst) {
+        uint256 bobShares;
+        if (!requestWhileOpen) {
             vm.prank(bob);
-            games.redeem(bobShares, 0, payable(bob));
+            bobShares = games.deposit{value: d}(0);
+        }
+        uint256 id = _play(alice, w, 5_000);
+        if (requestWhileOpen) {
+            vm.prank(bob);
+            games.deposit{value: d}(0);
         }
         randomness.fulfill(id, word);
-        if (!bobFirst) {
+        if (requestWhileOpen) {
             vm.prank(bob);
-            games.redeem(bobShares, 0, payable(bob));
+            bobShares = games.executeDeposit(0);
         }
+        vm.prank(bob);
+        games.redeem(bobShares, 0, payable(bob));
         games.redeem(games.sharesOf(address(this)), 0, payable(address(0xBEEF)));
         assertEq(games.reserved(), 0);
         assertEq(games.openWagers(), 0);
+        assertEq(games.totalPendingDeposits(), 0);
         assertEq(address(games).balance, games.bankroll());
         assertLt(games.bankroll(), 1e9); // only rounding dust is left for the virtual shares
     }

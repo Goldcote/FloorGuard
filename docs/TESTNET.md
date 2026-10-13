@@ -83,5 +83,7 @@ Addresses are written to `deployments/84532.json`. Commit that file.
    `STEP=schedule` and again after the delay with `STEP=execute`. A multisig
    submits the same calls itself. The randomness adapters are owned by the final
    owner from the start, so check `OWNER` for typos before deploying.
-5. Fund the games bankroll with `Games.fundBankroll()` if games are enabled.
+5. Fund the games bankroll with `Games.deposit(minShares)` if games are enabled.
+   The account that deposits owns the shares and they cannot be transferred, so
+   deposit from the account that should own the house, not the deployer.
 6. In `app/`, run `npm run sync` so the app picks up the new addresses.

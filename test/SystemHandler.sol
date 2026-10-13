@@ -1573,7 +1573,7 @@ contract SystemHandler is Test {
         }
         assertEq(
             address(games).balance,
-            games.bankroll() + games.reserved() + wagers + owed,
+            games.bankroll() + games.reserved() + wagers + owed + games.totalPendingDeposits(),
             "games balance != bankroll + reserved + open wagers + owed"
         );
     }
@@ -1977,7 +1977,9 @@ contract SystemHandler is Test {
         }
         uint256 hostile = _hostileClaims();
         _must(
-            address(games).balance == games.bankroll() + games.owedTo(address(rejector)), "ETH left in Games"
+            address(games).balance
+                == games.bankroll() + games.totalPendingDeposits() + games.owedTo(address(rejector)),
+            "ETH left in Games"
         );
         _must(address(lottery).balance == hostile >> 128, "ETH of a normal account left in the Lottery");
         _must(

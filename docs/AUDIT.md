@@ -18,6 +18,7 @@ contest, is required before the contracts hold real funds.
 | Review 7 | Fixes from review 6; one randomised campaign across every contract at once (150,000 calls plus 32,000 in guided walks) | 2 Low; every invariant held |
 | Full-system audit | Core contracts and how all modules interact | 1 High, 3 Medium, 6 Low |
 | Review 8 | The reworked buyback bid and the other changes made after the economics review, with simulations | 2 Medium, 6 Low |
+| Review 9 | House shares, first design | 2 High, 1 Medium, 3 Low; the design was replaced |
 | Economics review | Whether the mechanism does what it claims, with models | 5 main findings; see [ECONOMICS-REVIEW.md](ECONOMICS-REVIEW.md) |
 | Static analysis | Slither 0.11.6 on `src/` | No actionable medium or high finding |
 | Web app | Every write flow clicked through with a local test account | 4 bugs fixed |
@@ -26,7 +27,7 @@ Each reviewer worked independently from the code, proved its High findings with
 tests, and reported what it had not verified. No Critical finding was reported
 in any pass.
 
-Test suite at the time of writing: 271 tests (unit, fuzz, stateful invariant and
+Test suite at the time of writing: 275 tests (unit, fuzz, stateful invariant and
 end-to-end). Line coverage of `src/` was 94% when last measured, before the
 slots, lottery and later changes.
 
@@ -37,6 +38,7 @@ slots, lottery and later changes.
 | A raffle could be steered by adding points after seeing the random word | Point weights are frozen from the draw request until the result | `test_raffleWeightsAreFrozenDuringDraw` |
 | Vault NFTs could be bought for 1 wei by pushing the sales oracle down | Auction reserve of 130% of the purchase price | `test_auction_reserveIgnoresOracleBelowUnlockPrice` |
 | Ticket money could be locked for ever when an NFT transfer failed | Refunds no longer depend on the transfer; stuck raffles can be aborted | `test_abort_whenAWonRaffleIsNeverSettled` |
+| A share holder could manufacture a bad price for someone else's deposit into, or redemption from, the games bankroll | Deposits and redemptions became requests that wait for open bets and are priced at the house's funds per share | `test_house_laterBetsCannotMoveARequestersPrice` |
 | With a floor well above the reserve, a vault auction could still be bought far below market | Auctions open at 16 times the reserve, or 16 times the floor seen at unlock, and halve daily. A holding worth more than 16 times that basis can still open below market | `test_auctionCannotBeSnipedBelowMarketByPushingTheOracleDown` |
 
 ## Medium findings
@@ -123,6 +125,7 @@ and check after every step that:
   attacks).
 - The fixes made after review 6 have regression tests but have not been through
   another independent pass.
-- House shares in `Games`, and the fixes made after review 8 (the base rule for
-  falling markets, the minimum bid, restarting the curve from the old budget),
-  have tests but no independent review yet.
+- The redesigned house shares in `Games` (requests that wait for open bets),
+  and the fixes made after review 8 (the base rule for falling markets, the
+  minimum bid, restarting the curve from the old budget), have tests but no
+  independent review yet.

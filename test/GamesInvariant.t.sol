@@ -162,7 +162,7 @@ contract GamesInvariantTest is Base {
         for (uint256 i; i < 3; ++i) {
             owed += games.owedTo(handler.eoas(i));
         }
-        assertEq(address(games).balance, games.bankroll() + locked + owed);
+        assertEq(address(games).balance, games.bankroll() + locked + owed + games.totalPendingDeposits());
     }
 
     /// treasury balance == budgets + unallocated + totalOwed, and totalOwed == the only recipient's claim

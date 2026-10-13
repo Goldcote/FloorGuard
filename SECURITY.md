@@ -76,11 +76,17 @@ professional audit.
 - **House shares.** Anyone can fund the games bankroll for shares and redeem them
   later. Share holders can lose part or all of what they put in when players
   win; nothing is guaranteed, and the half of the edge the bankroll keeps only
-  tilts the average. Redeeming while bets are open gives up the holder's part
-  of the funds set aside for them. Offering a share in a gambling bankroll may
-  be a regulated activity of its own (in some places a security or a gambling
-  licence matter), separate from operating the games. The share mechanism is
-  new and has not been independently reviewed.
+  tilts the average. Deposits and redemptions wait for the bets open at the
+  time to close, so a result cannot be traded on and another holder cannot
+  manufacture a bad price; a first design without that rule was broken by a
+  review. Whoever carries out a request can still time it around one later
+  bet, worth at most 1% of the bankroll times their share. A stall in
+  randomness delays requests by up to a day per open bet. The account that
+  funds the bankroll owns the shares, and shares cannot be transferred: do not
+  fund it from a deployment hot key. Offering a share in a gambling bankroll
+  may be a regulated activity of its own (in some places a security or a
+  gambling licence matter), separate from operating the games. The redesigned
+  mechanism has tests but has not been independently reviewed.
 - **Shared randomness subscription.** The deploy script puts all four randomness
   consumers (vault raffle, games, ticket raffle and lottery) on one Chainlink
   VRF subscription. Many minimum-size bets can drain it and stall every draw

@@ -78,7 +78,7 @@ and one collection cannot spend another's fees. ETH sent without a collection si
 |---|---|---|---|
 | Collection budget (`budgetOf`) | Fees on that collection, vault auction proceeds, donations | Holders who sell into the floor bid | Nobody per payment; the owner sets the bid curve |
 | Project share (`owedTo`) | The owner-set share of a collection's fees, at most 50% | The project's recipient address, when it claims | The owner sets recipient and share |
-| Unallocated | Plain ETH transfers, fees from unsupported collections, withdrawn games bankroll | A collection budget | The owner, with `allocate` |
+| Unallocated | Plain ETH transfers, fees from unsupported collections | A collection budget | The owner, with `allocate` |
 | Games bankroll | Depositors, who receive shares; losing stakes; half of each edge | Winning players, and share holders who redeem | Share holders. The owner cannot withdraw it |
 | Marketplace escrow | Open offers | The seller on acceptance, or back to the offerer | The offerer and the seller |
 | Prediction pools | Bets | Winners, or refunds when void | The oracle price |
@@ -252,24 +252,38 @@ flat.
 
 ### The house
 
-Anyone can fund the bankroll with `deposit` and receives shares in it; the
-holders of shares are the house. Shares gain value from the bankroll's half of
-the edge and from players' losses, and lose value when players win. `redeem`
-burns shares for their part of the free bankroll. The owner has no way to
+Anyone can fund the bankroll and receives shares in it; the holders of shares
+are the house. Shares gain value from the bankroll's half of the edge and from
+players' losses, and lose value when players win. The owner has no way to
 withdraw the bankroll.
 
-Share prices are set so that a result seen in advance cannot be traded on:
+Deposits and redemptions are requests:
 
-- a deposit is priced as if the house wins every open bet, so depositing just
-  before a player loses buys in at the price after the loss;
-- a redemption is priced as if the house loses every open bet, so leaving just
-  before a player wins gains nothing.
+- `deposit` and `redeem` record the request. If no bet is open, it is carried
+  out at once. Otherwise it can be carried out, with `executeDeposit` or
+  `executeRedeem`, once every bet that was open when it was made has been
+  settled or refunded.
+- A request is priced when it is carried out, at the house's funds (free and set
+  aside) per share at that moment.
+- A pending deposit is held apart from the bankroll and can be cancelled. Shares
+  with a pending redemption stay at risk until it is carried out.
+- A redemption is paid from the free bankroll. If funds set aside for open bets
+  leave too little, it redeems what it can and the rest stays pending. Open bets
+  can lock up at most a fifth of the house's funds when they are placed.
 
-The cost of that rule falls on whoever redeems while bets are open: their share
-of the funds set aside for those bets stays with the remaining holders. Bets
-settle within seconds when randomness is healthy, so the amount is normally
-small, but it can be up to a fifth of the house's funds when open bets are at
-their limit.
+The waiting rule is what keeps this fair. Whoever asks cannot know the result of
+any bet their price depends on, because those bets have to finish first. And
+bets opened afterwards do not enter the price in a way someone else can use:
+piling up wagers or locking up the reserve in front of another person's request
+changes nothing for them. An earlier design priced deposits and redemptions
+immediately at conservative values; a review showed that an existing holder
+could manufacture a bad price for someone else that way.
+
+What remains: whoever carries out a request chooses the moment, and a bet opened
+after the request may have a result they can see coming. That is worth at most
+one bet's exposure, 1% of the bankroll, times their share. If randomness stops
+arriving, a request waits until the open bets are refunded, which anyone can do
+a day after each bet.
 
 The house's side of each bet is set aside when the bet is placed, so every
 outcome can always be paid. One wager can be at most 1% of the free bankroll, one bet can risk at most 1% of
