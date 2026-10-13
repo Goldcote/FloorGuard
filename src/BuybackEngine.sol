@@ -35,9 +35,12 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
     ///         below the market price, such as a minter of a collection that is still minting.
     mapping(address collection => uint256) public fillCooldownOf;
     mapping(address collection => uint256) public lastFillAt;
-    /// @notice No buyback below this price. With a thin budget the bid can be very small; without a
-    ///         minimum, a seller who names no minimum price of their own could be paid dust.
-    mapping(address collection => uint256) public minBidOf;
+    /// @notice No buyback below this share of the current base. With a thin budget the bid can be very
+    ///         small; without a minimum, a seller who names no minimum price of their own could be paid
+    ///         dust. Because it is a share of the base, it follows the market down with the base.
+    mapping(address collection => uint256) public minBidBpsOf;
+    mapping(address collection => bool) private _minBidSet;
+    uint256 public constant DEFAULT_MIN_BID_BPS = 1_000;
     /// @notice May lower a collection's prices or pause it. Each call also restarts the curve, so the
     ///         guardian can hold a bid down, never raise it. Meant for a fast key that can react to a
     ///         falling market while the owner sits behind a timelock.
@@ -62,7 +65,7 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
     event FillCooldownSet(address indexed collection, uint256 cooldown);
     event CurveRestarted(address indexed collection);
     event GuardianSet(address guardian);
-    event MinBidSet(address indexed collection, uint256 minBid);
+    event MinBidSet(address indexed collection, uint256 minBidBps);
     event BidLowered(address indexed collection, uint256 basePrice, uint256 maxPrice, bool active);
 
     error InactiveCollection();
@@ -99,7 +102,7 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
     /// @notice Whether a sale into the bid would go through right now.
     function isFillable(address collection) external view returns (bool) {
         uint256 bid = currentBid(collection);
-        if (bid == 0 || bid < minBidOf[collection]) return false;
+        if (bid == 0 || bid < minBidOf(collection)) return false;
         return
             lastFillAt[collection] == 0
                 || block.timestamp >= lastFillAt[collection] + fillCooldownOf[collection];
@@ -121,7 +124,7 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
 
         uint256 price = currentBid(collection);
         // a bid below the collection's minimum is not a bid: it would buy a token for dust
-        if (price == 0 || price < minBidOf[collection]) revert NothingToBid();
+        if (price == 0 || price < minBidOf(collection)) revert NothingToBid();
         if (price < minPrice) revert BidBelowMinimum(price, minPrice);
 
         // The next round starts one step below this sale. A sale limited by a thin budget may be far
@@ -184,11 +187,7 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
             active: active
         });
         _checkCooldown(collection, fillCooldownOf[collection]);
-        // a default minimum bid of a tenth of the base, unless the owner has set one
-        if (minBidOf[collection] == 0) {
-            minBidOf[collection] = basePrice / 10;
-            emit MinBidSet(collection, basePrice / 10);
-        }
+        if (!_minBidSet[collection]) minBidBpsOf[collection] = DEFAULT_MIN_BID_BPS;
         emit BidConfigured(collection, basePrice, maxPrice, growthBpsPerDay, stepDownBps, active);
     }
 
@@ -216,9 +215,17 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
         emit BidLowered(collection, basePrice, maxPrice, active);
     }
 
-    function setMinBid(address collection, uint256 minBid) external onlyOwner {
-        minBidOf[collection] = minBid;
-        emit MinBidSet(collection, minBid);
+    /// @notice The lowest bid at which the engine buys right now.
+    function minBidOf(address collection) public view returns (uint256) {
+        return uint256(bids[collection].basePrice) * minBidBpsOf[collection] / BPS;
+    }
+
+    /// @notice Set the minimum bid as a share of the base. Zero turns it off.
+    function setMinBid(address collection, uint256 minBidBps) external onlyOwner {
+        if (minBidBps > BPS) revert InvalidConfig();
+        minBidBpsOf[collection] = minBidBps;
+        _minBidSet[collection] = true;
+        emit MinBidSet(collection, minBidBps);
     }
 
     function setGuardian(address guardian_) external onlyOwner {

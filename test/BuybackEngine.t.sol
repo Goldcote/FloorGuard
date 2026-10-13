@@ -143,7 +143,7 @@ contract BuybackEngineTest is Base {
     function test_baseFollowsAFallingMarket() public {
         vm.startPrank(gov);
         engine.configureBid(address(nft), 100 ether, 200 ether, 1_000, 1_500, true);
-        engine.setMinBid(address(nft), 1 ether);
+        engine.setMinBid(address(nft), 100); // 1% of the base
         vm.stopPrank();
         // the market is now 40 ETH and the budget arrives 40 ETH at a time
         vm.prank(address(engine));
@@ -156,6 +156,28 @@ contract BuybackEngineTest is Base {
         }
         // two budget-limited sales at 40 have brought the base from 100 down to 34
         assertLt(engine.curvePrice(address(nft)), 50 ether);
+    }
+
+    /// The minimum bid is a share of the base, so it follows the base down and the guardian's remedy
+    /// for a fallen market cannot leave the bid unable to buy.
+    function test_minimumBidFollowsTheBase() public {
+        address guardian = makeAddr("guardian");
+        vm.prank(gov);
+        engine.setGuardian(guardian);
+        assertEq(engine.minBidOf(address(nft)), 1 ether);
+
+        vm.prank(guardian);
+        engine.lowerBid(address(nft), 0.4 ether, 0.8 ether, true); // the market fell to 0.5 ETH
+        assertEq(engine.minBidOf(address(nft)), 0.04 ether);
+        assertTrue(engine.isFillable(address(nft)));
+
+        vm.startPrank(gov);
+        engine.setMinBid(address(nft), 0); // off, and it stays off through a reconfiguration
+        engine.configureBid(address(nft), 10 ether, 15 ether, 1_000, 500, true);
+        assertEq(engine.minBidOf(address(nft)), 0);
+        vm.expectRevert(BuybackEngine.InvalidConfig.selector);
+        engine.setMinBid(address(nft), 10_001);
+        vm.stopPrank();
     }
 
     function test_onBudgetIncrease_onlyTreasury() public {

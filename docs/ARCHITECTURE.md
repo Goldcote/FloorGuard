@@ -146,9 +146,10 @@ Four rules keep the bid from running ahead of the market:
   far below the base. It pulls the base down by up to three steps before the
   usual one, so a few such sales bring the base to the market without one cheap
   sale collapsing the curve.
-- **No bid below a minimum.** `minBidOf` (a tenth of the base unless the owner
-  sets it) stops a nearly empty budget from buying a token for dust from a
-  seller who named no minimum price.
+- **No bid below a minimum.** The engine does not buy below a share of the
+  current base (`minBidBpsOf`, a tenth unless the owner sets it), which stops a
+  nearly empty budget from buying a token for dust from a seller who named no
+  minimum price. Because it is a share of the base, it follows the market down.
 
 The cooldown, if set, must be short: after a sale the curve needs
 `stepDown / ((1 − stepDown) × growth)` days to regrow to its last price (12.6
@@ -257,33 +258,44 @@ are the house. Shares gain value from the bankroll's half of the edge and from
 players' losses, and lose value when players win. The owner has no way to
 withdraw the bankroll.
 
-Deposits and redemptions are requests:
+Deposits and redemptions are requests, and two rules price them:
 
-- `deposit` and `redeem` record the request. If no bet is open, it is carried
-  out at once. Otherwise it can be carried out, with `executeDeposit` or
-  `executeRedeem`, once every bet that was open when it was made has been
-  settled or refunded.
-- A request is priced when it is carried out, at the house's funds (free and set
-  aside) per share at that moment.
-- A pending deposit is held apart from the bankroll and can be cancelled. Shares
-  with a pending redemption stay at risk until it is carried out.
-- A redemption is paid from the free bankroll. If funds set aside for open bets
-  leave too little, it redeems what it can and the rest stays pending. Open bets
-  can lock up at most a fifth of the house's funds when they are placed.
+1. **A request waits for the bets open when it was made.** `deposit` and
+   `redeem` record the request; it can be carried out, by the account that made
+   it, once every one of those bets has been settled or refunded. Whoever asks
+   therefore cannot know the result of any bet that was open when they
+   committed.
+2. **Bets open when a request is carried out count against whoever carries it
+   out.** A deposit is then priced as if the house wins every open bet, and a
+   redemption as if it loses them all (it pays the shares' part of the free
+   bankroll only). A request left standing therefore cannot be used as a free
+   option on the results of later bets.
 
-The waiting rule is what keeps this fair. Whoever asks cannot know the result of
-any bet their price depends on, because those bets have to finish first. And
-bets opened afterwards do not enter the price in a way someone else can use:
-piling up wagers or locking up the reserve in front of another person's request
-changes nothing for them. An earlier design priced deposits and redemptions
-immediately at conservative values; a review showed that an existing holder
-could manufacture a bad price for someone else that way.
+With no bet open both rules do nothing: the request is carried out at once, at
+the house's funds per share. `shareValue` gives that fair value at any time;
+`previewRedeem` and `previewDeposit` give what would be paid or issued right
+now.
 
-What remains: whoever carries out a request chooses the moment, and a bet opened
-after the request may have a result they can see coming. That is worth at most
-one bet's exposure, 1% of the bankroll, times their share. If randomness stops
-arriving, a request waits until the open bets are refunded, which anyone can do
-a day after each bet.
+A pending deposit is held apart from the bankroll and can be cancelled. Shares
+with a pending redemption stay at risk until it is carried out. The last holder
+cannot redeem while bets are open, so nothing set aside for a bet is ever left
+without an owner.
+
+Both rules are needed, and each came from a review breaking a design that had
+only one. Pricing immediately at conservative values let an existing holder
+manufacture a bad price in front of someone else's transaction. Pricing at fair
+value after a wait let a holder keep a request standing and use it only when a
+later result, seen in advance, favoured them; that drained a passive holder
+completely in a test.
+
+What it costs: someone who carries out a request while other bets are open gives
+up part of the value to the holders who stay, up to the share of the house's
+funds set aside for open bets (at most a fifth when bets are placed) on the way
+out. Another holder can make that moment more expensive by opening bets, but
+pays the edge on every bet to do it, and the requester can simply wait for a
+quiet moment and name the least they will accept. If randomness stops arriving,
+requests wait until the open bets are refunded, which anyone can do a day after
+each bet (`refundMany` does several at once).
 
 The house's side of each bet is set aside when the bet is placed, so every
 outcome can always be paid. One wager can be at most 1% of the free bankroll, one bet can risk at most 1% of

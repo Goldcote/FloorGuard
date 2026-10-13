@@ -195,55 +195,80 @@ contract GamesTest is Base {
         assertApproxEqAbs(carol.balance - before, 100 ether - uint256(9.8 ether) * 100 / 1_100, 1e6);
     }
 
-    /// Bets opened by someone else after a request cannot move the price the requester gets: neither
-    /// by piling up wagers before a deposit nor by locking up the reserve before a redemption.
-    function test_house_laterBetsCannotMoveARequestersPrice() public {
+    /// A request left standing is not a free option on later bets: carried out while bets are open, a
+    /// deposit is priced as if the house wins them all and a redemption as if it loses them all.
+    function test_house_standingRequestIsNotAFreeOption() public {
         vm.prank(carol);
-        uint256 carolShares = games.deposit{value: 100 ether}(0);
+        uint256 carolShares = games.deposit{value: 1_000 ether}(0); // carol is half the house
+        uint256 first = _play(alice, 1 ether, 5_000);
+        vm.prank(carol);
+        games.redeem(carolShares, 0, payable(carol)); // a request, armed behind one small bet
+        vm.prank(bob);
+        games.deposit{value: 100 ether}(0); // and bob arms a deposit
+        randomness.fulfill(first, 9_999);
 
-        // mallory opens near-certain bets (large wagers) and long shots (large reserve)
-        for (uint256 i; i < 20; ++i) {
-            _play(alice, 10 ether, 9_500);
-        }
-        for (uint256 i; i < 10; ++i) {
-            _play(alice, 0.01 ether, 100);
-        }
-        assertGt(games.openWagers(), 200 ether);
-        assertGt(games.reserved(), 15 ether);
+        // later, a large bet is open and both can see its result coming
+        uint256 big = _play(alice, 15 ether, 5_000);
+        uint256 fair = games.shareValue(carolShares);
 
-        // no bet was open when these requests' predecessors closed: both go through at the full value
-        assertApproxEqAbs(games.previewDeposit(100 ether), carolShares, carolShares / 1e6);
-        assertApproxEqAbs(games.previewRedeem(carolShares), 100 ether, 1e6);
+        // carol knows alice will win: leaving now pays as if the house had already lost
+        assertApproxEqAbs(games.previewRedeem(carolShares), fair - uint256(14.7 ether) / 2, 1e9);
+        // bob knows the house will win: joining now is priced as if it had already won, and more
+        assertLt(
+            games.previewDeposit(100 ether), games.totalShares() * 100 ether / (2_000.98 ether + 14.7 ether)
+        );
+
+        // once the bet has closed, the same requests go through at the full value
+        randomness.fulfill(big, 9_999);
+        assertEq(games.previewRedeem(carolShares), games.shareValue(carolShares));
     }
 
-    /// A redemption is paid from the free bankroll; what open bets have locked up is redeemed later.
-    function test_house_redeemPaysWhatIsFreeAndKeepsTheRestPending() public {
-        uint256 all = games.sharesOf(address(this)); // the whole house: 1,000 ETH
+    /// The last holder cannot leave while bets are open, so nothing set aside for them is left
+    /// without an owner.
+    function test_house_lastHolderWaitsForOpenBets() public {
+        uint256 all = games.sharesOf(address(this));
         uint256 first = _play(alice, 1 ether, 5_000);
-        assertEq(games.redeem(all, 0, payable(bob)), 0); // waits for the open bet
-        randomness.fulfill(first, 9_999); // the house wins the 0.98 ETH stake
+        games.redeem(all, 0, payable(bob)); // waits for the open bet
+        randomness.fulfill(first, 9_999);
 
-        // long shots placed after the request lock up part of the house's funds
-        uint256[] memory later = new uint256[](8);
-        for (uint256 i; i < 8; ++i) {
-            later[i] = _play(alice, 0.08 ether, 100); // each sets aside about 7.8 ETH
-        }
-        uint256 locked = games.reserved();
-        assertGt(locked, 60 ether);
+        uint256 later = _play(alice, 1 ether, 5_000);
+        vm.expectRevert(Games.BetsStillOpen.selector);
+        games.executeRedeem(0, payable(bob));
 
+        randomness.fulfill(later, 9_999);
         uint256 before = bob.balance;
-        uint256 paid = games.executeRedeem(0, payable(bob));
-        assertEq(bob.balance - before, paid);
-        assertApproxEqAbs(paid, 1_000.98 ether - locked, 1e9); // everything that was free
-        assertGt(games.pendingRedeemOf(address(this)), 0); // the rest is still requested
+        games.executeRedeem(0, payable(bob));
+        assertApproxEqAbs(bob.balance - before, 1_001.96 ether, 1e9);
+        assertEq(games.totalShares(), 0);
         assertLt(games.bankroll(), 1e9);
+    }
 
-        for (uint256 i; i < 8; ++i) {
-            randomness.fulfill(later[i], 9_999); // the long shots lose
+    /// The record of closed bets keeps up by itself, so a request made after a long run of bets goes
+    /// through at once.
+    function test_house_requestAfterALongRunOfBetsGoesThroughAtOnce() public {
+        for (uint256 i; i < 600; ++i) {
+            uint256 id = _play(alice, 0.01 ether, 5_000);
+            randomness.fulfill(id, i);
         }
-        paid = games.executeRedeem(0, payable(bob));
-        assertApproxEqAbs(paid, locked + 8 * 0.0784 ether, 1e9);
-        assertEq(games.sharesOf(address(this)), 0);
+        assertEq(games.closedThrough(), games.placedCount());
+        vm.prank(bob);
+        assertGt(games.deposit{value: 10 ether}(0), 0);
+    }
+
+    function test_refundMany_skipsBetsThatAreNotRefundable() public {
+        uint256 a = _play(alice, 1 ether, 5_000);
+        uint256 b = _play(alice, 1 ether, 5_000);
+        skip(1 days);
+        uint256 c = _play(alice, 1 ether, 5_000); // not late yet
+        uint256[] memory ids = new uint256[](4);
+        ids[0] = a;
+        ids[1] = b;
+        ids[2] = c;
+        ids[3] = 999; // unknown
+        uint256 before = alice.balance;
+        games.refundMany(ids);
+        assertEq(alice.balance - before, 2 ether);
+        assertEq(games.openWagers(), 1 ether);
     }
 
     function test_house_cancelAndValidation() public {

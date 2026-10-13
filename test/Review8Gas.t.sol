@@ -103,8 +103,8 @@ contract Review8GasTest is Base {
         uint256 with_ = _minGas(address(gamesAdapter), id, 0);
         console2.log("Games dice win, payout burns 50k: min callback gas without the notice:", without);
         console2.log("Games dice win, payout burns 50k: min callback gas with the notice:   ", with_);
-        assertLt(with_, 300_000);
-        assertTrue(coordinator.fulfill(address(gamesAdapter), id, 0, 300_000));
+        assertLt(with_, 360_000);
+        assertTrue(coordinator.fulfill(address(gamesAdapter), id, 0, 360_000));
         assertGt(games.owedTo(address(burner)), 0);
         assertGt(treasury.budgetOf(address(nft)), 0);
     }
@@ -118,7 +118,7 @@ contract Review8GasTest is Base {
         uint256 with_ = _minGas(address(gamesAdapter), id, 0);
         console2.log("Games slots 50x, payout burns 50k: min callback gas without the notice:", without);
         console2.log("Games slots 50x, payout burns 50k: min callback gas with the notice:   ", with_);
-        assertLt(with_, 300_000);
+        assertLt(with_, 360_000);
     }
 
     function test_D_games_diceLoss() public {
@@ -131,7 +131,7 @@ contract Review8GasTest is Base {
         uint256 with_ = _minGas(address(gamesAdapter), id, 9_999);
         console2.log("Games dice loss: min callback gas without the notice:", without);
         console2.log("Games dice loss: min callback gas with the notice:   ", with_);
-        assertLt(with_, 300_000);
+        assertLt(with_, 360_000);
     }
 
     function test_D_lottery_200Buyers() public {
@@ -152,6 +152,6 @@ contract Review8GasTest is Base {
         uint256 with_ = _minGas(address(lotteryAdapter), id, 137);
         console2.log("Lottery, 200 separate buyers: min callback gas without the notice:", without);
         console2.log("Lottery, 200 separate buyers: min callback gas with the notice:   ", with_);
-        assertLt(with_, 300_000);
+        assertLt(with_, 360_000);
     }
 }

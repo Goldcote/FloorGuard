@@ -27,7 +27,7 @@ import {Lottery} from "../src/Lottery.sol";
 ///   ENABLE_PREDICTIONS   optional (default false). Only enable with a trustworthy oracle price.
 ///   MIN_AUCTION_RESERVE  in wei: the lowest reserve for vault auctions of this collection. Required:
 ///                        it is the protection against a manipulated oracle and a cheaply bought token.
-///   MIN_BID              optional, in wei: no buyback below this (default: a tenth of BID_BASE)
+///   MIN_BID_BPS          optional: no buyback below this share of the current base (default 1000 = 10%)
 ///   ENABLE_GAMES         optional (default false)
 ///   LOTTERY_TICKET_PRICE optional, in wei: starts a weekly lottery for the collection at this price
 ///   ENABLE_TICKET_RAFFLES optional (default false): lets holders raffle tokens of this collection
@@ -56,8 +56,10 @@ contract AddCollection is Script {
         }
         // Required: without it a holding bought cheaply could later be auctioned cheaply.
         Vault(json.readAddress(".vault")).setMinReserve(collection, vm.envUint("MIN_AUCTION_RESERVE"));
-        uint256 minBid = vm.envOr("MIN_BID", uint256(0));
-        if (minBid != 0) BuybackEngine(json.readAddress(".buybackEngine")).setMinBid(collection, minBid);
+        uint256 minBidBps = vm.envOr("MIN_BID_BPS", uint256(0));
+        if (minBidBps != 0) {
+            BuybackEngine(json.readAddress(".buybackEngine")).setMinBid(collection, minBidBps);
+        }
         if (vm.envOr("ENABLE_PREDICTIONS", false)) {
             PredictionMarket(json.readAddress(".predictionMarket")).setCollectionSupport(collection, true);
         }
