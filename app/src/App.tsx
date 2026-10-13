@@ -1,6 +1,6 @@
-import { lazy, Suspense, useEffect, useState, useSyncExternalStore, type ComponentType } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ComponentType } from "react";
 import type { Address } from "viem";
-import { FloorLine, Logo, Wordmark } from "./brand";
+import { FloorLine, Logo, NavIcon, Wordmark } from "./brand";
 import { getMode, modeWasChosen, setMode, useMode } from "./demo/mode";
 import { demoReads, resetDemo } from "./demo/sim";
 import { deployments } from "./generated/addresses";
@@ -35,6 +35,7 @@ const PAGES: Record<RoutePath, Page> = {
   "/play/lottery": page(() => import("./tabs/Lottery"), "Lottery"),
   "/play/ticket-raffles": page(() => import("./tabs/TicketRaffles"), "TicketRaffles"),
   "/play/predictions": page(() => import("./tabs/Predictions"), "Predictions"),
+  "/play/house": page(() => import("./tabs/House"), "House"),
   "/fairness": page(() => import("./tabs/Fairness"), "Fairness"),
 };
 
@@ -69,12 +70,42 @@ function ModeSwitch() {
 function DemoBalance() {
   const balance = useRead(["demoBalance"], async () => demoReads.balance());
   return (
-    <span className="pill" title="Play money. It has no value and cannot be withdrawn.">
+    <span className="pill balance-pill" title="Play money. It has no value and cannot be withdrawn.">
       <strong>{balance.data !== undefined ? eth(balance.data, 4) : "…"}</strong> play ETH
       <button type="button" className="link-btn" onClick={() => resetDemo()} title="Start the demo over">
         reset
       </button>
     </span>
+  );
+}
+
+/** The section links, with an ink line that slides under the current one. */
+function PrimaryNav({ group }: { group: Group }) {
+  const ref = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    const nav = ref.current;
+    if (!nav) return;
+    const place = () => {
+      const active = nav.querySelector<HTMLElement>("a.active");
+      nav.style.setProperty("--ink-x", `${active ? active.offsetLeft : 0}px`);
+      nav.style.setProperty("--ink-w", `${active ? active.offsetWidth : 0}px`);
+    };
+    place();
+    window.addEventListener("resize", place);
+    // the display font arrives after first paint and changes the link widths
+    void document.fonts?.ready.then(place);
+    return () => window.removeEventListener("resize", place);
+  }, [group]);
+  return (
+    <nav className="primary-nav" aria-label="Sections" ref={ref}>
+      {GROUPS.map((name) => (
+        <a key={name} href={href(routesOf(name)[0].path)} className={name === group ? "active" : undefined} aria-current={name === group ? "page" : undefined}>
+          <NavIcon name={name} />
+          <span>{name}</span>
+        </a>
+      ))}
+      <i className="nav-ink" aria-hidden="true" />
+    </nav>
   );
 }
 
@@ -96,6 +127,7 @@ export function App() {
   const deployed = useIsDeployed();
   const route = useRoute();
   const { theme, toggle } = useTheme();
+  const soundOn = useSyncExternalStore(subscribeSound, soundEnabled);
   const [collectionText, setCollectionText] = useState<string>(deployment?.demoCollection ?? "");
   useDemoSync();
 
@@ -117,7 +149,7 @@ export function App() {
   // Each chain (and the demo) has its own demo collection, or none.
   useEffect(() => setCollectionText(deployment?.demoCollection ?? ""), [chainId, deployment]);
   useEffect(() => {
-    document.title = route.path === "/" ? "FloorGuard" : `${route.label} · FloorGuard`;
+    document.title = route.path === "/" ? "FloorGuard: fees that buy the floor" : `${route.label} · FloorGuard`;
     window.scrollTo(0, 0);
   }, [route]);
 
@@ -126,11 +158,12 @@ export function App() {
   const group = route.group as Group;
   const subRoutes = landing ? [] : routesOf(group as Exclude<Group, "Home">);
   const Current = PAGES[route.path];
+  const ownHead = "ownHead" in route;
 
   let body;
   if (landing) {
     body = (
-      <Suspense fallback={<Skeleton lines={6} />}>
+      <Suspense fallback={<div className="landing-fallback" aria-busy="true" />}>
         <Current collection={(collection ?? "0x0000000000000000000000000000000000000000") as Address} />
       </Suspense>
     );
@@ -191,59 +224,91 @@ export function App() {
     );
   }
 
+  const themeLabel = `Switch to the ${theme === "dark" ? "light" : "dark"} theme`;
+  const soundLabel = soundOn ? "Turn sound off" : "Turn sound on";
+
   return (
     <>
       <a className="skip-link" href="#main">
         Skip to content
       </a>
-      <div className="banners">
+      {/* One slim rail carries both standing notices. They are never hidden, at any width. */}
+      <div className={demo || landing ? "banners rail two" : "banners rail"}>
         <div className="banner" role="alert">
-          Unaudited experimental software. Do not use with real funds.
+          <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2.400" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 3 2.500 20h19L12 3Z" />
+            <path d="M12 10v4.500M12 17.500v.01" />
+          </svg>
+          <span>Unaudited experimental software. Do not use with real funds.</span>
         </div>
-        {demo && !landing && (
+        {(demo || landing) && (
           <div className="banner demo" role="status">
-            Demo: simulated, no real transactions, play money. Simulated time runs fast.
+            <span>
+              Demo: simulated, no real transactions, play money.<span className="rail-extra"> Simulated time runs fast.</span>
+            </span>
           </div>
         )}
       </div>
-      <header className="site-header">
-        <div className="header-row">
+      <header className={landing ? "site-header on-landing" : "site-header"}>
+        <div className="header-row header-main">
           <a className="brand" href={href("/")} aria-label="FloorGuard home">
             <Logo />
             <Wordmark />
           </a>
-          <nav className="primary-nav" aria-label="Sections">
-            {GROUPS.map((name) => (
-              <a key={name} href={href(routesOf(name)[0].path)} className={name === group ? "active" : undefined} aria-current={name === group ? "page" : undefined}>
-                {name}
-              </a>
-            ))}
-          </nav>
+          <PrimaryNav group={group} />
           <div className="header-tools">
             {!landing && <PointsPill />}
             <ModeSwitch />
             {mode === "demo" ? (
-              <DemoBalance />
+              !landing && <DemoBalance />
             ) : (
               <>
                 <ChainSelect />
                 <WalletMenu />
               </>
             )}
-            <SoundToggle />
-            <button
-              type="button"
-              className="icon-btn theme-toggle"
-              onClick={toggle}
-              aria-label={`Switch to the ${theme === "dark" ? "light" : "dark"} theme`}
-              title={`Switch to the ${theme === "dark" ? "light" : "dark"} theme`}
-            >
-              {theme === "dark" ? "☀" : "☾"}
-            </button>
+            <span className="tool-icons">
+              <SoundToggle />
+              <button type="button" className="icon-btn theme-toggle" onClick={toggle} aria-label={themeLabel} title={themeLabel}>
+                <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  {theme === "dark" ? (
+                    <>
+                      <circle cx="12" cy="12" r="4" />
+                      <path d="M12 2.500v2M12 19.500v2M2.500 12h2M19.500 12h2M5.300 5.300l1.400 1.400M17.300 17.300l1.400 1.400M5.300 18.700l1.400-1.400M17.300 6.700l1.400-1.400" />
+                    </>
+                  ) : (
+                    <path d="M20 14.500A8 8 0 0 1 9.500 4 8 8 0 1 0 20 14.500Z" />
+                  )}
+                </svg>
+              </button>
+            </span>
+            {/* On a phone the two icon buttons fold into one menu, so the header stays one row. */}
+            <details className="more-menu">
+              <summary className="icon-btn" aria-label="More settings">
+                <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
+                  <circle cx="5" cy="12" r="1.800" />
+                  <circle cx="12" cy="12" r="1.800" />
+                  <circle cx="19" cy="12" r="1.800" />
+                </svg>
+              </summary>
+              <div className="more-pop">
+                <button type="button" onClick={toggle}>
+                  {theme === "dark" ? "Light theme" : "Dark theme"}
+                </button>
+                <button type="button" aria-pressed={soundOn} onClick={() => setSound(!soundOn)}>
+                  {soundLabel}
+                </button>
+                {demo && (
+                  <button type="button" onClick={() => resetDemo()}>
+                    Reset the demo
+                  </button>
+                )}
+              </div>
+            </details>
           </div>
         </div>
         {!landing && (
-          <div className="header-row header-sub">
+          <div className={subRoutes.length > 1 || !demo ? "header-row header-sub" : "header-row header-sub solo"}>
             {subRoutes.length > 1 ? (
               <nav className="sub-nav" aria-label={`${group} pages`}>
                 {subRoutes.map((sub) => (
@@ -253,11 +318,14 @@ export function App() {
                 ))}
               </nav>
             ) : (
-              <span />
+              <span className="sub-nav-none" />
             )}
             {deployment &&
               (demo ? (
-                <span className="pill muted">Demo collection</span>
+                <>
+                  <span className="pill muted demo-collection">Demo collection</span>
+                  <DemoBalance />
+                </>
               ) : (
                 <div className="collection-picker">
                   <Field label="Collection">
@@ -281,17 +349,34 @@ export function App() {
         <FloorLine />
       </header>
       <main id="main" tabIndex={-1} className={landing ? "landing" : undefined}>
-        {!landing && <h1 className="page-title">{route.label}</h1>}
-        {body}
+        {/* Keyed by route: each page arrives with a short rise, and leaves no state behind. */}
+        <div className="route-view" key={route.path}>
+          {!landing && !ownHead && <h1 className="page-title">{route.label}</h1>}
+          {body}
+        </div>
       </main>
       <footer className="site-footer">
         <TxHistory />
+        <div className="footer-brand">
+          <Logo size={22} />
+          <Wordmark />
+          <span className="muted small">Fees that buy the floor.</span>
+        </div>
         <p className="muted small">
           FloorGuard is unaudited, experimental software. Nothing here is financial or legal advice, and nothing here
           is an investment. Games, lotteries and paid raffles are regulated or prohibited in many places. Play only
           with what you can afford to lose, and stop when it stops being fun.
         </p>
       </footer>
+      {/* Phones get the sections as a thumb-reach bar instead of a second header row. */}
+      <nav className="tab-bar" aria-label="Sections">
+        {GROUPS.map((name) => (
+          <a key={name} href={href(routesOf(name)[0].path)} className={name === group ? "active" : undefined} aria-current={name === group ? "page" : undefined}>
+            <NavIcon name={name} size={22} />
+            <span>{name}</span>
+          </a>
+        ))}
+      </nav>
     </>
   );
 }

@@ -11,6 +11,7 @@ import type { Address, Client, Hash } from "viem";
 import type { Deployment } from "../generated/addresses";
 import type { Call } from "../lib/calls";
 import { BPS, diceQuote, gameExposure, recomputeBet, slotsExposure, splitPot } from "../lib/gameMath";
+import { houseGain, previewDeposit, previewRedeem, type HouseEvent, type HouseState } from "../lib/house";
 import type * as R from "../lib/reads";
 
 /** Simulated seconds per real second: a simulated day passes in 2.4 real minutes. */
@@ -87,6 +88,14 @@ type State = {
   licenses: { vaultId: bigint; tier: number; end: number }[];
   activity: R.ActivityItem[];
   block: bigint;
+  /** Players' wagers on the open bets (`Games.openWagers`). */
+  openWagers: bigint;
+  /** Shares in the games bankroll: all of them, and the visitor's. */
+  totalShares: bigint;
+  userShares: bigint;
+  houseEvents: HouseEvent[];
+  /** When the bid curve restarted because money reached a budget that could not cover it, and the base it restarted from. */
+  restarts: { time: number; base: bigint }[];
 };
 
 const EDGE = 200n;
@@ -96,6 +105,20 @@ const MIN_POT = milli(0.05);
 const MIN_BET = milli(0.001);
 const PROJECT_SHARE = 1_000n;
 const POINTS_PER_ETH = 2_500n;
+const INITIAL_BID_BASE = milli(0.9);
+/** `BuybackEngine.minBidOf`: no buyback below this. `configureBid` sets it to a tenth of the base. */
+const MIN_BID = INITIAL_BID_BASE / 10n;
+/** How long before the demo starts its seeded bid curve began to climb, in simulated seconds. */
+const BID_HEAD_START = (DAY * 4) / 5;
+/** `Games.maxWagerBps`: one wager is at most this share of the free bankroll. */
+const MAX_WAGER_BPS = 100n;
+/** `Games.bankrollShareBps`: the share of each edge the bankroll keeps (half, the contracts' default); the rest goes to the Treasury. */
+const BANKROLL_SHARE = 5_000n;
+/** `PredictionMarket.deadBandBps`: a market is void unless the price moved at least this much. */
+const DEAD_BAND = 200n;
+const MAX_START_PRICE_AGE = 3_600;
+/** `VaultRaffle.minPointsToDraw`: no draw while fewer points than this are activated. */
+const MIN_POINTS_TO_DRAW = 100n * ETH;
 const TIERS: R.LicenseTier[] = [
   { tier: 0, price: 0n, duration: 30 * DAY },
   { tier: 1, price: milli(0.1), duration: 90 * DAY },
@@ -141,7 +164,8 @@ export function resetDemo() {
     budget: 5n * ETH,
     projectOwed: 0n,
     owner: new Map(),
-    bid: { basePrice: milli(0.9), maxPrice: milli(1.5), lastReset: now, growthBpsPerDay: 1_000, stepDownBps: 500 },
+    // the seed: the curve has been climbing from its base for most of a simulated day
+    bid: { basePrice: INITIAL_BID_BASE, maxPrice: milli(1.5), lastReset: now - BID_HEAD_START, growthBpsPerDay: 1_000, stepDownBps: 1_500 },
     sales: [
       { price: milli(1.02), time: now - 3_000 },
       { price: milli(0.98), time: now - 2_000 },
@@ -164,7 +188,15 @@ export function resetDemo() {
     licenses: [],
     activity: [],
     block: 100n,
+    restarts: [],
+    openWagers: 0n,
+    totalShares: 0n,
+    userShares: 0n,
+    houseEvents: [],
   };
+  // the seed: the house was funded with 50 ETH by a simulated depositor, who holds every share
+  s.bankroll = 0n;
+  houseDeposit(50n * ETH, false);
   for (let id = 1n; id <= 6n; id++) s.owner.set(id, DEMO_USER);
   for (let id = 7n; id <= 12n; id++) s.owner.set(id, id % 2n ? NPC_A : NPC_B);
   s.owner.set(20n, DEMO_DEPLOYMENT.vault);
@@ -190,7 +222,7 @@ export function resetDemo() {
     feeBps: POT_FEE, minPot: MIN_POT, nftReturned: false, entries: [{ buyer: NPC_B, count: 9 }],
   });
   s.markets.push({
-    id: 1n, collection: DEMO_COLLECTION, startPrice: ETH, closeTime: now + DAY / 2, resolveTime: now + DAY, higherPool: milli(0.5), lowerPool: milli(0.3), outcome: 0, feeBps: 300n,
+    id: 1n, collection: DEMO_COLLECTION, startPrice: ETH, closeTime: now + DAY / 3, resolveTime: now + (10 * DAY) / 3, higherPool: milli(0.5), lowerPool: milli(0.3), outcome: 0, feeBps: 300n, deadBandBps: DEAD_BAND,
     stakes: new Map(),
   });
   s.vaultRaffles.push({ id: 1n, collection: DEMO_COLLECTION, tokenId: 23n, drawAfter: now + DAY / 4, requestedAt: 0, status: 1, winner: ZERO });
@@ -209,20 +241,61 @@ function pay(amount: bigint) {
   if (amount > s.balance) fail(`You only have ${wei(s.balance)} of play money left. Reset the demo to start over.`);
   s.balance -= amount;
 }
-/** A protocol fee: the project's share is set aside, the rest becomes buyback budget and points. */
-function fee(amount: bigint, earner?: Address) {
-  const toProject = (amount * PROJECT_SHARE) / BPS;
-  s.projectOwed += toProject;
-  s.budget += amount - toProject;
-  // Points follow what reached the buyback budget: 2,500 per ETH of it.
-  const earned = (amount - toProject) * POINTS_PER_ETH;
-  if (earner === DEMO_USER) s.points.pending += earned;
-  else if (earner) s.points.others += earned;
-}
-function currentBid(now = demoNow()): bigint {
+/** `BuybackEngine.curvePrice`: where the curve stands, whatever the budget. */
+function curvePrice(now = demoNow()): bigint {
   const b = s.bid;
   const price = b.basePrice + (b.basePrice * BigInt(b.growthBpsPerDay) * BigInt(Math.max(0, now - b.lastReset))) / (BPS * BigInt(DAY));
   return price > b.maxPrice ? b.maxPrice : price;
+}
+/** `BuybackEngine.currentBid`: the curve, limited by what the budget can pay. */
+function currentBid(now = demoNow()): bigint {
+  const curve = curvePrice(now);
+  return curve < s.budget ? curve : s.budget;
+}
+/**
+ * `Treasury._credit`: add to the budget and tell the engine. If the budget could not cover the curve
+ * until now, the curve restarts from its base (`BuybackEngine.onBudgetIncrease`).
+ */
+/**
+ * The base after a sale (`BuybackEngine.sell`): one step below the higher of the sale price and the
+ * old base less three steps, and never below 1 wei.
+ */
+export function baseAfterSale(price: bigint, base: bigint, stepDownBps: number): bigint {
+  const drop = 3n * BigInt(stepDownBps);
+  let anchor = drop >= BPS ? 0n : (base * (BPS - drop)) / BPS;
+  if (price > anchor) anchor = price;
+  const next = (anchor * (BPS - BigInt(stepDownBps))) / BPS;
+  return next === 0n ? 1n : next;
+}
+function credit(amount: bigint) {
+  if (amount === 0n) return;
+  const now = demoNow();
+  if (s.budget < curvePrice(now)) {
+    // The bid until now was the budget: restart from there if it is above the base, so that money
+    // arriving never lowers the bid.
+    if (s.budget > s.bid.basePrice) s.bid.basePrice = s.budget;
+    s.bid.lastReset = now;
+    s.restarts.push({ time: now, base: s.bid.basePrice });
+    log("Floor bid", "/trade/floor-bid", "The bid curve restarted: money reached a budget that could not cover it");
+  }
+  s.budget += amount;
+}
+/** Points are 2,500 per ETH of fee that reached the buyback budget. */
+function creditPoints(who: Address | undefined, feeToBudget: bigint) {
+  const earned = feeToBudget * POINTS_PER_ETH;
+  if (who === DEMO_USER) s.points.pending += earned;
+  else if (who) s.points.others += earned;
+}
+/**
+ * A protocol fee (`Treasury.depositFee`): the project's share is set aside and the rest becomes
+ * buyback budget, which is returned. With `earner`, that account gets the points for all of it.
+ */
+function fee(amount: bigint, earner?: Address): bigint {
+  const toProject = (amount * PROJECT_SHARE) / BPS;
+  s.projectOwed += toProject;
+  credit(amount - toProject);
+  creditPoints(earner, amount - toProject);
+  return amount - toProject;
 }
 function salesFloor(): bigint {
   const prices = s.sales.slice(-7).map((x) => x.price).sort((a, b) => (a < b ? -1 : 1));
@@ -254,9 +327,29 @@ function later(ms: number, fn: () => void) {
 
 // ---------------------------------------------------------------- reads
 
+// (function declarations: resetDemo, which runs when this module loads, already uses them)
+function houseFunds() {
+  return { bankroll: s.bankroll, reserved: s.reserved, openWagers: s.openWagers, totalShares: s.totalShares };
+}
+type NewHouseEvent = HouseEvent extends infer E ? (E extends unknown ? Omit<E, "order" | "time"> : never) : never;
+function houseEvent(event: NewHouseEvent) {
+  s.houseEvents.push({ ...event, order: s.houseEvents.length, time: demoNow() } as HouseEvent);
+}
+/** `Games.deposit`: mint shares priced as if the house wins every open bet. */
+function houseDeposit(amount: bigint, fromUser: boolean, minShares = 0n): bigint {
+  if (amount === 0n) fail("Enter an amount to deposit.");
+  const shares = previewDeposit(houseFunds(), amount);
+  if (shares === 0n || shares < minShares) fail("The share price moved past your limit between the preview and the transaction. Nothing was done; try again.");
+  s.totalShares += shares;
+  if (fromUser) s.userShares += shares;
+  s.bankroll += amount;
+  houseEvent({ kind: "deposit", amount, shares });
+  return shares;
+}
+
 function floorBid(): R.FloorBid {
   const bid = currentBid();
-  return { budget: s.budget, currentBid: bid, isFillable: s.budget >= bid, active: true, ...s.bid, fillCooldown: 0, nextFillAt: 0 };
+  return { budget: s.budget, currentBid: bid, curvePrice: curvePrice(), minBid: MIN_BID, isFillable: bid !== 0n && bid >= MIN_BID, active: true, ...s.bid, fillCooldown: 0, nextFillAt: 0 };
 }
 function holdingsNow(): R.Holding[] {
   return [...s.holdings]
@@ -313,11 +406,13 @@ export const demoReads = {
       minBet: MIN_BET,
       minBettingPeriod: 600,
       maxDuration: 30 * DAY,
+      deadBandBps: DEAD_BAND,
+      maxStartPriceAge: MAX_START_PRICE_AGE,
     };
   },
   holdings: (): R.VaultState => ({ holdings: holdingsNow(), holdingCount: BigInt(s.holdings.length), owner: DEMO_DEPLOYMENT.owner, governanceWindow: 30 * DAY, auctionStartMultiple: 16, auctionHalfLife: DAY }),
-  raffles: (): R.Raffles => ({ raffles: [...s.vaultRaffles].reverse(), raffleCount: BigInt(s.vaultRaffles.length), totalPoints: s.points.active + s.points.others, nextDrawAt: 0, drawInFlight: s.vaultRaffles.some((r) => r.status === 2) }),
-  games: (): R.GamesState => ({ bankroll: s.bankroll, reserved: s.reserved, maxTotalExposureBps: 2_000n, edgeBps: EDGE, minBet: MIN_BET, maxExposureBps: 100n, supported: true, refundTimeout: DAY, userOwed: 0n }),
+  raffles: (): R.Raffles => ({ raffles: [...s.vaultRaffles].reverse(), raffleCount: BigInt(s.vaultRaffles.length), totalPoints: s.points.active + s.points.others, nextDrawAt: 0, drawInFlight: s.vaultRaffles.some((r) => r.status === 2), minPointsToDraw: MIN_POINTS_TO_DRAW }),
+  games: (): R.GamesState => ({ bankroll: s.bankroll, reserved: s.reserved, maxTotalExposureBps: 2_000n, edgeBps: EDGE, minBet: MIN_BET, maxExposureBps: 100n, maxWagerBps: MAX_WAGER_BPS, maxWager: (s.bankroll * MAX_WAGER_BPS) / BPS, bankrollShareBps: BANKROLL_SHARE, supported: true, refundTimeout: DAY, userOwed: 0n }),
   gameQuote: (wager: bigint, chanceBps: number): R.GameQuote => diceQuote(wager, chanceBps, EDGE),
   userBets: (): R.GameBet[] => [...s.bets].reverse().map(({ player: _p, edgeBps: _e, placedAt: _t, ...bet }) => bet),
   ticketRaffles: (): R.TicketRaffles => ({
@@ -338,6 +433,8 @@ export const demoReads = {
     const all = [...s.rounds].reverse().map(roundView);
     return { config: { ticketPrice: milli(0.01), duration: DAY, active: true }, current: all[0], past: all.slice(1), minPot: MIN_POT, feeBps: POT_FEE, drawTimeout: DAY, abortDelay: 7 * DAY, userOwed: s.lotteryOwed };
   },
+  house: (): HouseState => ({ ...houseFunds(), bankrollShareBps: BANKROLL_SHARE, edgeBps: EDGE, maxExposureBps: 100n, maxTotalExposureBps: 2_000n, userShares: s.userShares }),
+  houseEvents: (): HouseEvent[] => [...s.houseEvents],
   points: (): R.PointsBalance => ({ active: s.points.active, pending: s.points.pending }),
   activity: (): R.ActivityItem[] => s.activity.slice(0, 12),
   fairness: (): R.FairnessStatus => ({
@@ -370,20 +467,28 @@ function settleBet(bet: Bet) {
   const r = recomputeBet({ wager: bet.wager, edgeBps: bet.edgeBps, chanceBps: bet.chanceBps, roll });
   const exposure = bet.kind === "slots" ? slotsExposure(bet.wager, bet.edgeBps) : gameExposure(bet.wager, bet.chanceBps, bet.edgeBps);
   s.reserved -= exposure;
+  s.openWagers -= bet.wager;
   s.bankroll += r.stake + exposure - r.payout;
+  houseEvent({ kind: "bet", gain: houseGain(bet.wager, r.payout, r.fee, BANKROLL_SHARE) });
   s.balance += r.payout;
-  fee(r.fee, DEMO_USER);
+  // the bankroll's share of the edge, if any, stays in the bankroll; the rest goes to the Treasury
+  const kept = (r.fee * BANKROLL_SHARE) / BPS;
+  s.bankroll += kept;
+  fee(r.fee - kept, DEMO_USER);
   Object.assign(bet, { status: r.payout > 0n ? "won" : "lost", roll, payout: r.payout, fee: r.fee, refundableAt: undefined });
 }
 function placeBet(kind: Bet["kind"], wager: bigint, chanceBps: number) {
   if (wager < MIN_BET) fail(`The minimum bet is ${wei(MIN_BET)}.`);
   if (kind === "dice" && (chanceBps < 100 || chanceBps > 9_500)) fail("The chance of winning must be between 1% and 95%.");
+  const maxWager = (s.bankroll * MAX_WAGER_BPS) / BPS;
+  if (wager > maxWager) fail(`The largest wager is ${wei(maxWager)} right now (${Number(MAX_WAGER_BPS) / 100}% of the bankroll); ${wei(wager)} is above it.`);
   const exposure = kind === "slots" ? slotsExposure(wager, EDGE) : gameExposure(wager, chanceBps, EDGE);
   const limit = (s.bankroll * 100n) / BPS;
   if (exposure > limit) fail(`This bet would put ${wei(exposure)} of the bankroll at risk; the limit per bet is ${wei(limit)}. Lower the wager or raise the chance.`);
   pay(wager);
   s.bankroll -= exposure;
   s.reserved += exposure;
+  s.openWagers += wager;
   const bet: Bet = { requestId: s.nextRequest++, collection: DEMO_COLLECTION, wager, kind, chanceBps, status: "pending", refundableAt: demoNow() + DAY, player: DEMO_USER, edgeBps: EDGE, placedAt: demoNow() };
   s.bets.push(bet);
   log("Games", kind === "slots" ? "/play/slots" : "/play/dice", kind === "slots" ? `Slots spin of ${wei(wager)}` : `Dice bet of ${wei(wager)} at ${chanceBps / 100}%`, DEMO_USER);
@@ -437,7 +542,10 @@ const handlers: Record<string, Handler> = {
     offer.remaining -= 1;
     offer.filled += 1;
     s.balance += offer.price - f;
-    fee(f, DEMO_USER);
+    // each fee is credited once: half of what reached the budget to the seller, the rest to the buyer
+    const toBudget = fee(f);
+    creditPoints(DEMO_USER, toBudget / 2n);
+    creditPoints(offer.offerer, toBudget - toBudget / 2n);
     if (offer.collectionWide) s.sales.push({ price: offer.price, time: demoNow() });
     log("Marketplace", "/trade/marketplace", `Token #${tokenId} sold for ${wei(offer.price)} (${wei(f)} fee)`, DEMO_USER);
   },
@@ -446,12 +554,15 @@ const handlers: Record<string, Handler> = {
     const id = tokenId as bigint;
     if (s.owner.get(id) !== DEMO_USER) fail(`You do not own token #${id}.`);
     const price = currentBid();
+    // a bid below the collection's minimum is not a bid: it would buy a token for dust
+    if (price === 0n || price < MIN_BID) fail(price === 0n ? "There is nothing to bid with: the collection's buyback budget is empty." : `There is nothing to bid with: the budget can pay ${wei(price)}, below the collection's minimum bid of ${wei(MIN_BID)}.`);
     if (price < (minPrice as bigint)) fail(`The floor bid is now ${wei(price)}, below your minimum of ${wei(minPrice as bigint)}.`);
-    if (s.budget < price) fail(`The collection's buyback budget (${wei(s.budget)}) does not cover ${wei(price)}.`);
     const now = demoNow();
     s.budget -= price;
     s.balance += price;
-    s.bid.basePrice = (price * (BPS - BigInt(s.bid.stepDownBps))) / BPS;
+    // A sale limited by a thin budget may be far below the base: it pulls the base down by at most
+    // three steps, so the base follows a falling market without one cheap sale collapsing the curve.
+    s.bid.basePrice = baseAfterSale(price, s.bid.basePrice, s.bid.stepDownBps);
     s.bid.lastReset = now;
     s.owner.set(id, DEMO_DEPLOYMENT.vault);
     s.sales.push({ price, time: now });
@@ -460,8 +571,31 @@ const handlers: Record<string, Handler> = {
     log("Floor bid", "/vault/holdings", `Bought token #${id} for ${wei(price)}, now vault holding #${vaultId}`, DEMO_USER);
   },
 
-  unlock: () => fail("Unlock conditions are not met: the lock must have ended and the floor must be at least 130% of the purchase price."),
-  startAuction: () => fail("In the demo only the simulated owner starts auctions."),
+  unlock([vaultId]) {
+    const h = s.holdings.find((x) => x.id === vaultId);
+    if (!h || h.status !== 1) fail("This holding is not locked.");
+    if (demoNow() < h.lockedUntil || salesFloor() < (h.purchasePrice * 13_000n) / BPS) {
+      fail("Unlock conditions are not met: the lock must have ended and the floor must be at least 130% of the purchase price.");
+    }
+    h.status = 2;
+    h.unlockedAt = demoNow();
+  },
+  startAuction([vaultId]) {
+    const h = s.holdings.find((x) => x.id === vaultId);
+    const now = demoNow();
+    // `Vault.startAuction`: the owner at once, anyone 30 days after unlocking; and anyone can restart
+    // an oracle-priced auction whose price has reached its reserve without a buyer.
+    const restart = !!h && h.status === 3 && !!h.auction && !h.auction.ownerPriced && auctionPrice(h.auction, now) <= h.auction.endPrice;
+    if (!h || !(restart || (h.status === 2 && now >= h.unlockedAt + 30 * DAY))) {
+      fail(h?.status === 3 ? "This auction can be restarted only once its price has reached the reserve." : "Only the owner can start this auction yet; anyone can 30 days after the holding unlocked.");
+    }
+    // the reserve is the higher of the floor and 130% of the purchase price; it opens at 16 times that
+    const unlockAt = (h.purchasePrice * 13_000n) / BPS;
+    const reserve = salesFloor() > unlockAt ? salesFloor() : unlockAt;
+    h.status = 3;
+    h.auction = { startPrice: 16n * reserve, endPrice: reserve, startTime: now, currentPrice: 0n, atReserve: false, ownerPriced: false };
+    log("Floor bid", "/vault/holdings", `Auction for vault holding #${vaultId} ${restart ? "restarted" : "started"} at ${wei(16n * reserve)}`, DEMO_USER);
+  },
   buy([vaultId, count], value) {
     // Vault.buy(vaultId) and TicketRaffle.buy(raffleId, count) share a name; the address tells them apart.
     void count;
@@ -470,7 +604,7 @@ const handlers: Record<string, Handler> = {
     const price = auctionPrice(h.auction);
     if (value < price) fail(`The auction price is ${wei(price)} but only ${wei(value)} was sent.`);
     pay(price);
-    s.budget += price;
+    credit(price);
     h.status = 4;
     h.auction = undefined;
     s.owner.set(h.tokenId, DEMO_USER);
@@ -479,7 +613,12 @@ const handlers: Record<string, Handler> = {
 
   createMarket([, bettingPeriod, duration]) {
     const now = demoNow();
-    s.markets.push({ id: BigInt(s.markets.length + 1), collection: DEMO_COLLECTION, startPrice: s.pushFloor.price, closeTime: now + Number(bettingPeriod), resolveTime: now + Number(duration), higherPool: 0n, lowerPool: 0n, outcome: 0, feeBps: 300n, stakes: new Map() });
+    if (Number(bettingPeriod) < 600 || Number(duration) < 10 * Number(bettingPeriod) || Number(duration) > 30 * DAY) {
+      fail("Betting must stay open for at least 10 minutes, the market must run at least ten times as long as its betting period, and at most 30 days.");
+    }
+    // A market needs a start price at most an hour old. The demo's simulated reporter publishes one now.
+    s.pushFloor = { ...s.pushFloor, updatedAt: now };
+    s.markets.push({ id: BigInt(s.markets.length + 1), collection: DEMO_COLLECTION, startPrice: s.pushFloor.price, closeTime: now + Number(bettingPeriod), resolveTime: now + Number(duration), higherPool: 0n, lowerPool: 0n, outcome: 0, feeBps: 300n, deadBandBps: DEAD_BAND, stakes: new Map() });
     log("Predictions", "/play/predictions", `Prediction market #${s.markets.length} opened at a ${wei(s.pushFloor.price)} floor`);
   },
   placeBet([id, higher], value) {
@@ -495,10 +634,13 @@ const handlers: Record<string, Handler> = {
   resolve([id]) {
     const m = s.markets.find((x) => x.id === id) ?? fail("This market does not exist.");
     if (m.outcome !== 0 || demoNow() < m.resolveTime) fail("This market cannot be resolved yet, or is already resolved.");
-    // The demo's "oracle" is the simulated sales floor at this moment.
-    s.pushFloor = { price: (salesFloor() * BigInt(970 + randomInt(61))) / 1000n, updatedAt: demoNow() };
+    // The demo's "oracle" is the simulated sales floor at this moment, moved by up to 8% either way.
+    s.pushFloor = { price: (salesFloor() * BigInt(920 + randomInt(161))) / 1000n, updatedAt: demoNow() };
     const end = s.pushFloor.price;
-    m.outcome = m.higherPool === 0n || m.lowerPool === 0n || end === m.startPrice ? 3 : end > m.startPrice ? 1 : 2;
+    const move = end > m.startPrice ? end - m.startPrice : m.startPrice - end;
+    // void unless both sides have bets and the price moved by at least the market's dead band
+    const tooSmall = move === 0n || move * BPS < m.startPrice * m.deadBandBps;
+    m.outcome = m.higherPool === 0n || m.lowerPool === 0n || tooSmall ? 3 : end > m.startPrice ? 1 : 2;
   },
   claim([id]) {
     // PredictionMarket.claim(marketId) and VaultRaffle.claim(raffleId) share a name.
@@ -508,12 +650,18 @@ const handlers: Record<string, Handler> = {
     if (!stake || (stake.higher === 0n && stake.lower === 0n)) fail("You have nothing to claim in this market.");
     m.stakes.delete(DEMO_USER);
     if (m.outcome === 3) return void (s.balance += stake.higher + stake.lower);
-    const [won, winPool, losePool] = m.outcome === 1 ? [stake.higher, m.higherPool, m.lowerPool] : [stake.lower, m.lowerPool, m.higherPool];
-    if (won === 0n) return;
-    const profit = (won * losePool) / winPool;
-    const f = (profit * m.feeBps) / BPS;
-    s.balance += won + profit - f;
-    fee(f, DEMO_USER);
+    const [won, lost, winPool, losePool] = m.outcome === 1 ? [stake.higher, stake.lower, m.higherPool, m.lowerPool] : [stake.lower, stake.higher, m.lowerPool, m.higherPool];
+    let f = 0n;
+    if (won !== 0n) {
+      const profit = (won * losePool) / winPool;
+      f = (profit * m.feeBps) / BPS;
+      s.balance += won + profit - f;
+    }
+    // each fee is credited once: half to the winners who pay it, half to the losers who fund it;
+    // points follow the part that reaches the budget, not the project's share
+    let pointsFee = (((lost * m.feeBps) / BPS) * (BPS - PROJECT_SHARE)) / BPS;
+    if (f !== 0n) pointsFee += fee(f);
+    creditPoints(DEMO_USER, pointsFee / 2n);
   },
 
   play([, chanceBps], value) {
@@ -542,6 +690,30 @@ const handlers: Record<string, Handler> = {
 
 /** Handlers of functions whose name exists on more than one contract, keyed by contract address. */
 const byContract: Record<string, Record<string, Handler>> = {
+  [DEMO_DEPLOYMENT.games]: {
+    deposit([minShares], value) {
+      pay(value);
+      houseDeposit(value, true, minShares as bigint);
+      log("Games", "/play/house", `Deposit of ${wei(value)} into the house`, DEMO_USER);
+    },
+    fundBankroll(_args, value) {
+      pay(value);
+      houseDeposit(value, true);
+    },
+    redeem([shares, minAssets]) {
+      const amount = shares as bigint;
+      if (amount === 0n || amount > s.userShares) fail("You do not hold that many shares in the house.");
+      // priced as if the house loses every open bet: only the free bankroll is shared out
+      const assets = previewRedeem(houseFunds(), amount);
+      if (assets < (minAssets as bigint)) fail("The share price moved past your limit between the preview and the transaction. Nothing was done; try again.");
+      s.userShares -= amount;
+      s.totalShares -= amount;
+      s.bankroll -= assets;
+      s.balance += assets;
+      houseEvent({ kind: "redeem", amount: assets, shares: amount });
+      log("Games", "/play/house", `Redeemed house shares for ${wei(assets)}`, DEMO_USER);
+    },
+  },
   [DEMO_DEPLOYMENT.lottery]: {
     buy([, count], value) {
       const n = Number(count);
@@ -652,6 +824,8 @@ const byContract: Record<string, Record<string, Handler>> = {
       const r = s.vaultRaffles.find((x) => x.id === id) ?? fail("This raffle does not exist.");
       if (r.status !== 1) fail("This raffle is not open.");
       if (demoNow() < r.drawAfter) fail("Too early: the announce period has not passed.");
+      const activated = s.points.active + s.points.others;
+      if (activated < MIN_POINTS_TO_DRAW) fail(`Only ${wei(activated).replace(" ETH", "")} points are activated; a draw needs at least ${wei(MIN_POINTS_TO_DRAW).replace(" ETH", "")}.`);
       r.status = 2;
       r.requestedAt = demoNow();
       later(2_600, () => {
@@ -681,3 +855,23 @@ export async function demoWrite(call: Call): Promise<void> {
   s.block += 1n;
   changed();
 }
+
+// ---------------------------------------------------------------- read helpers for visualisations
+// Additive, read-only views of the simulated state for the charts and diagrams in src/viz/.
+
+/** Simulated time at which this run of the demo started. */
+export const demoStartedAt = (): number => T0;
+/** The base price the bid curve started this run of the demo from. */
+export const demoBidStart = (): { time: number; base: bigint } => ({ time: T0 - BID_HEAD_START, base: INITIAL_BID_BASE });
+/** What ended each climb of the bid curve so far, oldest first: sales into the bid and curve restarts. */
+export const demoBidEvents = (): ({ time: number; kind: "fill"; price: bigint } | { time: number; kind: "restart"; base: bigint })[] =>
+  [...demoBidFills().map((f) => ({ time: f.time, kind: "fill" as const, price: f.price })), ...s.restarts.map((r) => ({ time: r.time, kind: "restart" as const, base: r.base }))].sort((a, b) => a.time - b.time);
+/** Tokens of the demo collection the visitor holds, lowest id first. */
+export const demoOwnedTokens = (): bigint[] => [...s.owner].filter(([, owner]) => owner === DEMO_USER).map(([id]) => id).sort((a, b) => (a < b ? -1 : 1));
+/** Every sale into the floor bid since the demo started, oldest first: each one created a vault holding. */
+export const demoBidFills = (): { time: number; price: bigint; tokenId: bigint; vaultId: bigint }[] =>
+  s.holdings.filter((h) => h.acquiredAt >= T0).map((h) => ({ time: h.acquiredAt, price: h.purchasePrice, tokenId: h.tokenId, vaultId: h.id }));
+/** The activity log, newest first, up to `limit` entries (the overview read returns the first 12). */
+/** Times the bid curve restarted because money reached a budget that could not cover it, oldest first. */
+export const demoCurveRestarts = (): number[] => s.restarts.map((r) => r.time);
+export const demoActivityFeed = (limit = 40): R.ActivityItem[] => s.activity.slice(0, limit);

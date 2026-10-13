@@ -79,9 +79,32 @@ export function Notice({ children }: { children: ReactNode }) {
   );
 }
 
-export function Empty({ title, children }: { title: string; children?: ReactNode }) {
+export type EmptyIcon = "floor" | "vault" | "book" | "stream" | "ticket";
+
+/** The little picture of an empty state: nothing rests on the floor line yet. */
+function EmptyGlyph({ icon }: { icon: EmptyIcon }) {
+  return (
+    <svg className="empty-glyph" width="72" height="48" viewBox="0 0 72 48" aria-hidden="true" focusable="false">
+      {icon === "vault" && <rect className="ghost" x="24" y="6" width="24" height="24" rx="5" />}
+      {icon === "book" && (
+        <>
+          <rect className="ghost" x="14" y="20" width="12" height="10" rx="2" />
+          <rect className="ghost" x="30" y="12" width="12" height="18" rx="2" />
+          <rect className="ghost" x="46" y="24" width="12" height="6" rx="2" />
+        </>
+      )}
+      {icon === "stream" && <path className="ghost" d="M10 22h14m6 0h8m6 0h18M10 12h8m6 0h20" fill="none" />}
+      {icon === "ticket" && <path className="ghost" d="M20 10h32v6a4 4 0 0 0 0 8v6H20v-6a4 4 0 0 0 0-8v-6Z" />}
+      {icon === "floor" && <path className="ghost" d="M26 30 36 14l10 16" fill="none" />}
+      <path className="line" d="M4 34h64" />
+    </svg>
+  );
+}
+
+export function Empty({ title, children, icon = "floor" }: { title: string; children?: ReactNode; icon?: EmptyIcon }) {
   return (
     <div className="empty">
+      <EmptyGlyph icon={icon} />
       <strong>{title}</strong>
       {children && <span>{children}</span>}
     </div>
@@ -92,9 +115,42 @@ export function Skeleton({ lines = 3 }: { lines?: number }) {
   return (
     <div className="skeleton" aria-busy="true" aria-label="Loading">
       {Array.from({ length: lines }, (_, i) => (
-        <span key={i} style={{ width: `${90 - i * 18}%` }} />
+        <span key={i} style={{ width: `${90 - i * 18}%`, animationDelay: `${i * 90}ms` }} />
       ))}
+      <i aria-hidden="true" />
     </div>
+  );
+}
+
+/**
+ * The heading of a page: a short eyebrow, the one h1, a sentence of context, and room for the
+ * page's headline figure or action on the right. Pages that use it set `ownHead` on their route.
+ */
+export function PageHead({ eyebrow, title, children, aside }: { eyebrow: string; title: ReactNode; children?: ReactNode; aside?: ReactNode }) {
+  return (
+    <header className="page-head">
+      <div className="page-head-text">
+        <p className="eyebrow">{eyebrow}</p>
+        <h1>{title}</h1>
+        {children && <p className="page-lede">{children}</p>}
+      </div>
+      {aside && <div className="page-head-aside">{aside}</div>}
+    </header>
+  );
+}
+
+/** A titled region inside a page that is not a card: the title is small, the content is the point. */
+export function Panel({ title, children, aside, className, id }: { title?: string; children: ReactNode; aside?: ReactNode; className?: string; id?: string }) {
+  return (
+    <section className={className ? `panel ${className}` : "panel"} id={id}>
+      {(title || aside) && (
+        <header className="panel-head">
+          {title && <h2>{title}</h2>}
+          {aside}
+        </header>
+      )}
+      {children}
+    </section>
   );
 }
 
@@ -165,11 +221,16 @@ export function Modal({
   title,
   children,
   dismissible = true,
+  className,
+  eyebrow,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   children: ReactNode;
+  className?: string;
+  /** A small line above the title, e.g. "Review before signing". */
+  eyebrow?: ReactNode;
   /** When false, Escape and the close button do nothing (a transaction is in flight). */
   dismissible?: boolean;
 }) {
@@ -183,7 +244,7 @@ export function Modal({
   return (
     <dialog
       ref={ref}
-      className="modal"
+      className={className ? `modal ${className}` : "modal"}
       aria-label={title}
       onCancel={(event) => {
         event.preventDefault();
@@ -197,7 +258,10 @@ export function Modal({
       {open && (
         <div className="modal-body">
           <header className="modal-head">
-            <h2>{title}</h2>
+            <div>
+              {eyebrow && <p className="eyebrow modal-eyebrow">{eyebrow}</p>}
+              <h2>{title}</h2>
+            </div>
             {dismissible && (
               <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">
                 ×

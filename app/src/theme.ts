@@ -12,31 +12,22 @@ function stored(): Theme | undefined {
   }
 }
 
-const systemTheme = (): Theme => (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-
 /**
- * The theme follows the system until the user picks one with the toggle; the choice is remembered in
- * this browser. The value is set as `data-theme` on <html>, which the color tokens key off.
+ * Dark ("a vault at night") is the look a first-time visitor gets; the toggle switches to the light
+ * theme and the choice is remembered in this browser. The value is set as `data-theme` on <html>,
+ * which the colour tokens key off; index.html sets it before first paint.
  */
 export function useTheme(): { theme: Theme; toggle: () => void } {
-  const [choice, setChoice] = useState<Theme | undefined>(stored);
-  const [system, setSystem] = useState<Theme>(systemTheme);
+  const [theme, setTheme] = useState<Theme>(() => stored() ?? "dark");
 
-  useEffect(() => {
-    const query = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = () => setSystem(systemTheme());
-    query.addEventListener("change", onChange);
-    return () => query.removeEventListener("change", onChange);
-  }, []);
-
-  const theme = choice ?? system;
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#05070b" : "#f3efe6");
   }, [theme]);
 
   const toggle = () => {
     const next: Theme = theme === "dark" ? "light" : "dark";
-    setChoice(next);
+    setTheme(next);
     try {
       localStorage.setItem(KEY, next);
     } catch {

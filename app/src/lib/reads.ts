@@ -90,7 +90,12 @@ export async function readFloor(client: Client, oracle: Address, collection: Add
 
 export type FloorBid = {
   budget: bigint;
+  /** What a seller is paid right now: the curve, limited by the budget (0 when inactive). */
   currentBid: bigint;
+  /** Where the bid curve stands, whatever the budget can pay. */
+  curvePrice: bigint;
+  /** No buyback below this: a bid under it cannot be sold into (`BuybackEngine.minBidOf`). */
+  minBid: bigint;
   isFillable: boolean;
   active: boolean;
   basePrice: bigint;
@@ -107,9 +112,11 @@ export type FloorBid = {
 export async function readFloorBid(client: Client, d: Deployment, collection: Address): Promise<FloorBid> {
   if (isDemo(client)) return demoReads.floorBid();
   const engine = { address: d.buybackEngine, abi: buybackEngineAbi } as const;
-  const [budget, currentBid, isFillable, bid, cooldown, lastFillAt] = await Promise.all([
+  const [budget, currentBid, curvePrice, minBid, isFillable, bid, cooldown, lastFillAt] = await Promise.all([
     readContract(client, { address: d.treasury, abi: treasuryAbi, functionName: "budgetOf", args: [collection] }),
     readContract(client, { ...engine, functionName: "currentBid", args: [collection] }),
+    readContract(client, { ...engine, functionName: "curvePrice", args: [collection] }),
+    readContract(client, { ...engine, functionName: "minBidOf", args: [collection] }),
     readContract(client, { ...engine, functionName: "isFillable", args: [collection] }),
     readContract(client, { ...engine, functionName: "bids", args: [collection] }),
     readContract(client, { ...engine, functionName: "fillCooldownOf", args: [collection] }),
@@ -117,7 +124,7 @@ export async function readFloorBid(client: Client, d: Deployment, collection: Ad
   ]);
   const nextFillAt = lastFillAt === 0n ? 0 : Number(lastFillAt + cooldown);
   const [basePrice, maxPrice, lastReset, growthBpsPerDay, stepDownBps, active] = bid;
-  return { budget, currentBid, isFillable, active, basePrice, maxPrice, lastReset, growthBpsPerDay, stepDownBps, fillCooldown: Number(cooldown), nextFillAt };
+  return { budget, currentBid, curvePrice, minBid, isFillable, active, basePrice, maxPrice, lastReset, growthBpsPerDay, stepDownBps, fillCooldown: Number(cooldown), nextFillAt };
 }
 
 // ---------------------------------------------------------------- overview
@@ -349,6 +356,8 @@ export type Market = {
   outcome: number;
   /** The fee on winnings of this market, fixed when it was created. */
   feeBps: bigint;
+  /** The market is void unless the price moved by at least this share of the start price; fixed at creation. */
+  deadBandBps: bigint;
   /** The connected user's stake, when a user was given. */
   stake?: { higher: bigint; lower: bigint };
 };
@@ -361,23 +370,29 @@ export type Markets = {
   /** Shortest betting period and longest duration `createMarket` accepts, in seconds. */
   minBettingPeriod: number;
   maxDuration: number;
+  /** The dead band new markets get, and how old a start price `createMarket` accepts, in seconds. */
+  deadBandBps: bigint;
+  maxStartPriceAge: number;
 };
 
 export async function readMarkets(client: Client, d: Deployment, user?: Address): Promise<Markets> {
   if (isDemo(client)) return demoReads.markets();
   const pm = { address: d.predictionMarket, abi: predictionMarketAbi } as const;
-  const [marketCount, feeBps, minBet, minBettingPeriod, maxDuration] = await Promise.all([
+  const [marketCount, feeBps, minBet, minBettingPeriod, maxDuration, deadBandBps, maxStartPriceAge] = await Promise.all([
     readContract(client, { ...pm, functionName: "marketCount" }),
     readContract(client, { ...pm, functionName: "feeBps" }),
     readContract(client, { ...pm, functionName: "minBet" }),
     readContract(client, { ...pm, functionName: "MIN_BETTING_PERIOD" }),
     readContract(client, { ...pm, functionName: "MAX_DURATION" }),
+    readContract(client, { ...pm, functionName: "deadBandBps" }),
+    readContract(client, { ...pm, functionName: "maxStartPriceAge" }),
   ]);
   const markets = await Promise.all(
     recentIds(marketCount).map(async (id): Promise<Market> => {
-      const [market, marketFeeBps, stake] = await Promise.all([
+      const [market, marketFeeBps, marketDeadBand, stake] = await Promise.all([
         readContract(client, { ...pm, functionName: "markets", args: [id] }),
         readContract(client, { ...pm, functionName: "feeBpsOf", args: [id] }),
+        readContract(client, { ...pm, functionName: "deadBandBpsOf", args: [id] }),
         user ? readContract(client, { ...pm, functionName: "stakes", args: [id, user] }) : undefined,
       ]);
       const [collection, startPrice, closeTime, resolveTime, higherPool, lowerPool, outcome] = market;
@@ -391,11 +406,12 @@ export async function readMarkets(client: Client, d: Deployment, user?: Address)
         lowerPool,
         outcome,
         feeBps: marketFeeBps,
+        deadBandBps: marketDeadBand,
         stake: stake ? { higher: stake[0], lower: stake[1] } : undefined,
       };
     }),
   );
-  return { markets, marketCount, feeBps, minBet, minBettingPeriod: Number(minBettingPeriod), maxDuration: Number(maxDuration) };
+  return { markets, marketCount, feeBps, minBet, minBettingPeriod: Number(minBettingPeriod), maxDuration: Number(maxDuration), deadBandBps, maxStartPriceAge: Number(maxStartPriceAge) };
 }
 
 /**
@@ -536,16 +552,19 @@ export type Raffles = {
   nextDrawAt: number;
   /** A draw is in flight; no other raffle can be drawn until it completes or is reset. */
   drawInFlight: boolean;
+  /** No draw while fewer points than this are activated (0: no minimum). */
+  minPointsToDraw: bigint;
 };
 
 export async function readRaffles(client: Client, d: Deployment): Promise<Raffles> {
   if (isDemo(client)) return demoReads.raffles();
   const raffle = { address: d.vaultRaffle, abi: vaultRaffleAbi } as const;
-  const [raffleCount, nextDrawAt, freezeCount, totalPoints] = await Promise.all([
+  const [raffleCount, nextDrawAt, freezeCount, totalPoints, minPointsToDraw] = await Promise.all([
     readContract(client, { ...raffle, functionName: "raffleCount" }),
     readContract(client, { ...raffle, functionName: "nextDrawAt" }),
     readContract(client, { address: d.points, abi: pointsAbi, functionName: "freezeCount" }),
     readContract(client, { address: d.points, abi: pointsAbi, functionName: "totalPoints" }),
+    readContract(client, { ...raffle, functionName: "minPointsToDraw" }),
   ]);
   const raffles = await Promise.all(
     recentIds(raffleCount).map(async (id): Promise<Raffle> => {
@@ -561,7 +580,7 @@ export async function readRaffles(client: Client, d: Deployment): Promise<Raffle
       return { id, collection, tokenId, drawAfter, requestedAt, status, winner, requestId };
     }),
   );
-  return { raffles, raffleCount, totalPoints, nextDrawAt: Number(nextDrawAt), drawInFlight: freezeCount !== 0n };
+  return { raffles, raffleCount, totalPoints, nextDrawAt: Number(nextDrawAt), drawInFlight: freezeCount !== 0n, minPointsToDraw };
 }
 
 // ---------------------------------------------------------------- games
@@ -577,6 +596,12 @@ export type GamesState = {
   minBet: bigint;
   /** The most the house may stand to lose on one bet, as a share of `bankroll`. */
   maxExposureBps: bigint;
+  /** The largest wager, as a share of `bankroll` (`Games.maxWagerBps`). */
+  maxWagerBps: bigint;
+  /** `Games.maxWager()`: the largest wager accepted right now. Below `minBet`, the bankroll is too small for any bet. */
+  maxWager: bigint;
+  /** The share of each edge the bankroll keeps; the rest goes to the Treasury (`Games.bankrollShareBps`). */
+  bankrollShareBps: bigint;
   /** Whether bets can back the given collection. */
   supported: boolean;
   /** Seconds after which an unsettled bet can be refunded. */
@@ -588,13 +613,15 @@ export type GamesState = {
 export async function readGames(client: Client, d: Deployment, collection: Address, user?: Address): Promise<GamesState> {
   if (isDemo(client)) return demoReads.games();
   const games = { address: d.games, abi: gamesAbi } as const;
-  const [bankroll, reserved, maxTotalExposureBps, edgeBps, minBet, maxExposureBps, supported, refundTimeout, userOwed] = await Promise.all([
+  const [bankroll, reserved, maxTotalExposureBps, edgeBps, minBet, maxExposureBps, maxWagerBps, bankrollShareBps, supported, refundTimeout, userOwed] = await Promise.all([
     readContract(client, { ...games, functionName: "bankroll" }),
     readContract(client, { ...games, functionName: "reserved" }),
     readContract(client, { ...games, functionName: "MAX_TOTAL_EXPOSURE_BPS" }),
     readContract(client, { ...games, functionName: "edgeBps" }),
     readContract(client, { ...games, functionName: "minBet" }),
     readContract(client, { ...games, functionName: "maxExposureBps" }),
+    readContract(client, { ...games, functionName: "maxWagerBps" }),
+    readContract(client, { ...games, functionName: "bankrollShareBps" }),
     readContract(client, { ...games, functionName: "isSupported", args: [collection] }),
     readContract(client, { ...games, functionName: "REFUND_TIMEOUT" }),
     user ? readContract(client, { ...games, functionName: "owedTo", args: [user] }) : undefined,
@@ -606,6 +633,9 @@ export async function readGames(client: Client, d: Deployment, collection: Addre
     edgeBps,
     minBet,
     maxExposureBps,
+    maxWagerBps,
+    maxWager: (bankroll * maxWagerBps) / BPS,
+    bankrollShareBps,
     supported,
     refundTimeout: Number(refundTimeout),
     userOwed,
@@ -645,13 +675,20 @@ export function gameLimits(
   return { perBet, totalRoom, exposure: perBet < totalRoom ? perBet : totalRoom };
 }
 
+/** `Games` also refuses a wager above `bankroll * maxWagerBps`, whatever its exposure. */
+function capWager(wager: bigint, state: { bankroll: bigint; maxWagerBps?: bigint }): bigint {
+  if (state.maxWagerBps === undefined) return wager;
+  const cap = (state.bankroll * state.maxWagerBps) / BPS;
+  return wager < cap ? wager : cap;
+}
+
 /**
  * Largest wager `Games.play` accepts at `chanceBps`: the one whose exposure just fits within both the
  * per-bet cap and the room left under the total-exposure cap. Undefined when the edge takes the whole
  * wager.
  */
 export function maxGameWager(
-  state: Pick<GamesState, "bankroll" | "reserved" | "maxExposureBps" | "maxTotalExposureBps" | "edgeBps">,
+  state: Pick<GamesState, "bankroll" | "reserved" | "maxExposureBps" | "maxTotalExposureBps" | "edgeBps"> & { maxWagerBps?: bigint },
   chanceBps: number,
 ): bigint | undefined {
   const chance = BigInt(chanceBps);
@@ -661,18 +698,18 @@ export function maxGameWager(
   let wager = (limit * chance * BPS) / ((BPS - chance) * (BPS - state.edgeBps));
   // Integer rounding in the contract can put the estimate a few wei over the limit.
   while (wager > 0n && gameExposure(wager, chanceBps, state.edgeBps) > limit) wager -= wager > 1_000n ? 1_000n : 1n;
-  return wager;
+  return capWager(wager, state);
 }
 
 /** Largest wager `Games.spin` accepts: the one whose reserve fits both exposure caps. */
 export function maxSlotsWager(
-  state: Pick<GamesState, "bankroll" | "reserved" | "maxExposureBps" | "maxTotalExposureBps" | "edgeBps">,
+  state: Pick<GamesState, "bankroll" | "reserved" | "maxExposureBps" | "maxTotalExposureBps" | "edgeBps"> & { maxWagerBps?: bigint },
 ): bigint | undefined {
   if (state.edgeBps >= BPS) return undefined;
   const limit = gameLimits(state).exposure;
   let wager = (limit * BPS) / ((SLOTS_MAX_MULTIPLIER - 1n) * (BPS - state.edgeBps));
   while (wager > 0n && slotsExposure(wager, state.edgeBps) > limit) wager -= wager > 1_000n ? 1_000n : 1n;
-  return wager;
+  return capWager(wager, state);
 }
 
 export type GameBet = {

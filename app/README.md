@@ -9,14 +9,42 @@ It has two modes, switched in the header:
 - **Demo** (the default when no local chain answers): a simulated protocol that runs entirely in the
   browser tab, with play money and no wallet. It follows the contracts' rules through the same maths
   module the live path uses (`src/lib/gameMath.ts`), settles with a seeded pseudo-random generator,
-  and runs its clock 600 times faster than real time so rounds end while you watch. It is labelled
+  and runs its clock 600 times faster than real time so rounds end while you watch. It mirrors the
+  contracts' current rules: a bid that is the curve limited by the budget, a minimum bid, a curve
+  that restarts when money reaches a budget that could not cover it, points credited once per fee,
+  the prediction markets' dead band and short betting window, the games' wager cap and bankroll
+  share, house shares, and the vault raffle's minimum of activated points. It is labelled
   "Demo: simulated, no real transactions, play money" on every page and is not fair play.
 - **Live**: a real chain through wagmi and viem. The only network requests are JSON-RPC calls to the
   selected chain. There is no analytics, no CDN, no remote font or image, and no backend.
 
 The pages (hash routes, each a lazy chunk): `#/` landing · `#/app` overview · Trade (marketplace,
 floor bid) · Vault (holdings and auctions, licences, vault raffles) · Play (dice, slots, lottery,
-ticket raffles, predictions) · Fairness. Design decisions are recorded in [DESIGN.md](DESIGN.md).
+ticket raffles, predictions, the house) · Fairness. Design decisions are recorded in
+[DESIGN.md](DESIGN.md). The theme is dark on a first visit; the toggle's choice is remembered.
+
+What each of the non-game pages shows:
+
+- **Landing**: a hero drawn from the demo simulation (the bid rising towards the floor line, the
+  demo vault's holdings resting on it), a scroll-driven, operable diagram of the flywheel running on
+  an explainer model with example amounts, the games, a fairness walkthrough, and the project's
+  status as `SECURITY.md` and `docs/AUDIT.md` state it.
+- **Overview**: the flywheel with the collection's real numbers (a dot travels only when the budget
+  or the vault changed), key figures, next actions and the event stream.
+- **Floor bid**: the curve over time with sales and restarts, the cap, the minimum bid, the budget
+  as a ceiling and as fuel. The curve and the bid are told apart: "the curve is at X; the budget can
+  pay Y, so the bid is Y". In the demo the chart has the whole history; on a chain it draws the
+  climb that is running now.
+- **Vault**: each holding with its time lock and price lock, its state, its licence tiers, and each
+  auction as a falling price on a log scale with the reserve as the floor line.
+- **Marketplace**: collection offers as a ladder (the protocol's own bid sits in it at its price),
+  single-token offers, and a preview of who receives what before accepting or offering.
+- **The house** (`#/play/house`): the games bankroll (free, set aside for open bets, wagers in
+  play), the realised share price from events, your shares, and deposit and redeem with previews,
+  a tolerance and what redeeming with bets open leaves behind. It is not a yield product and does
+  not look like one.
+- **Fairness**: the request → proof → roll → payout walk, the rules with each game's expected
+  return, and the live status of the four conditions the claim depends on.
 
 ## Wallets and chains
 
@@ -129,8 +157,9 @@ in the header.
 
 ## Dice (formerly the Games tab)
 
-Dice and coinflip against the house bankroll (`Games.sol`), backing the selected collection: the edge on
-every wager is a protocol fee for that collection. The tab shows the bankroll, the edge, the funds
+Dice and coinflip against the house bankroll (`Games.sol`), backing the selected collection: half of the edge on
+every wager (by default; `bankrollShareBps` sets it) is a protocol fee for that collection and the
+bankroll keeps the rest. A wager can be at most `maxWager()`, 1% of the free bankroll by default. The tab shows the bankroll, the edge, the funds
 reserved for open bets and the largest wager allowed at the chosen chance. That maximum respects both
 caps the contract enforces: one bet may put at most 1% of the free bankroll at risk, and all open bets
 together at most 20% of the house funds. The tab quotes the payout and fee live from
@@ -226,9 +255,11 @@ npm run build       # typecheck + production build into dist/
 npm test            # integration test, see below
 ```
 
-`npm test` runs four files. `test/fairness.test.ts` (payout recomputation), `test/wallets.test.ts`
-(wallet menu ordering) and `test/demo.test.ts` (the demo simulator against the shared maths) need no
-chain. `test/anvil.test.ts` runs against a freshly deployed and seeded anvil (the steps above; it
+`npm test` runs six files. `test/fairness.test.ts` (payout recomputation), `test/wallets.test.ts`
+(wallet menu ordering), `test/demo.test.ts` (the demo simulator against the contracts' rules),
+`test/house.test.ts` (house share arithmetic against `Games.sol`'s formulas) and `test/viz.test.ts`
+(the curve, lock, auction and split maths behind the charts, and the landing's explainer model) need
+no chain. `test/anvil.test.ts` runs against a freshly deployed and seeded anvil (the steps above; it
 asserts on the seeded state, so do not click around in the app first). It
 calls every read function behind the UI and sends every transaction the UI can build from anvil's
 unlocked accounts, then asserts on the results and on the decoded custom errors. It snapshots the chain
@@ -244,6 +275,9 @@ src/lib/reads.ts             every on-chain read, as plain functions over a viem
 src/lib/calls.ts             every transaction the UI sends, as plain builders
 src/lib/errors.ts            custom error -> readable message
 src/lib/gameMath.ts          fee, stake, dice payout, slots table, pot split: used by live and demo
+src/lib/house.ts             house shares: the contract's arithmetic, the reads, the history from events
+src/viz/                     visualisations: curve maths, flywheel diagram, hero, charts, lock mechanisms
+src/styles.css               tokens, base components and the shell; src/styles/ holds the page styles
 src/demo/                    demo mode: the in-browser simulated protocol and the mode switch
 src/routes.ts                hash routes; src/theme.ts light/dark; src/brand.tsx logo and floor line
 src/WalletMenu.tsx           wallet picker and chain selector; src/lib/wallets.ts its ordering rules
@@ -251,5 +285,5 @@ src/hooks.ts                 react-query wrappers around lib/reads.ts (5 s polli
 src/tx.tsx                   transaction runner: review dialog, simulate, sign, wait, result
 src/localWallet.ts           local-only connector for anvil's unlocked accounts
 src/tabs/                    one file per page, plus Verify.tsx and gamesShared.tsx
-test/                        anvil integration test and three chain-free unit test files
+test/                        anvil integration test and five chain-free unit test files
 ```

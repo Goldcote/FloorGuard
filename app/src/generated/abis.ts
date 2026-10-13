@@ -1484,6 +1484,25 @@ export const buybackEngineAbi = [
   },
   {
     "type": "function",
+    "name": "curvePrice",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "fillCooldownOf",
     "inputs": [
       {
@@ -1497,6 +1516,19 @@ export const buybackEngineAbi = [
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "guardian",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "stateMutability": "view"
@@ -1538,6 +1570,71 @@ export const buybackEngineAbi = [
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "lowerBid",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "basePrice",
+        "type": "uint128",
+        "internalType": "uint128"
+      },
+      {
+        "name": "maxPrice",
+        "type": "uint128",
+        "internalType": "uint128"
+      },
+      {
+        "name": "active",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "minBidOf",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "onBudgetIncrease",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "budgetBefore",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -1625,6 +1722,37 @@ export const buybackEngineAbi = [
       },
       {
         "name": "cooldown",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setGuardian",
+    "inputs": [
+      {
+        "name": "guardian_",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setMinBid",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "minBid",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1729,6 +1857,37 @@ export const buybackEngineAbi = [
   },
   {
     "type": "event",
+    "name": "BidLowered",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "basePrice",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxPrice",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "active",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "Buyback",
     "inputs": [
       {
@@ -1766,6 +1925,19 @@ export const buybackEngineAbi = [
   },
   {
     "type": "event",
+    "name": "CurveRestarted",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "FillCooldownSet",
     "inputs": [
       {
@@ -1776,6 +1948,38 @@ export const buybackEngineAbi = [
       },
       {
         "name": "cooldown",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "GuardianSet",
+    "inputs": [
+      {
+        "name": "guardian",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "MinBidSet",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "minBid",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
@@ -1852,6 +2056,17 @@ export const buybackEngineAbi = [
   },
   {
     "type": "error",
+    "name": "CooldownTooLong",
+    "inputs": [
+      {
+        "name": "maxCooldown",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "FillCooldown",
     "inputs": [
       {
@@ -1868,28 +2083,27 @@ export const buybackEngineAbi = [
   },
   {
     "type": "error",
-    "name": "InsufficientBudget",
-    "inputs": [
-      {
-        "name": "budget",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "bid",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "InvalidConfig",
     "inputs": []
   },
   {
     "type": "error",
     "name": "NotAContract",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotGuardian",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotTreasury",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NothingToBid",
     "inputs": []
   },
   {
@@ -2971,6 +3185,19 @@ export const predictionMarketAbi = [
   },
   {
     "type": "function",
+    "name": "MAX_DEAD_BAND_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MAX_DURATION",
     "inputs": [],
     "outputs": [
@@ -3069,6 +3296,38 @@ export const predictionMarketAbi = [
       }
     ],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "deadBandBps",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "deadBandBpsOf",
+    "inputs": [
+      {
+        "name": "marketId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -3198,6 +3457,19 @@ export const predictionMarketAbi = [
   },
   {
     "type": "function",
+    "name": "maxStartPriceAge",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "minBet",
     "inputs": [],
     "outputs": [
@@ -3312,6 +3584,24 @@ export const predictionMarketAbi = [
         "name": "supported",
         "type": "bool",
         "internalType": "bool"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setMarketRules",
+    "inputs": [
+      {
+        "name": "deadBandBps_",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxStartPriceAge_",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "outputs": [],
@@ -3557,6 +3847,25 @@ export const predictionMarketAbi = [
       },
       {
         "name": "endPrice",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "MarketRulesSet",
+    "inputs": [
+      {
+        "name": "deadBandBps",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxStartPriceAge",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
@@ -4428,6 +4737,19 @@ export const vaultRaffleAbi = [
   },
   {
     "type": "function",
+    "name": "minPointsToDraw",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "nextDrawAt",
     "inputs": [],
     "outputs": [
@@ -4626,6 +4948,19 @@ export const vaultRaffleAbi = [
   },
   {
     "type": "function",
+    "name": "setMinPointsToDraw",
+    "inputs": [
+      {
+        "name": "minPointsToDraw_",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setRandomness",
     "inputs": [
       {
@@ -4703,6 +5038,19 @@ export const vaultRaffleAbi = [
         "name": "raffleId",
         "type": "uint256",
         "indexed": true,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "MinPointsToDrawSet",
+    "inputs": [
+      {
+        "name": "minPointsToDraw",
+        "type": "uint256",
+        "indexed": false,
         "internalType": "uint256"
       }
     ],
@@ -4827,6 +5175,22 @@ export const vaultRaffleAbi = [
       }
     ],
     "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "BelowMinPoints",
+    "inputs": [
+      {
+        "name": "activated",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "required",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",
@@ -5047,6 +5411,19 @@ export const gamesAbi = [
   },
   {
     "type": "function",
+    "name": "bankrollShareBps",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "bets",
     "inputs": [
       {
@@ -5096,6 +5473,25 @@ export const gamesAbi = [
   },
   {
     "type": "function",
+    "name": "deposit",
+    "inputs": [
+      {
+        "name": "minShares",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "shares",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
     "name": "edgeBps",
     "inputs": [],
     "outputs": [
@@ -5129,7 +5525,13 @@ export const gamesAbi = [
     "type": "function",
     "name": "fundBankroll",
     "inputs": [],
-    "outputs": [],
+    "outputs": [
+      {
+        "name": "shares",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
     "stateMutability": "payable"
   },
   {
@@ -5166,7 +5568,46 @@ export const gamesAbi = [
   },
   {
     "type": "function",
+    "name": "maxWager",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "maxWagerBps",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "minBet",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "openWagers",
     "inputs": [],
     "outputs": [
       {
@@ -5261,6 +5702,44 @@ export const gamesAbi = [
   },
   {
     "type": "function",
+    "name": "previewDeposit",
+    "inputs": [
+      {
+        "name": "assets",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "previewRedeem",
+    "inputs": [
+      {
+        "name": "shares",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "quote",
     "inputs": [
       {
@@ -5300,6 +5779,35 @@ export const gamesAbi = [
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "redeem",
+    "inputs": [
+      {
+        "name": "shares",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "minAssets",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "to",
+        "type": "address",
+        "internalType": "address payable"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "assets",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -5403,6 +5911,43 @@ export const gamesAbi = [
   },
   {
     "type": "function",
+    "name": "setRiskParams",
+    "inputs": [
+      {
+        "name": "maxWagerBps_",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "bankrollShareBps_",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "sharesOf",
+    "inputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "slotsMultiplier",
     "inputs": [
       {
@@ -5441,6 +5986,19 @@ export const gamesAbi = [
   },
   {
     "type": "function",
+    "name": "totalShares",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "transferOwnership",
     "inputs": [
       {
@@ -5473,19 +6031,6 @@ export const gamesAbi = [
     "stateMutability": "nonpayable"
   },
   {
-    "type": "function",
-    "name": "withdrawBankrollToTreasury",
-    "inputs": [
-      {
-        "name": "amount",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
     "type": "event",
     "name": "BankrollFunded",
     "inputs": [
@@ -5500,14 +6045,38 @@ export const gamesAbi = [
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
+      },
+      {
+        "name": "shares",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
       }
     ],
     "anonymous": false
   },
   {
     "type": "event",
-    "name": "BankrollWithdrawnToTreasury",
+    "name": "BankrollRedeemed",
     "inputs": [
+      {
+        "name": "from",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "to",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "shares",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
       {
         "name": "amount",
         "type": "uint256",
@@ -5732,6 +6301,25 @@ export const gamesAbi = [
   },
   {
     "type": "event",
+    "name": "RiskParamsSet",
+    "inputs": [
+      {
+        "name": "maxWagerBps",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "bankrollShareBps",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "Withdrawn",
     "inputs": [
       {
@@ -5772,7 +6360,7 @@ export const gamesAbi = [
   },
   {
     "type": "error",
-    "name": "InsufficientBankroll",
+    "name": "InsufficientShares",
     "inputs": []
   },
   {
@@ -5834,6 +6422,11 @@ export const gamesAbi = [
   },
   {
     "type": "error",
+    "name": "SlippageExceeded",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "TooEarly",
     "inputs": [
       {
@@ -5873,6 +6466,22 @@ export const gamesAbi = [
     "type": "error",
     "name": "UnsupportedCollection",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "WagerTooHigh",
+    "inputs": [
+      {
+        "name": "wager",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "limit",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   }
 ] as const;
 
@@ -9908,6 +10517,22 @@ export const errorsAbi = [
   },
   {
     "type": "error",
+    "name": "BelowMinPoints",
+    "inputs": [
+      {
+        "name": "activated",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "required",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "BettingClosed",
     "inputs": []
   },
@@ -9927,6 +10552,17 @@ export const errorsAbi = [
       },
       {
         "name": "minPrice",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "CooldownTooLong",
+    "inputs": [
+      {
+        "name": "maxCooldown",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -10090,20 +10726,15 @@ export const errorsAbi = [
   },
   {
     "type": "error",
-    "name": "InsufficientBankroll",
-    "inputs": []
-  },
-  {
-    "type": "error",
     "name": "InsufficientBudget",
     "inputs": [
       {
-        "name": "budget",
+        "name": "available",
         "type": "uint256",
         "internalType": "uint256"
       },
       {
-        "name": "bid",
+        "name": "requested",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -10124,6 +10755,11 @@ export const errorsAbi = [
         "internalType": "uint256"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "InsufficientShares",
+    "inputs": []
   },
   {
     "type": "error",
@@ -10222,12 +10858,22 @@ export const errorsAbi = [
   },
   {
     "type": "error",
+    "name": "NotGuardian",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NotHeld",
     "inputs": []
   },
   {
     "type": "error",
     "name": "NothingOwed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NothingToBid",
     "inputs": []
   },
   {
@@ -10273,6 +10919,11 @@ export const errorsAbi = [
   {
     "type": "error",
     "name": "NotTokenOwner",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotTreasury",
     "inputs": []
   },
   {
@@ -10372,6 +11023,11 @@ export const errorsAbi = [
   {
     "type": "error",
     "name": "ScopeTooLong",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SlippageExceeded",
     "inputs": []
   },
   {
@@ -10476,6 +11132,22 @@ export const errorsAbi = [
     "type": "error",
     "name": "UnsupportedCollection",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "WagerTooHigh",
+    "inputs": [
+      {
+        "name": "wager",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "limit",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",

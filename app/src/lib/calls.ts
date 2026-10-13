@@ -309,3 +309,22 @@ export const abortLotteryCall = (d: Deployment, roundId: bigint): Call => lotter
 export const refundLotteryCall = (d: Deployment, roundId: bigint): Call => lotteryCall(d, "refund", [roundId]);
 /** Withdraw the caller's lottery winnings. */
 export const withdrawLotteryCall = (d: Deployment): Call => lotteryCall(d, "withdraw", []);
+
+// ---------------------------------------------------------------- the house
+
+/** `Games.deposit`: fund the bankroll for shares. `minShares` rejects a worse price than previewed. */
+export const depositHouseCall = (d: Deployment, amount: bigint, minShares: bigint): Call => ({
+  address: d.games,
+  abi: gamesAbi,
+  functionName: "deposit",
+  args: [minShares],
+  value: amount,
+});
+
+/** `Games.redeem`: burn shares for their part of the free bankroll, paid to `to`. */
+export const redeemHouseCall = (d: Deployment, shares: bigint, minAssets: bigint, to: Address): Call => ({
+  address: d.games,
+  abi: gamesAbi,
+  functionName: "redeem",
+  args: [shares, minAssets, to],
+});

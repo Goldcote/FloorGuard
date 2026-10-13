@@ -21,6 +21,8 @@ export type TxEntry = {
   title: string;
   /** What will happen, shown before anything is signed: amounts, who receives what, approval steps. */
   details: readonly string[];
+  /** An optional picture of the same thing (who receives what), shown above the details in the review. */
+  preview?: ReactNode;
   /** The transaction currently in flight within the action, e.g. "Approve marketplace". */
   step?: string;
   status: Status;
@@ -40,7 +42,7 @@ type TxContextValue = {
    * Review, then run, an action of one or more transactions. `details` is what the user reads before
    * confirming. Never throws: a failure is shown in the dialog.
    */
-  run: (title: string, action: (send: Send) => Promise<void>, details?: readonly string[], options?: { quickInDemo?: boolean }) => Promise<void>;
+  run: (title: string, action: (send: Send) => Promise<void>, details?: readonly string[], options?: { quickInDemo?: boolean; preview?: ReactNode }) => Promise<void>;
 };
 
 const TxContext = createContext<TxContextValue | null>(null);
@@ -84,7 +86,7 @@ export function TxProvider({ children }: { children: ReactNode }) {
         }
         return;
       }
-      let entry: TxEntry = { id, title, details, status: "review" };
+      let entry: TxEntry = { id, title, details, preview: options.preview, status: "review" };
       const update = (patch: Partial<TxEntry>) => {
         entry = { ...entry, ...patch };
         setCurrent(entry);
@@ -154,22 +156,36 @@ export function TxProvider({ children }: { children: ReactNode }) {
     else setCurrent(undefined);
   };
 
+  const stage = current?.status === "preparing" ? 0 : current?.status === "wallet" ? 1 : 2;
+  const eyebrow = !current
+    ? undefined
+    : current.status === "review"
+      ? demo
+        ? "Review · demo, nothing is signed"
+        : "Review before signing"
+      : current.status === "success"
+        ? "Done"
+        : current.status === "error"
+          ? "Not done"
+          : "In progress";
+
   return (
     <TxContext.Provider value={value}>
       {children}
-      <Modal open={!!current} onClose={close} title={current?.title ?? ""} dismissible={!inFlight}>
+      <Modal open={!!current} onClose={close} title={current?.title ?? ""} dismissible={!inFlight} className="tx-modal" eyebrow={eyebrow}>
         {current && (
           <div className={`tx-dialog tx-${current.status}`}>
-            {current.details.length > 0 && (
-              <ul className="tx-details">
+            {current.status === "review" && current.preview && <div className="tx-preview">{current.preview}</div>}
+            {current.details.length > 0 && current.status !== "success" && (
+              <ol className="tx-details">
                 {current.details.map((line) => (
                   <li key={line}>{line}</li>
                 ))}
-              </ul>
+              </ol>
             )}
             {current.status === "review" ? (
               <>
-                <p className={demo ? "demo-note small" : "muted small"}>
+                <p className={demo ? "tx-context demo-note small" : "tx-context muted small"}>
                   {demo
                     ? "Demo: simulated in this browser with play money. Nothing is signed or sent."
                     : `On ${chainName}, from ${user ?? "your wallet"}. The transaction is simulated first; if it would fail you will see why before anything is signed.`}
@@ -178,16 +194,31 @@ export function TxProvider({ children }: { children: ReactNode }) {
                   <button type="button" className="btn secondary" onClick={() => decision.current?.(false)}>
                     Cancel
                   </button>
-                  <button type="button" className="btn" autoFocus onClick={() => decision.current?.(true)}>
+                  <button type="button" className="btn tx-confirm" autoFocus onClick={() => decision.current?.(true)}>
                     Confirm
                   </button>
                 </div>
               </>
             ) : (
               <>
+                {inFlight && !demo && (
+                  <ol className="tx-track" aria-hidden="true">
+                    {["Check", "Wallet", "Chain"].map((name, i) => (
+                      <li key={name} className={i < stage ? "done" : i === stage ? "now" : undefined}>
+                        {name}
+                      </li>
+                    ))}
+                  </ol>
+                )}
                 <div className="tx-status" role="status" aria-live="polite">
                   {inFlight && <span className="spinner" aria-hidden="true" />}
-                  <strong>{STATUS_TEXT[current.status]}</strong>
+                  {current.status === "success" && (
+                    <svg className="tx-seal" width="44" height="44" viewBox="0 0 44 44" aria-hidden="true">
+                      <circle cx="22" cy="22" r="19" />
+                      <path d="m13.500 22.500 6 6 11-12.500" />
+                    </svg>
+                  )}
+                  <strong>{demo && current.status === "confirming" ? "Applying to the simulation…" : STATUS_TEXT[current.status]}</strong>
                   {current.step && current.status !== "success" && <span className="muted">{current.step}</span>}
                 </div>
                 {current.error && (

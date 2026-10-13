@@ -1,11 +1,11 @@
 // "Verify" views: recompute a settled result in the browser and compare it with what the contract did.
 import { useState } from "react";
-import type { Hash } from "viem";
+import type { Address, Hash } from "viem";
 import { useChainId, useChains } from "wagmi";
 import { useProtocol, useRead } from "../hooks";
 import { recomputeBet, splitPot } from "../lib/fairness";
 import { bps, eth } from "../lib/format";
-import { readBetProof, readDrawProof, readFairnessStatus, SLOTS_PAY_TABLE } from "../lib/reads";
+import { readBetProof, readDrawProof, readFairnessStatus, readGames, SLOTS_PAY_TABLE } from "../lib/reads";
 import { Addr, Modal, Notice, QueryView } from "../ui";
 import { LOGS_FROM_BLOCK } from "../wagmi";
 
@@ -46,8 +46,10 @@ function Match({ ok, children }: { ok: boolean; children: string }) {
   );
 }
 
-function BetProofView({ requestId }: { requestId: bigint }) {
+function BetProofView({ requestId, collection }: { requestId: bigint; collection?: Address }) {
   const query = useRead(["betProof", requestId.toString()], (c, d) => readBetProof(c, d, requestId, LOGS_FROM_BLOCK));
+  // How the edge is shared between the bankroll and buybacks, as the contract has it set now.
+  const kept = useRead(["games", collection, undefined], (c, d) => readGames(c, d, collection!), !!collection).data?.bankrollShareBps;
   return (
     <QueryView query={query} lines={6}>
       {(proof) => {
@@ -77,6 +79,12 @@ function BetProofView({ requestId }: { requestId: bigint }) {
               <li>
                 fee = wager × edge ÷ 10000 = <strong>{eth(r.fee, 18)} ETH</strong>
               </li>
+              {kept !== undefined && (
+                <li>
+                  of that fee, {bps(kept)} stays in the house bankroll (<strong>{eth((r.fee * kept) / 10_000n, 18)} ETH</strong>) and the
+                  rest funds buybacks (<strong>{eth(r.fee - (r.fee * kept) / 10_000n, 18)} ETH</strong>), at the share set now
+                </li>
+              )}
               <li>
                 stake = wager − fee = <strong>{eth(r.stake, 18)} ETH</strong>
               </li>
@@ -92,6 +100,21 @@ function BetProofView({ requestId }: { requestId: bigint }) {
                 </li>
               )}
             </ol>
+            {r.kind === "slots" && (
+              <div className="verify-band" role="img" aria-label={`Roll ${proof.roll} on the range 0 to 9999`}>
+                {SLOTS_PAY_TABLE.map((tier) => (
+                  <span key={tier.multiplier} className={`band band-${tier.multiplier}`} style={{ flexGrow: tier.chanceBps }} />
+                ))}
+                <i style={{ left: `${proof.roll / 100}%` }} />
+              </div>
+            )}
+            {r.kind === "dice" && (
+              <div className="verify-band" role="img" aria-label={`Roll ${proof.roll} on the range 0 to 9999; below ${proof.chanceBps} wins`}>
+                <span className="band band-win" style={{ flexGrow: proof.chanceBps }} />
+                <span className="band band-0" style={{ flexGrow: 10_000 - proof.chanceBps }} />
+                <i style={{ left: `${proof.roll / 100}%` }} />
+              </div>
+            )}
             {r.kind === "slots" && (
               <table className="pay-table compact">
                 <tbody>
@@ -171,7 +194,7 @@ function DrawProofView({ kind, id, ticketPrice, feeBps }: { kind: "lottery" | "t
 }
 
 type VerifyTarget =
-  | { kind: "bet"; requestId: bigint }
+  | { kind: "bet"; requestId: bigint; collection?: Address }
   | { kind: "lottery" | "ticketRaffle"; id: bigint; ticketPrice: bigint; feeBps: bigint };
 
 export function VerifyButton(props: VerifyTarget) {
@@ -184,7 +207,7 @@ export function VerifyButton(props: VerifyTarget) {
         Verify
       </button>
       <Modal open={open} onClose={() => setOpen(false)} title={title}>
-        {open && (props.kind === "bet" ? <BetProofView requestId={props.requestId} /> : <DrawProofView {...props} />)}
+        {open && (props.kind === "bet" ? <BetProofView requestId={props.requestId} collection={props.collection} /> : <DrawProofView {...props} />)}
       </Modal>
     </>
   );
