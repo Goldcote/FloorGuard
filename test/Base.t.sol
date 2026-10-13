@@ -12,6 +12,8 @@ import {PredictionMarket} from "../src/PredictionMarket.sol";
 import {Points} from "../src/Points.sol";
 import {VaultRaffle} from "../src/VaultRaffle.sol";
 import {Games} from "../src/Games.sol";
+import {TicketRaffle} from "../src/TicketRaffle.sol";
+import {IPLicenseManager} from "../src/IPLicenseManager.sol";
 import {MockNFT} from "./mocks/MockNFT.sol";
 import {MockRandomness} from "./mocks/MockRandomness.sol";
 
@@ -33,6 +35,8 @@ abstract contract Base is Test {
     Points internal points;
     VaultRaffle internal raffle;
     Games internal games;
+    TicketRaffle internal ticketRaffle;
+    IPLicenseManager internal licenses;
     MockRandomness internal randomness;
     MockNFT internal nft;
 
@@ -71,6 +75,9 @@ abstract contract Base is Test {
         games = new Games(gov, treasury, randomness);
         games.setPoints(points);
         points.setRate(address(games), POINTS_RATE);
+
+        ticketRaffle = new TicketRaffle(gov, treasury, randomness);
+        licenses = new IPLicenseManager(gov, vault, treasury);
         vm.stopPrank();
 
         nft = new MockNFT();
