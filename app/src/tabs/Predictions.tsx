@@ -1,22 +1,31 @@
 import { useState } from "react";
-import { claimMarketCall, placeBetCall, resolveMarketCall } from "../lib/calls";
+import type { Address } from "viem";
+import { claimMarketCall, createMarketCall, placeBetCall, resolveMarketCall } from "../lib/calls";
 import { useChainTime, useProtocol, useRead } from "../hooks";
-import { bps, dateTime, eth, relative } from "../lib/format";
+import { bps, dateTime, duration, eth, relative } from "../lib/format";
 import { parseEth } from "../lib/parse";
 import { impliedMultiple, Outcome, OUTCOME_NAMES, readMarkets, type Market } from "../lib/reads";
 import { useTx } from "../tx";
-import { ActionButton, Addr, Badge, Card, QueryView, Stat } from "../ui";
+import { ActionButton, Addr, Badge, Card, Field, QueryView, Stat } from "../ui";
 
-function multiple(value: number | undefined): string {
-  return value === undefined ? "no bets yet" : `${value.toFixed(2)}×`;
+function pays(value: number | undefined, side: string): string {
+  return value === undefined ? "No bets on this side yet" : `Pays ${value.toFixed(2)}× if ${side}`;
 }
 
-export function Predictions() {
+export function Predictions({ collection }: { collection: Address }) {
   const { deployment: d, user } = useProtocol();
   const now = useChainTime();
   const { run } = useTx();
   const query = useRead(["markets", user], (c, dep) => readMarkets(c, dep, user));
   const [amounts, setAmounts] = useState<Record<string, string>>({});
+  const [newMarket, setNewMarket] = useState({ bettingHours: "6", durationHours: "24" });
+
+  const bettingSeconds = Math.round(Number(newMarket.bettingHours) * 3_600);
+  const durationSeconds = Math.round(Number(newMarket.durationHours) * 3_600);
+  const create = () =>
+    void run(`Create a ${newMarket.durationHours}h market`, (send) =>
+      send("Create market", createMarketCall(d!, collection, BigInt(bettingSeconds), BigInt(durationSeconds))),
+    );
 
   const bet = (market: Market, higher: boolean, amount: bigint) =>
     void run(`Bet ${eth(amount)} ETH on ${higher ? "higher" : "lower"} (market #${market.id})`, (send) =>
@@ -30,8 +39,42 @@ export function Predictions() {
   return (
     <Card title="Prediction markets">
       <QueryView query={query}>
-        {({ markets, feeBps, minBet }) => (
+        {({ markets, feeBps, minBet, minBettingPeriod, maxDuration }) => (
           <>
+            <div className="form-row create-market">
+              <Field label="Betting open for (hours)">
+                <input
+                  className="narrow"
+                  inputMode="decimal"
+                  value={newMarket.bettingHours}
+                  onChange={(e) => setNewMarket({ ...newMarket, bettingHours: e.target.value })}
+                />
+              </Field>
+              <Field label="Resolves after (hours)">
+                <input
+                  className="narrow"
+                  inputMode="decimal"
+                  value={newMarket.durationHours}
+                  onChange={(e) => setNewMarket({ ...newMarket, durationHours: e.target.value })}
+                />
+              </Field>
+              <ActionButton
+                onClick={create}
+                blocked={
+                  !(bettingSeconds >= minBettingPeriod)
+                    ? `Betting must stay open for at least ${duration(minBettingPeriod)}`
+                    : !(durationSeconds > bettingSeconds)
+                      ? "The market must resolve after betting closes"
+                      : durationSeconds > maxDuration && `A market can run for at most ${duration(maxDuration)}`
+                }
+              >
+                Create market for the selected collection
+              </ActionButton>
+              <p className="muted grow">
+                Anyone can open a market on a collection the owner has enabled, as long as the oracle has a fresh
+                price; that price becomes the start price.
+              </p>
+            </div>
             <p className="muted">
               Pooled bets on whether the floor will be higher or lower than the start price at resolution. Winners
               split the losing pool; {bps(feeBps)} of winnings funds buybacks. Minimum bet {eth(minBet)} ETH. A
@@ -68,12 +111,12 @@ export function Predictions() {
                     <Stat
                       label="Higher pool"
                       value={`${eth(m.higherPool)} ETH`}
-                      hint={`Pays ${multiple(impliedMultiple(m.higherPool, m.lowerPool, feeBps))} if higher`}
+                      hint={pending ? pays(impliedMultiple(m.higherPool, m.lowerPool, feeBps), "higher") : undefined}
                     />
                     <Stat
                       label="Lower pool"
                       value={`${eth(m.lowerPool)} ETH`}
-                      hint={`Pays ${multiple(impliedMultiple(m.lowerPool, m.higherPool, feeBps))} if lower`}
+                      hint={pending ? pays(impliedMultiple(m.lowerPool, m.higherPool, feeBps), "lower") : undefined}
                     />
                     <Stat
                       label="Your stake"
@@ -82,7 +125,7 @@ export function Predictions() {
                     />
                   </div>
                   <div className="form-row">
-                    {pending && (
+                    {open && (
                       <>
                         <input
                           className="narrow"
@@ -97,18 +140,20 @@ export function Predictions() {
                         <ActionButton onClick={() => amount && bet(m, false, amount)} blocked={betBlocked}>
                           Bet lower
                         </ActionButton>
-                        <ActionButton
-                          className="secondary"
-                          onClick={() => resolve(m)}
-                          blocked={now < m.resolveTime && `Resolvable from ${dateTime(m.resolveTime)}`}
-                        >
-                          Resolve
-                        </ActionButton>
                       </>
+                    )}
+                    {pending && (
+                      <ActionButton
+                        className="secondary"
+                        onClick={() => resolve(m)}
+                        blocked={now < m.resolveTime && `Resolvable from ${dateTime(m.resolveTime)}`}
+                      >
+                        Resolve
+                      </ActionButton>
                     )}
                     {!pending && (
                       <ActionButton onClick={() => claim(m)} blocked={!staked && "You have nothing to claim in this market"}>
-                        Claim
+                        {m.outcome === Outcome.Void ? "Claim refund" : "Claim"}
                       </ActionButton>
                     )}
                   </div>

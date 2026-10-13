@@ -329,14 +329,24 @@ export type Market = {
   stake?: { higher: bigint; lower: bigint };
 };
 
-export type Markets = { markets: Market[]; marketCount: bigint; feeBps: bigint; minBet: bigint };
+export type Markets = {
+  markets: Market[];
+  marketCount: bigint;
+  feeBps: bigint;
+  minBet: bigint;
+  /** Shortest betting period and longest duration `createMarket` accepts, in seconds. */
+  minBettingPeriod: number;
+  maxDuration: number;
+};
 
 export async function readMarkets(client: Client, d: Deployment, user?: Address): Promise<Markets> {
   const pm = { address: d.predictionMarket, abi: predictionMarketAbi } as const;
-  const [marketCount, feeBps, minBet] = await Promise.all([
+  const [marketCount, feeBps, minBet, minBettingPeriod, maxDuration] = await Promise.all([
     readContract(client, { ...pm, functionName: "marketCount" }),
     readContract(client, { ...pm, functionName: "feeBps" }),
     readContract(client, { ...pm, functionName: "minBet" }),
+    readContract(client, { ...pm, functionName: "MIN_BETTING_PERIOD" }),
+    readContract(client, { ...pm, functionName: "MAX_DURATION" }),
   ]);
   const markets = await Promise.all(
     recentIds(marketCount).map(async (id): Promise<Market> => {
@@ -358,7 +368,7 @@ export async function readMarkets(client: Client, d: Deployment, user?: Address)
       };
     }),
   );
-  return { markets, marketCount, feeBps, minBet };
+  return { markets, marketCount, feeBps, minBet, minBettingPeriod: Number(minBettingPeriod), maxDuration: Number(maxDuration) };
 }
 
 /**
@@ -450,14 +460,23 @@ export type Raffle = {
   requestedAt: number;
   status: number;
   winner: Address;
+  /** While Drawing: the randomness request in flight. */
+  requestId?: bigint;
 };
 
-export type Raffles = { raffles: Raffle[]; raffleCount: bigint; totalPoints: bigint };
+export type Raffles = {
+  raffles: Raffle[];
+  raffleCount: bigint;
+  totalPoints: bigint;
+  /** After any draw is reset, no raffle can be drawn before this time (0 when no cooldown applies). */
+  nextDrawAt: number;
+};
 
 export async function readRaffles(client: Client, d: Deployment): Promise<Raffles> {
   const raffle = { address: d.vaultRaffle, abi: vaultRaffleAbi } as const;
-  const [raffleCount, totalPoints] = await Promise.all([
+  const [raffleCount, nextDrawAt, totalPoints] = await Promise.all([
     readContract(client, { ...raffle, functionName: "raffleCount" }),
+    readContract(client, { ...raffle, functionName: "nextDrawAt" }),
     readContract(client, { address: d.points, abi: pointsAbi, functionName: "totalPoints" }),
   ]);
   const raffles = await Promise.all(
@@ -467,10 +486,14 @@ export async function readRaffles(client: Client, d: Deployment): Promise<Raffle
         functionName: "raffles",
         args: [id],
       });
-      return { id, collection, tokenId, drawAfter, requestedAt, status, winner };
+      const requestId =
+        status === RaffleStatus.Drawing
+          ? await readContract(client, { ...raffle, functionName: "currentRequest", args: [id] })
+          : undefined;
+      return { id, collection, tokenId, drawAfter, requestedAt, status, winner, requestId };
     }),
   );
-  return { raffles, raffleCount, totalPoints };
+  return { raffles, raffleCount, totalPoints, nextDrawAt: Number(nextDrawAt) };
 }
 
 // ---------------------------------------------------------------- games
@@ -478,6 +501,10 @@ export async function readRaffles(client: Client, d: Deployment): Promise<Raffle
 export type GamesState = {
   /** House funds not set aside for open bets. */
   bankroll: bigint;
+  /** House funds set aside to pay the open bets, should they win. */
+  reserved: bigint;
+  /** The most that may be `reserved` at once, as a share of `bankroll + reserved`. */
+  maxTotalExposureBps: bigint;
   edgeBps: bigint;
   minBet: bigint;
   /** The most the house may stand to lose on one bet, as a share of `bankroll`. */
@@ -492,8 +519,10 @@ export type GamesState = {
 
 export async function readGames(client: Client, d: Deployment, collection: Address, user?: Address): Promise<GamesState> {
   const games = { address: d.games, abi: gamesAbi } as const;
-  const [bankroll, edgeBps, minBet, maxExposureBps, supported, refundTimeout, userOwed] = await Promise.all([
+  const [bankroll, reserved, maxTotalExposureBps, edgeBps, minBet, maxExposureBps, supported, refundTimeout, userOwed] = await Promise.all([
     readContract(client, { ...games, functionName: "bankroll" }),
+    readContract(client, { ...games, functionName: "reserved" }),
+    readContract(client, { ...games, functionName: "MAX_TOTAL_EXPOSURE_BPS" }),
     readContract(client, { ...games, functionName: "edgeBps" }),
     readContract(client, { ...games, functionName: "minBet" }),
     readContract(client, { ...games, functionName: "maxExposureBps" }),
@@ -501,7 +530,17 @@ export async function readGames(client: Client, d: Deployment, collection: Addre
     readContract(client, { ...games, functionName: "REFUND_TIMEOUT" }),
     user ? readContract(client, { ...games, functionName: "owedTo", args: [user] }) : undefined,
   ]);
-  return { bankroll, edgeBps, minBet, maxExposureBps, supported, refundTimeout: Number(refundTimeout), userOwed };
+  return {
+    bankroll,
+    reserved,
+    maxTotalExposureBps,
+    edgeBps,
+    minBet,
+    maxExposureBps,
+    supported,
+    refundTimeout: Number(refundTimeout),
+    userOwed,
+  };
 }
 
 export type GameQuote = { payout: bigint; fee: bigint };
@@ -524,14 +563,37 @@ export function gameExposure(wager: bigint, chanceBps: number, edgeBps: bigint):
   return payout - (wager - fee);
 }
 
+export type GameLimits = {
+  /** Per-bet cap: `bankroll * maxExposureBps`. */
+  perBet: bigint;
+  /** Room left under the cap on all open bets together: `(bankroll + reserved) * maxTotalExposureBps - reserved`. */
+  totalRoom: bigint;
+  /** The exposure a new bet may add: the smaller of the two. */
+  exposure: bigint;
+};
+
+/** The two exposure caps `Games.play` enforces, mirrored from the contract. */
+export function gameLimits(
+  state: Pick<GamesState, "bankroll" | "reserved" | "maxExposureBps" | "maxTotalExposureBps">,
+): GameLimits {
+  const perBet = (state.bankroll * state.maxExposureBps) / BPS;
+  const totalLimit = ((state.bankroll + state.reserved) * state.maxTotalExposureBps) / BPS;
+  const totalRoom = totalLimit > state.reserved ? totalLimit - state.reserved : 0n;
+  return { perBet, totalRoom, exposure: perBet < totalRoom ? perBet : totalRoom };
+}
+
 /**
- * Largest wager `Games.play` accepts at `chanceBps`: the one whose exposure just fits within
- * `bankroll * maxExposureBps`. Undefined when the edge takes the whole wager.
+ * Largest wager `Games.play` accepts at `chanceBps`: the one whose exposure just fits within both the
+ * per-bet cap and the room left under the total-exposure cap. Undefined when the edge takes the whole
+ * wager.
  */
-export function maxGameWager(state: Pick<GamesState, "bankroll" | "maxExposureBps" | "edgeBps">, chanceBps: number): bigint | undefined {
+export function maxGameWager(
+  state: Pick<GamesState, "bankroll" | "reserved" | "maxExposureBps" | "maxTotalExposureBps" | "edgeBps">,
+  chanceBps: number,
+): bigint | undefined {
   const chance = BigInt(chanceBps);
   if (state.edgeBps >= BPS || chance >= BPS) return undefined;
-  const limit = (state.bankroll * state.maxExposureBps) / BPS;
+  const limit = gameLimits(state).exposure;
   // exposure = wager * (1 - edge) * (1 / chance - 1), solved for the wager
   let wager = (limit * chance * BPS) / ((BPS - chance) * (BPS - state.edgeBps));
   // Integer rounding in the contract can put the estimate a few wei over the limit.

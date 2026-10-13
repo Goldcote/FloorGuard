@@ -4,8 +4,8 @@ Web front end for the FloorGuard protocol: Vite + React + TypeScript, wagmi v2 +
 
 > Unaudited experimental software. Do not use with real funds.
 
-It connects through an injected browser wallet only. There is no WalletConnect, no analytics and no
-backend: the only network requests are JSON-RPC calls to the selected chain (the local anvil node, or
+It connects through an injected browser wallet, or, on the local anvil chain only, through one of
+anvil's unlocked test accounts (see below). There is no WalletConnect, no analytics and no backend: the only network requests are JSON-RPC calls to the selected chain (the local anvil node, or
 Base Sepolia).
 
 ## Run against a local anvil chain
@@ -34,6 +34,21 @@ npm run sync   # picks up deployments/31337.json and the current ABIs
 npm run dev    # http://localhost:5173
 ```
 
+### Local test account (no browser wallet needed)
+
+While the chain selector is on Anvil (31337), the header offers a dashed **Use local test account
+(anvil only)** button with a selector for anvil's accounts #0 to #3. It is a wagmi connector
+(`src/localWallet.ts`) that sends transactions to the node as `eth_sendTransaction`, which anvil signs
+with its own unlocked dev accounts. The app holds no keys; the addresses are read from the node. Every
+write path in the app works with it unchanged, and you can switch between the four accounts while
+connected to play both sides of a trade. #0 is the deployer and protocol owner after seeding.
+
+It is for local development only: the option is hidden on every other chain, the connector refuses to
+connect unless the node reports chain id 31337, it cannot switch chains (choosing another chain in
+the selector disconnects it), and it never reconnects by itself after a page reload.
+
+### With a browser wallet
+
 In the wallet, add the network `http://127.0.0.1:8545` (chain id 31337) and import anvil's account #0.
 After seeding it owns demo tokens 1-10, has an open collection offer and a token offer, a funded floor
 bid and an open prediction market, and the Games contract has a 50 ETH bankroll with the demo collection
@@ -46,15 +61,23 @@ Things to know on a local chain:
   `cast rpc evm_increaseTime <seconds>` then `cast rpc evm_mine` to move time forward.
 - Restarting anvil wipes the chain. Deploy and seed again; the app shows "No contracts at the recorded
   addresses" until you do. Also reset the wallet's nonce/activity data for the account.
-- Unlocking vault holdings by governance, sending them to a raffle, fulfilling a raffle draw's mock
-  randomness and setting a collection's project share are owner or test actions with no button in the
-  app. Use `cast send`, as in `test/anvil.test.ts`.
+- Unlocking vault holdings by governance, sending them to a raffle, pushing an oracle floor and
+  setting a collection's project share are owner actions with no button in the app. Use `cast send`
+  with `--unlocked --from <account #0>`.
+- A raffle draw needs a randomness answer. On chain 31337 only, a raffle in the Drawing state shows a
+  dashed "Local only: draw with mock randomness" button that calls `MockRandomness.fulfill`.
+- To walk through everything: a holding unlocks 180 days after purchase and only if the sales floor
+  (three recent collection-offer or floor-bid sales) is at least 130% of its purchase price; a raffle
+  can be drawn 7 days after it opens, and only once someone has activated points; a prediction market
+  resolves only with an oracle price pushed after its resolve time.
 
 ## Games tab
 
 Dice and coinflip against the house bankroll (`Games.sol`), backing the selected collection: the edge on
-every wager is a protocol fee for that collection. The tab shows the bankroll, the edge, the exposure
-limit and the largest wager it allows at the chosen chance, quotes the payout and fee live from
+every wager is a protocol fee for that collection. The tab shows the bankroll, the edge, the funds
+reserved for open bets and the largest wager allowed at the chosen chance. That maximum respects both
+caps the contract enforces: one bet may put at most 1% of the free bankroll at risk, and all open bets
+together at most 20% of the house funds. The tab quotes the payout and fee live from
 `Games.quote`, and lists the connected account's bets from `BetPlaced` / `BetSettled` / `BetRefunded`
 logs (pending, won, lost, refundable, refunded).
 
@@ -117,7 +140,8 @@ npm run build       # typecheck + production build into dist/
 npm test            # integration test, see below
 ```
 
-`npm test` runs `test/anvil.test.ts` against a freshly deployed and seeded anvil (the steps above). It
+`npm test` runs `test/anvil.test.ts` against a freshly deployed and seeded anvil (the steps above; it
+asserts on the seeded state, so do not click around in the app first). It
 calls every read function behind the UI and sends every transaction the UI can build from anvil's
 unlocked accounts, then asserts on the results and on the decoded custom errors. It snapshots the chain
 first and reverts afterwards, so it can be re-run. Without a reachable, deployed anvil the suite is
@@ -133,6 +157,7 @@ src/lib/calls.ts             every transaction the UI sends, as plain builders
 src/lib/errors.ts            custom error -> readable message
 src/hooks.ts                 react-query wrappers around lib/reads.ts (5 s polling)
 src/tx.tsx                   transaction runner: simulate, sign, wait, with pending/success/error panel
+src/localWallet.ts           local-only connector for anvil's unlocked accounts
 src/tabs/                    Overview, Marketplace, Floor bid, Predictions, Games, Vault, Raffles
 test/anvil.test.ts           integration test against anvil
 ```

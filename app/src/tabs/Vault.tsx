@@ -24,7 +24,7 @@ export function Vault() {
   const buy = (h: Holding) =>
     void run(`Buy vault holding #${h.id}`, async (send) => {
       // The price only falls, so the price read now always covers the price at inclusion; the
-      // contract refunds the difference.
+      // contract refunds the difference (see buyCall for why it sends one wei more).
       const price = await readContract(client!, {
         address: d!.vault,
         abi: vaultAbi,

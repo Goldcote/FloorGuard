@@ -8,6 +8,9 @@ import type { Call } from "./lib/calls";
 import { decodeError } from "./lib/errors";
 import { QUERY_ROOT } from "./hooks";
 
+/** How long a confirmed action stays in the panel. */
+const SUCCESS_VISIBLE_MS = 6_000;
+
 type Status = "preparing" | "wallet" | "confirming" | "success" | "error";
 
 export type TxEntry = {
@@ -81,6 +84,9 @@ export function TxProvider({ children }: { children: ReactNode }) {
       try {
         await action(send);
         update({ status: "success" });
+        // The panel floats over the page; a confirmation must not keep covering the buttons under
+        // it. Failures stay until dismissed.
+        setTimeout(() => setEntries((list) => list.filter((entry) => entry.id !== id)), SUCCESS_VISIBLE_MS);
       } catch (error) {
         console.error(error);
         update({ status: "error", error: decodeError(error).message });

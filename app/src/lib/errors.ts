@@ -40,10 +40,10 @@ const MESSAGES: Record<string, (args: Args) => string> = {
   StaleOracle: () => "The floor oracle has no fresh price for this collection.",
   PriceNotMet: ([price, sent]) => `The auction price is ${wei(price)} but only ${wei(sent)} was sent.`,
   // PredictionMarket
-  UnsupportedCollection: () => "This collection is not enabled here.",
+  UnsupportedCollection: () => "The owner has not enabled this collection here.",
   InvalidDuration: () => "Invalid betting period or duration.",
   OracleUnavailable: () =>
-    "The floor oracle has no fresh price (for settling: none published since the market's resolve time). Try again once the oracle is updated.",
+    "The floor oracle has no fresh price. Opening a market needs a recent price; settling one needs a price published after its resolve time.",
   UnknownMarket: () => "This market does not exist.",
   BettingClosed: () => "Betting on this market has closed.",
   BetTooSmall: () => "The bet is below the minimum bet.",
@@ -64,6 +64,9 @@ const MESSAGES: Record<string, (args: Args) => string> = {
   InvalidChance: () => "The chance of winning must be between 1% and 95%.",
   ExposureTooHigh: ([exposure, limit]) =>
     `This bet would put ${wei(exposure)} of the bankroll at risk; the limit per bet is ${wei(limit)}. Lower the wager or raise the chance.`,
+  TotalExposureTooHigh: ([total, limit]) =>
+    `Too many open bets: this one would bring the house's total at risk to ${wei(total)}; the limit is ${wei(limit)}. Lower the wager or wait for open bets to settle.`,
+  RequestIdInUse: () => "The randomness provider reused the id of a bet that is still open. Try again later.",
   UnknownBet: () => "This bet does not exist or is already settled or refunded.",
   NothingOwed: () => "There is nothing owed to this account.",
   InsufficientBankroll: () => "The bankroll is smaller than the requested amount.",

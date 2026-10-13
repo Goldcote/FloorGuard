@@ -4,8 +4,8 @@ import { anvil } from "wagmi/chains";
 import { useChainTime, useProtocol, useRead } from "../hooks";
 import { mockFulfillCall, playCall, refundBetCall, withdrawGamesCall } from "../lib/calls";
 import { bps, dateTime, eth } from "../lib/format";
-import { parseEth } from "../lib/parse";
-import { maxGameWager, readGameQuote, readGames, readUserBets, type GameBet } from "../lib/reads";
+import { parseEth, randomWord } from "../lib/parse";
+import { gameLimits, maxGameWager, readGameQuote, readGames, readUserBets, type GameBet } from "../lib/reads";
 import { useTx } from "../tx";
 import { ActionButton, Addr, Badge, Card, Field, QueryView, Stat } from "../ui";
 import { LOGS_FROM_BLOCK } from "../wagmi";
@@ -16,12 +16,6 @@ const STATUS: Record<GameBet["status"], { tone: "good" | "warn" | "bad" | "muted
   lost: { tone: "bad", label: "Lost" },
   refunded: { tone: "muted", label: "Refunded" },
 };
-
-/** A uniformly random 256-bit word from the browser's CSPRNG. */
-function randomWord(): bigint {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  return bytes.reduce((word, byte) => (word << 8n) | BigInt(byte), 0n);
-}
 
 export function Games({ collection }: { collection: Address }) {
   const { chainId, deployment: d, user } = useProtocol();
@@ -56,7 +50,7 @@ export function Games({ collection }: { collection: Address }) {
   const withdraw = () => void run("Withdraw owed winnings", (send) => send("Withdraw", withdrawGamesCall(d!)));
   const settleLocally = (bet: GameBet) =>
     void run(`Settle bet #${bet.requestId} with mock randomness`, (send) =>
-      send("Mock fulfil", mockFulfillCall(d!, bet.requestId, randomWord())),
+      send("Mock fulfil", mockFulfillCall(d!.gamesRandomness, bet.requestId, randomWord())),
     );
 
   return (
@@ -69,6 +63,8 @@ export function Games({ collection }: { collection: Address }) {
         <QueryView query={games}>
           {(g) => {
             const maxWager = maxGameWager(g, chanceBps);
+            const limits = gameLimits(g);
+            const totalCapBinds = limits.totalRoom < limits.perBet;
             const blocked = !g.supported
               ? "Games are not enabled for this collection"
               : wager === undefined
@@ -89,12 +85,17 @@ export function Games({ collection }: { collection: Address }) {
                   <Stat
                     label="Max exposure per bet"
                     value={bps(g.maxExposureBps)}
-                    hint={`Of the bankroll: ${eth((g.bankroll * g.maxExposureBps) / 10_000n)} ETH at risk at most`}
+                    hint={`Of the bankroll: ${eth(limits.perBet)} ETH at risk at most`}
+                  />
+                  <Stat
+                    label="Reserved for open bets"
+                    value={`${eth(g.reserved)} ETH`}
+                    hint={`All open bets together may reserve ${bps(g.maxTotalExposureBps)} of the house funds; ${eth(limits.totalRoom)} ETH of room left`}
                   />
                   <Stat
                     label={`Max wager at ${chancePercent}%`}
                     value={maxWager !== undefined ? `${eth(maxWager)} ETH` : "–"}
-                    hint={`Minimum ${eth(g.minBet)} ETH`}
+                    hint={`Minimum ${eth(g.minBet)} ETH. ${totalCapBinds ? "Limited by the cap on all open bets together" : "Limited by the per-bet cap"}`}
                   />
                   <Stat
                     label="Collection"
@@ -180,7 +181,7 @@ export function Games({ collection }: { collection: Address }) {
                             <td>
                               {refundable ? <Badge tone="warn">Refundable</Badge> : <Badge tone={STATUS[bet.status].tone}>{STATUS[bet.status].label}</Badge>}
                             </td>
-                            <td>
+                            <td className="wrap">
                               {bet.status === "won" && `Rolled ${bet.roll}, paid ${eth(bet.payout ?? 0n)} ETH`}
                               {bet.status === "lost" && `Rolled ${bet.roll}, needed below ${bet.chanceBps}`}
                               {bet.status === "refunded" && "Wager returned"}

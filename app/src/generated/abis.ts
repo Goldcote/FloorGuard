@@ -4180,6 +4180,19 @@ export const vaultRaffleAbi = [
   },
   {
     "type": "function",
+    "name": "nextDrawAt",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "open",
     "inputs": [
       {

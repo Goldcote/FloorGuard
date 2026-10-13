@@ -32,9 +32,9 @@ export const deployments: Partial<Record<number, Deployment>> = {
     "games": "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318",
     "salesFloorOracle": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
     "pushFloorOracle": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
-    "randomness": "0x610178dA211FEF7D417bC0e6FeD39F05609AD788",
-    "gamesRandomness": "0x610178dA211FEF7D417bC0e6FeD39F05609AD788",
+    "randomness": "0xA51c1fc2f0D1a1b8494Ed1FE312d7C3a78Ed91C0",
+    "gamesRandomness": "0xA51c1fc2f0D1a1b8494Ed1FE312d7C3a78Ed91C0",
     "owner": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-    "demoCollection": "0x09635F643e140090A9A8Dcd712eD6285858ceBef"
+    "demoCollection": "0xc3e53F4d16Ae77Db1c982e75a937B9f60FE63690"
   }
 };

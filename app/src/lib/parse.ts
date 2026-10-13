@@ -27,3 +27,9 @@ export function parsePercentBps(text: string): bigint | undefined {
   if (text.trim() === "" || !Number.isFinite(value) || value < 0 || value > 100) return undefined;
   return BigInt(Math.round(value * 100));
 }
+
+/** A uniformly random 256-bit word from the browser's CSPRNG (for the local mock randomness provider). */
+export function randomWord(): bigint {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return bytes.reduce((word, byte) => (word << 8n) | BigInt(byte), 0n);
+}

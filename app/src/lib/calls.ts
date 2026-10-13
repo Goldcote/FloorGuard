@@ -95,6 +95,14 @@ export const placeBetCall = (d: Deployment, marketId: bigint, higher: boolean, a
   value: amount,
 });
 
+/** Open a market: betting runs for `bettingPeriod` seconds, it settles `duration` seconds from now. */
+export const createMarketCall = (d: Deployment, collection: Address, bettingPeriod: bigint, duration: bigint): Call => ({
+  address: d.predictionMarket,
+  abi: predictionMarketAbi,
+  functionName: "createMarket",
+  args: [collection, bettingPeriod, duration],
+});
+
 export const resolveMarketCall = (d: Deployment, marketId: bigint): Call => ({
   address: d.predictionMarket,
   abi: predictionMarketAbi,
@@ -125,13 +133,21 @@ export const startAuctionCall = (d: Deployment, vaultId: bigint): Call => ({
   args: [vaultId],
 });
 
-/** `price` is the auction price just read; it only falls, and the contract refunds any excess. */
+/**
+ * `price` is the auction price just read. It only falls, and the contract refunds any excess, so the
+ * value sent always covers the price at inclusion.
+ *
+ * One wei is added on purpose. With exactly `price`, gas is estimated at the moment of the read, when
+ * nothing is refunded; by the time the transaction is mined the price has dropped, the refund
+ * transfer runs after all, and the transaction can run out of gas. One wei of excess makes the
+ * estimate include the refund.
+ */
 export const buyCall = (d: Deployment, vaultId: bigint, price: bigint): Call => ({
   address: d.vault,
   abi: vaultAbi,
   functionName: "buy",
   args: [vaultId],
-  value: price,
+  value: price + 1n,
 });
 
 // ---------------------------------------------------------------- points
@@ -197,12 +213,13 @@ export const withdrawGamesCall = (d: Deployment): Call => ({
 });
 
 /**
- * LOCAL CHAINS ONLY. Settles a bet through test/mocks/MockRandomness.sol, where whoever calls
- * `fulfill` picks the random word. On public networks the provider is Chainlink VRF and this
+ * LOCAL CHAINS ONLY. Answers a randomness request (a game bet or a raffle draw) through
+ * test/mocks/MockRandomness.sol, where whoever calls `fulfill` picks the random word. `provider` is
+ * the deployment's `gamesRandomness` or `randomness` address. On public networks the provider is Chainlink VRF and this
  * function does not exist.
  */
-export const mockFulfillCall = (d: Deployment, requestId: bigint, randomWord: bigint): Call => ({
-  address: d.gamesRandomness,
+export const mockFulfillCall = (provider: Address, requestId: bigint, randomWord: bigint): Call => ({
+  address: provider,
   abi: mockRandomnessAbi,
   functionName: "fulfill",
   args: [requestId, randomWord],

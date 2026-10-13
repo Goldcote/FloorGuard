@@ -32,6 +32,7 @@ import {
   claimMarketCall,
   claimProjectShareCall,
   claimRaffleCall,
+  createMarketCall,
   drawRaffleCall,
   flushPointsCall,
   makeCollectionOfferCall,
@@ -50,6 +51,7 @@ import {
 import { decodeError, type DecodedError } from "../src/lib/errors";
 import {
   gameExposure,
+  gameLimits,
   HoldingStatus,
   impliedMultiple,
   maxGameWager,
@@ -138,6 +140,12 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
   const setup = (account: Address, address: Address, functionName: string, args: readonly unknown[]) =>
     send(account, { address, abi: setupAbi as Abi, functionName, args });
 
+  /** Vault.auctionPrice recomputed for the latest block, i.e. what a buy mined in it paid. */
+  async function auctionPriceAtLatestBlock(startPrice: bigint, endPrice: bigint, startTime: number) {
+    const elapsed = BigInt((await readChainTime(client)) - startTime);
+    return startPrice - ((startPrice - endPrice) * elapsed) / BigInt(3 * DAY);
+  }
+
   const ownerOf = (tokenId: bigint) =>
     client.readContract({ address: collection, abi: erc721Abi, functionName: "ownerOf", args: [tokenId] });
 
@@ -180,6 +188,8 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
 
     expect(await readGames(client, d, collection, owner)).toEqual({
       bankroll: 50n * ETH,
+      reserved: 0n,
+      maxTotalExposureBps: 2_000n,
       edgeBps: 200n,
       minBet: parseEther("0.001"),
       maxExposureBps: 100n,
@@ -233,7 +243,7 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
     expect(vault).toMatchObject({ holdings: [], holdingCount: 0n, governanceWindow: 30 * DAY, auctionDuration: 3 * DAY });
     expect(vault.owner).toBe(owner);
 
-    expect(await readRaffles(client, d)).toEqual({ raffles: [], raffleCount: 0n, totalPoints: 0n });
+    expect(await readRaffles(client, d)).toEqual({ raffles: [], raffleCount: 0n, totalPoints: 0n, nextDrawAt: 0 });
 
     // The seed approved the marketplace for all of the owner's tokens.
     expect(await readTokenState(client, collection, 1n, d.marketplace)).toEqual({ owner, approved: true });
@@ -355,8 +365,27 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
     expect(await revertOf(seller, resolveMarketCall(d, 1n))).toMatchObject({ name: "NotResolvable" });
     expect(await revertOf(seller, claimMarketCall(d, 1n))).toMatchObject({ name: "NotResolved" });
 
+    // Anyone can open a market while the oracle price is fresh (the Create market form).
+    let created = await readMarkets(client, d, seller);
+    expect(created).toMatchObject({ minBettingPeriod: 600, maxDuration: 30 * DAY });
+    expect(await revertOf(seller, createMarketCall(d, collection, 60n, 3_600n))).toMatchObject({ name: "InvalidDuration" });
+    expect(await revertOf(seller, createMarketCall(d, d.owner, 3_600n, 7_200n))).toMatchObject({ name: "UnsupportedCollection" });
+    await send(seller, createMarketCall(d, collection, 3_600n, 7_200n));
+    created = await readMarkets(client, d, seller);
+    expect(created.marketCount).toBe(2n);
+    const opened = await readChainTime(client);
+    expect(created.markets[0]).toMatchObject({
+      id: 2n,
+      startPrice: ETH,
+      closeTime: opened + 3_600,
+      resolveTime: opened + 7_200,
+      higherPool: 0n,
+      lowerPool: 0n,
+      outcome: Outcome.Pending,
+    });
+
     await send(seller, placeBetCall(d, 1n, false, parseEther("0.2")));
-    let market = (await readMarkets(client, d, seller)).markets[0];
+    let market = (await readMarkets(client, d, seller)).markets.find((m) => m.id === 1n)!;
     expect(market).toMatchObject({ lowerPool: parseEther("0.5"), stake: { higher: 0n, lower: parseEther("0.2") } });
 
     // Past the close time betting is rejected; past the resolve time anyone can settle.
@@ -370,7 +399,7 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
     await setup(owner, d.pushFloorOracle, "pushFloor", [collection, parseEther("1.2")]);
 
     await send(buyer, resolveMarketCall(d, 1n));
-    market = (await readMarkets(client, d, owner)).markets[0];
+    market = (await readMarkets(client, d, owner)).markets.find((m) => m.id === 1n)!;
     expect(market.outcome).toBe(Outcome.Higher);
 
     // The owner staked 0.5 on higher: 0.5 back + 0.5 of the losing pool - 3% of the winnings.
@@ -378,7 +407,7 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
     const receipt = await send(owner, claimMarketCall(d, 1n));
     const payout = (await client.getBalance({ address: owner })) - balance + receipt.gasUsed * receipt.effectiveGasPrice;
     expect(payout).toBe(parseEther("0.985"));
-    expect((await readMarkets(client, d, owner)).markets[0].stake).toEqual({ higher: 0n, lower: 0n });
+    expect((await readMarkets(client, d, owner)).markets.find((m) => m.id === 1n)!.stake).toEqual({ higher: 0n, lower: 0n });
     expect(await revertOf(owner, claimMarketCall(d, 1n))).toMatchObject({ name: "NothingToClaim" });
     // A losing stake claims points only.
     await send(seller, claimMarketCall(d, 1n));
@@ -412,15 +441,20 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
       message: expect.stringMatching(/^The auction price is 1\.75\d* ETH but only 1 ETH was sent\.$/),
     });
 
-    // Same steps as the Buy button: read the price, send exactly that.
+    // Same steps as the Buy button: read the price, then buy. Time passes in between, so the price
+    // has fallen by the time the transaction is mined and the contract refunds the difference. (With
+    // a value of exactly the price read, gas was estimated without that refund and the transaction
+    // ran out of gas whenever a block boundary fell in between: this used to fail intermittently.)
     const price = await client.readContract({ address: d.vault, abi: vaultAbi, functionName: "auctionPrice", args: [1n] });
     const budget = (await readFloorBid(client, d, collection)).budget;
     const balance = await client.getBalance({ address: buyer });
+    await client.increaseTime({ seconds: 600 });
     const receipt = await send(buyer, buyCall(d, 1n, price));
     const spent = balance - (await client.getBalance({ address: buyer })) - receipt.gasUsed * receipt.effectiveGasPrice;
     // The price fell between the read and the block; the excess came back.
-    expect(spent).toBeLessThanOrEqual(price);
-    expect(spent).toBeGreaterThan((price * 999n) / 1_000n);
+    expect(spent).toBeLessThan(price);
+    expect(spent).toBeGreaterThan((price * 99n) / 100n);
+    expect(spent).toBe(await auctionPriceAtLatestBlock(holding.auction!.startPrice, holding.auction!.endPrice, holding.auction!.startTime));
     expect(await ownerOf(3n)).toBe(buyer);
     expect((await readFloorBid(client, d, collection)).budget).toBe(budget + spent);
 
@@ -454,11 +488,13 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
     await send(buyer, drawRaffleCall(d, 1n));
     state = await readRaffles(client, d);
     expect(state.raffles[0].status).toBe(RaffleStatus.Drawing);
+    // The request id the "Local only: draw with mock randomness" button answers.
+    expect(state.raffles[0].requestId).toBe(1n);
     expect((await readOverview(client, d, collection, seller)).pointsFrozen).toBe(true);
     expect(await revertOf(owner, flushPointsCall(d, owner))).toMatchObject({ name: "Frozen" });
 
     // On a local chain whoever calls the mock provider picks the random word.
-    await setup(buyer, d.randomness, "fulfill", [1n, 0n]);
+    await send(buyer, mockFulfillCall(d.randomness, state.raffles[0].requestId!, 0n));
     state = await readRaffles(client, d);
     expect(state.raffles[0].status).toBe(RaffleStatus.Won);
     const winner = state.raffles[0].winner;
@@ -520,7 +556,7 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
     const budget = (await readFloorBid(client, d, collection)).budget;
     let balance = await client.getBalance({ address: seller });
     // Same call as the "Local only" button; anyone may send it. Roll 4999 < 5000 wins.
-    await send(buyer, mockFulfillCall(d, first, 10_000n * 123n + 4_999n));
+    await send(buyer, mockFulfillCall(d.gamesRandomness, first, 10_000n * 123n + 4_999n));
     expect((await client.getBalance({ address: seller })) - balance).toBe(parseEther("0.196"));
     bets = await readUserBets(client, d, seller, games.refundTimeout);
     expect(bets[0]).toEqual({
@@ -538,7 +574,7 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
     overview = await readOverview(client, d, collection, buyer);
     expect(overview.userProjectShareOwed).toBe(parseEther("0.0004"));
     // A settled bet cannot be settled again; the error comes from Games through the mock provider.
-    expect(await revertOf(buyer, mockFulfillCall(d, first, 0n))).toMatchObject({ name: "UnknownBet" });
+    expect(await revertOf(buyer, mockFulfillCall(d.gamesRandomness, first, 0n))).toMatchObject({ name: "UnknownBet" });
     expect(await revertOf(buyer, refundBetCall(d, first))).toMatchObject({ name: "UnknownBet" });
 
     // --- loss
@@ -547,7 +583,7 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
     expect(bets.map((b) => b.status)).toEqual(["pending", "won"]);
     const second = bets[0].requestId;
     balance = await client.getBalance({ address: seller });
-    await send(buyer, mockFulfillCall(d, second, 5_000n)); // roll 5000: not below 5000
+    await send(buyer, mockFulfillCall(d.gamesRandomness, second, 5_000n)); // roll 5000: not below 5000
     expect(await client.getBalance({ address: seller })).toBe(balance);
     bets = await readUserBets(client, d, seller, games.refundTimeout);
     expect(bets[0]).toMatchObject({ status: "lost", roll: 5_000, payout: 0n, fee: parseEther("0.002") });
@@ -583,5 +619,51 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
     expect(bets.map((b) => b.status)).toEqual(["refunded", "lost", "won"]);
     expect(bets[0].refundableAt).toBeUndefined();
     expect((await readGames(client, d, collection)).bankroll).toBe(50n * ETH);
+
+    // --- randomness that arrives after the refund window refunds the bet instead of settling it
+    await send(seller, playCall(d, collection, 5_000, wager));
+    const late = (await readUserBets(client, d, seller, games.refundTimeout))[0];
+    await client.setNextBlockTimestamp({ timestamp: BigInt(late.refundableAt!) });
+    await client.mine({ blocks: 1 });
+    balance = await client.getBalance({ address: seller });
+    await send(buyer, mockFulfillCall(d.gamesRandomness, late.requestId, 0n)); // roll 0 would have won
+    expect((await client.getBalance({ address: seller })) - balance).toBe(wager);
+    expect((await readUserBets(client, d, seller, games.refundTimeout))[0]).toMatchObject({
+      requestId: late.requestId,
+      status: "refunded",
+    });
+
+    // --- the cap on all open bets together: 20% of the 50 ETH house funds, i.e. 10 ETH reserved
+    games = await readGames(client, d, collection, seller);
+    expect(games).toMatchObject({ bankroll: 50n * ETH, reserved: 0n });
+    // Fill up with maximum bets. Each reserves 1% of the remaining free bankroll (the per-bet cap),
+    // until the room left under the total cap is smaller than that.
+    let placed = 0;
+    for (; placed < 40; placed++) {
+      games = await readGames(client, d, collection, seller);
+      const limits = gameLimits(games);
+      expect(limits.exposure).toBe(limits.perBet < limits.totalRoom ? limits.perBet : limits.totalRoom);
+      if (limits.totalRoom < limits.perBet) break;
+      await send(seller, playCall(d, collection, 5_000, maxGameWager(games, 5_000)!));
+    }
+    expect(placed).toBeGreaterThanOrEqual(20);
+    expect(placed).toBeLessThan(40);
+    expect(games.bankroll + games.reserved).toBe(50n * ETH);
+    // Now the total cap binds: the maximum wager is what fits in the remaining room, less than the
+    // per-bet cap alone would allow.
+    const limits = gameLimits(games);
+    expect(limits.totalRoom).toBe(10n * ETH - games.reserved);
+    const capped = maxGameWager(games, 5_000)!;
+    expect(gameExposure(capped, 5_000, games.edgeBps)).toBeLessThanOrEqual(limits.totalRoom);
+    expect(gameExposure(capped + parseEther("0.000001"), 5_000, games.edgeBps)).toBeGreaterThan(limits.totalRoom);
+    expect(gameExposure(capped + parseEther("0.0001"), 5_000, games.edgeBps)).toBeLessThan(limits.perBet);
+    const overTotal = await revertOf(seller, playCall(d, collection, 5_000, capped + parseEther("0.0001")));
+    expect(overTotal.name).toBe("TotalExposureTooHigh");
+    expect(overTotal.message).toMatch(/^Too many open bets: .* the limit is 10 ETH\./);
+    await send(seller, playCall(d, collection, 5_000, capped)); // exactly the maximum is accepted
+    games = await readGames(client, d, collection, seller);
+    expect(games.reserved).toBeGreaterThan(parseEther("9.9999"));
+    // Nothing above the minimum bet fits any more.
+    expect(maxGameWager(games, 5_000)!).toBeLessThan(games.minBet);
   });
 });

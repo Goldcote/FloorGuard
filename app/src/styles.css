@@ -493,3 +493,19 @@ button.local {
   border-color: var(--warn);
   color: var(--warn);
 }
+
+.local-wallet {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border: 1px dashed var(--warn);
+  border-radius: 6px;
+  color: var(--warn);
+  font-size: 13px;
+}
+
+td.wrap {
+  white-space: normal;
+  min-width: 180px;
+}
