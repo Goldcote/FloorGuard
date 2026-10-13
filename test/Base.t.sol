@@ -83,6 +83,12 @@ abstract contract Base is Test {
         nft.approve(operator, tokenId);
     }
 
+    /// Credit points from this test contract (which must have a rate) and activate them.
+    function _earn(address user, uint256 feeWei) internal {
+        points.creditFee(user, feeWei);
+        points.flush(user);
+    }
+
     function _pushFloor(uint256 price) internal {
         vm.prank(gov);
         pushOracle.pushFloor(address(nft), price);

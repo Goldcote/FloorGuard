@@ -31,7 +31,7 @@ interface IPoints {
     function totalPoints() external view returns (uint256);
     function pick(uint256 randomWord) external view returns (address);
     function resetWinner(address user) external;
-    /// @notice Hold back new credits until `unfreeze`, so weights cannot move while a draw is in flight.
+    /// @notice Block activation of pending points until `unfreeze`, so weights cannot move mid-draw.
     function freeze() external;
     function unfreeze() external;
 }
