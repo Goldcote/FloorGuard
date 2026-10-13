@@ -211,6 +211,9 @@ contract Marketplace is Ownable2Step, ReentrancyGuard {
     }
 
     function setSaleRecorder(ISaleRecorder saleRecorder_) external onlyOwner {
+        if (address(saleRecorder_) != address(0) && address(saleRecorder_).code.length == 0) {
+            revert NotAContract();
+        }
         saleRecorder = saleRecorder_;
         emit SaleRecorderSet(address(saleRecorder_));
     }

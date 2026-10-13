@@ -6,12 +6,16 @@ import {PredictionMarket} from "../src/PredictionMarket.sol";
 import {Points} from "../src/Points.sol";
 import {VaultRaffle} from "../src/VaultRaffle.sol";
 import {Games} from "../src/Games.sol";
+import {Vault} from "../src/Vault.sol";
+import {TicketRaffle} from "../src/TicketRaffle.sol";
+import {Lottery} from "../src/Lottery.sol";
+import {Marketplace} from "../src/Marketplace.sol";
 import {BuybackEngine} from "../src/BuybackEngine.sol";
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {Treasury} from "../src/Treasury.sol";
 import {MockNFT, RejectETH} from "./mocks/MockNFT.sol";
 import {MockRandomness} from "./mocks/MockRandomness.sol";
-import {IRandomnessProvider, IPoints} from "../src/interfaces/IFloorGuard.sol";
+import {IRandomnessProvider, IPoints, ISaleRecorder} from "../src/interfaces/IFloorGuard.sol";
 
 /// @dev Regression tests for the issues found in the first independent review.
 contract RegressionsTest is Base {
@@ -386,6 +390,222 @@ contract RegressionsTest is Base {
         prediction.claim(marketId);
         assertEq(points.pendingOf(bob), points.pendingOf(alice));
         assertEq(points.pendingOf(bob), 0.015 ether * POINTS_RATE / 1 ether);
+    }
+
+    // ------------------------------------------------------------------ fifth review
+
+    function _holdingBoughtAt10() internal returns (uint256 vaultId) {
+        vm.prank(gov);
+        engine.configureBid(address(nft), 10 ether, 15 ether, 0, 0, true);
+        treasury.deposit{value: 10 ether}(address(nft));
+        _mintApproved(alice, 1, address(engine));
+        vm.prank(alice);
+        vaultId = engine.sell(address(nft), 1, 0);
+    }
+
+    /// An auction the owner priced can only be restarted or replaced by the owner.
+    function test_publicCannotReplaceAnOwnerPricedAuction() public {
+        uint256 vaultId = _holdingBoughtAt10();
+        vm.startPrank(gov);
+        vault.governanceUnlock(vaultId);
+        vault.startAuctionWithPrices(vaultId, 400 ether, 100 ether);
+        vm.stopPrank();
+        skip(60 days);
+        _pushFloor(1 ether);
+        assertEq(vault.auctionPrice(vaultId), 100 ether);
+
+        vm.prank(carol);
+        vm.expectRevert(Vault.OwnerPricedAuction.selector);
+        vault.startAuction(vaultId);
+        assertEq(vault.auctionPrice(vaultId), 100 ether);
+
+        vm.prank(gov);
+        vault.startAuctionWithPrices(vaultId, 50 ether, 5 ether); // the owner can
+        assertEq(vault.auctionPrice(vaultId), 50 ether);
+    }
+
+    /// An auction cannot be restarted before its price has fallen to the reserve.
+    function test_auctionRestartsOnlyOnceThePriceReachedTheReserve() public {
+        uint256 vaultId = _holdingBoughtAt10();
+        skip(180 days);
+        _pushFloor(100 ether);
+        vault.unlock(vaultId); // floor at unlock: 100 ETH
+        assertEq(vault.unlockFloorOf(vaultId), 100 ether);
+        skip(30 days);
+
+        // the oracle now reads 13 ETH, but the auction still opens at 16 x the floor seen at unlock
+        _pushFloor(13 ether);
+        vm.prank(carol);
+        vault.startAuction(vaultId);
+        assertEq(vault.auctionPrice(vaultId), 1_600 ether);
+
+        skip(4 days); // 100 ETH: not yet at the 13 ETH reserve
+        _pushFloor(13 ether);
+        vm.prank(carol);
+        vm.expectRevert(Vault.AuctionRunning.selector);
+        vault.startAuction(vaultId);
+
+        skip(3 days); // 1,600 / 128 = 12.5, floored at 13
+        _pushFloor(13 ether);
+        assertEq(vault.auctionPrice(vaultId), 13 ether);
+        vm.prank(carol);
+        vault.startAuction(vaultId);
+    }
+
+    function test_minReserveIsALowerBoundOnOraclePricedAuctions() public {
+        uint256 vaultId = _holdingBoughtAt10();
+        vm.startPrank(gov);
+        vault.governanceUnlock(vaultId);
+        vault.setMinReserve(address(nft), 40 ether);
+        vm.stopPrank();
+        _pushFloor(1 ether);
+        vm.prank(gov);
+        vault.startAuction(vaultId);
+        assertEq(vault.auctionPrice(vaultId), 640 ether);
+        skip(30 days);
+        assertEq(vault.auctionPrice(vaultId), 40 ether);
+    }
+
+    /// Cancelling an auction restarts the governance window.
+    function test_cancelAuctionReopensTheGovernanceWindow() public {
+        uint256 vaultId = _holdingBoughtAt10();
+        vm.prank(gov);
+        vault.governanceUnlock(vaultId);
+        skip(31 days);
+        _pushFloor(13 ether);
+        vm.startPrank(gov);
+        vault.startAuction(vaultId);
+        vault.cancelAuction(vaultId);
+        vm.stopPrank();
+
+        vm.prank(carol);
+        vm.expectRevert(
+            abi.encodeWithSelector(Vault.GovernanceWindowOpen.selector, block.timestamp + 30 days)
+        );
+        vault.startAuction(vaultId);
+    }
+
+    /// Only one vault raffle draw can be in flight, so points always get a window to be activated.
+    function test_onlyOneVaultRaffleDrawAtATime() public {
+        uint256 first = _openRaffle();
+        // a second prize
+        treasury.deposit{value: 10 ether}(address(nft));
+        _mintApproved(alice, 2, address(engine));
+        vm.prank(alice);
+        uint256 vaultId = engine.sell(address(nft), 2, 0);
+        vm.startPrank(gov);
+        vault.governanceUnlock(vaultId);
+        uint256 second = vault.sendToRaffle(vaultId);
+        vm.stopPrank();
+        _earn(bob, 1 ether);
+        skip(7 days);
+
+        raffle.draw(first);
+        vm.expectRevert(VaultRaffle.DrawInFlight.selector);
+        raffle.draw(second);
+        randomness.fulfill(1, 0);
+        raffle.draw(second);
+    }
+
+    /// A ticket raffle cannot be aborted while an answer to its draw would still be accepted, so nobody
+    /// can veto a result they have seen coming.
+    function test_ticketRaffleAbortCannotVetoAPendingDraw() public {
+        vm.prank(gov);
+        ticketRaffle.setCollectionSupport(address(nft), true);
+        _mintApproved(alice, 1, address(ticketRaffle));
+        vm.prank(alice);
+        uint256 id = ticketRaffle.create(address(nft), 1, 0.1 ether, 5, 20, 1 days);
+        vm.prank(bob);
+        ticketRaffle.buy{value: 0.5 ether}(id, 5);
+        vm.prank(carol);
+        ticketRaffle.buy{value: 0.5 ether}(id, 5);
+
+        skip(9 days); // nobody closed it for more than a week
+        ticketRaffle.close(id);
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(TicketRaffle.TooEarly.selector, block.timestamp + 1 days));
+        ticketRaffle.abort(id);
+
+        randomness.fulfill(1, 7); // carol's ticket: the result stands
+        (,,,,,,,,,, address winner) = ticketRaffle.raffles(id);
+        assertEq(winner, carol);
+    }
+
+    /// A raffle that sells out early can be aborted a week after it closed, not after its scheduled end.
+    function test_soldOutRaffleAbortClockRunsFromTheClose() public {
+        vm.prank(gov);
+        ticketRaffle.setCollectionSupport(address(nft), true);
+        _mintApproved(alice, 1, address(ticketRaffle));
+        vm.prank(alice);
+        uint256 id = ticketRaffle.create(address(nft), 1, 0.1 ether, 5, 10, 30 days);
+        vm.prank(bob);
+        ticketRaffle.buy{value: 1 ether}(id, 10);
+        ticketRaffle.close(id); // sold out in the first hour; randomness never arrives
+
+        skip(7 days);
+        ticketRaffle.abort(id);
+        uint256 before = bob.balance;
+        vm.prank(bob);
+        ticketRaffle.refund(id);
+        assertEq(bob.balance - before, 1 ether);
+    }
+
+    function test_lotteryAbortCannotVetoAPendingDraw() public {
+        vm.prank(gov);
+        lottery.setConfig(address(nft), 0.01 ether, 1 days, true);
+        vm.prank(bob);
+        uint256 roundId = lottery.buy{value: 0.1 ether}(address(nft), 10);
+        skip(9 days);
+        lottery.draw(roundId);
+        vm.expectRevert(abi.encodeWithSelector(Lottery.TooEarly.selector, block.timestamp + 1 days));
+        lottery.abort(roundId);
+        randomness.fulfill(1, 0);
+        assertEq(lottery.owedTo(bob), 0.095 ether);
+    }
+
+    /// A prediction market's fee and a raffle's minimum pot are fixed when they are created.
+    function test_feeAndMinPotChangesDoNotReachOpenMarketsAndRaffles() public {
+        _pushFloor(10 ether);
+        uint256 marketId = prediction.createMarket(address(nft), 1 hours, 1 days);
+        vm.prank(alice);
+        prediction.placeBet{value: 1 ether}(marketId, true);
+        vm.prank(bob);
+        prediction.placeBet{value: 1 ether}(marketId, false);
+
+        vm.startPrank(gov);
+        ticketRaffle.setCollectionSupport(address(nft), true);
+        vm.stopPrank();
+        _mintApproved(alice, 1, address(ticketRaffle));
+        vm.prank(alice);
+        uint256 raffleId = ticketRaffle.create(address(nft), 1, 0.1 ether, 1, 10, 1 days);
+        vm.prank(bob);
+        ticketRaffle.buy{value: 0.1 ether}(raffleId, 1);
+
+        vm.startPrank(gov);
+        prediction.setParams(1_000, 0.001 ether, 1 days);
+        ticketRaffle.setParams(500, 100 ether);
+        vm.stopPrank();
+
+        skip(1 days);
+        _pushFloor(11 ether);
+        prediction.resolve(marketId);
+        uint256 before = alice.balance;
+        vm.prank(alice);
+        prediction.claim(marketId);
+        assertEq(alice.balance - before, 1.97 ether); // still the 3% fee
+
+        ticketRaffle.close(raffleId);
+        (,,,,,,,,, TicketRaffle.Status status,) = ticketRaffle.raffles(raffleId);
+        assertEq(uint8(status), uint8(TicketRaffle.Status.Drawing)); // 0.1 ETH pot still meets its own minimum
+    }
+
+    function test_saleRecorderMustBeAContract() public {
+        vm.startPrank(gov);
+        vm.expectRevert(BuybackEngine.NotAContract.selector);
+        engine.setSaleRecorder(ISaleRecorder(address(0xdead)));
+        vm.expectRevert(Marketplace.NotAContract.selector);
+        marketplace.setSaleRecorder(ISaleRecorder(address(0xdead)));
+        vm.stopPrank();
     }
 }
 

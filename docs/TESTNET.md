@@ -28,7 +28,7 @@ Fund it with Base Sepolia ETH from a faucet. Well under 0.01 ETH is enough.
 ## 2. A VRF subscription
 
 Create a subscription at [vrf.chain.link](https://vrf.chain.link) on Base
-Sepolia, fund it, and note its id. You will add two consumers to it after
+Sepolia, fund it, and note its id. You will add four consumers to it after
 deploying.
 
 ## 3. Configure

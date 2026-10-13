@@ -13,6 +13,7 @@ contest, is required before the contracts hold real funds.
 | Review 1 | All contracts at the time | 2 High, 3 Medium, 4 Low |
 | Review 2 | Games, project fee share, fixes from review 1 | 2 Medium, 7 Low |
 | Review 3 | TicketRaffle, IPLicenseManager, deploy scripts, fixes from review 2 | 1 High, 5 Medium, 7 Low |
+| Review 5 | Fixes from review 3 and the full-system audit; fresh look at everything | 2 Medium, 8 Low |
 | Full-system audit | Core contracts and how all modules interact | 1 High, 3 Medium, 6 Low |
 | Static analysis | Slither 0.11.6 on `src/` | No actionable medium or high finding |
 | Web app | Every write flow clicked through with a local test account | 4 bugs fixed |
@@ -21,8 +22,9 @@ Each reviewer worked independently from the code, proved its High findings with
 tests, and reported what it had not verified. No Critical finding was reported
 in any pass.
 
-Test suite at the time of writing: 152 tests (unit, fuzz, stateful invariant and
-end-to-end), with 94% line coverage of `src/`.
+Test suite at the time of writing: 181 tests (unit, fuzz, stateful invariant and
+end-to-end). Line coverage of `src/` was 94% when last measured, before the
+slots, lottery and review 5 changes.
 
 ## High findings, all fixed
 
@@ -31,7 +33,7 @@ end-to-end), with 94% line coverage of `src/`.
 | A raffle could be steered by adding points after seeing the random word | Point weights are frozen from the draw request until the result | `test_raffleWeightsAreFrozenDuringDraw` |
 | Vault NFTs could be bought for 1 wei by pushing the sales oracle down | Auction reserve of 130% of the purchase price | `test_auction_reserveIgnoresOracleBelowUnlockPrice` |
 | Ticket money could be locked for ever when an NFT transfer failed | Refunds no longer depend on the transfer; stuck raffles can be aborted | `test_abort_whenAWonRaffleIsNeverSettled` |
-| With a floor well above the reserve, a vault auction could still be bought far below market | Auctions open at 16 times the reserve and halve daily | `test_auctionCannotBeSnipedBelowMarketByPushingTheOracleDown` |
+| With a floor well above the reserve, a vault auction could still be bought far below market | Auctions open at 16 times the reserve, or 16 times the floor seen at unlock, and halve daily. A holding worth more than 16 times that basis can still open below market | `test_auctionCannotBeSnipedBelowMarketByPushingTheOracleDown` |
 
 ## Medium findings
 
@@ -47,6 +49,8 @@ Fixed:
 - A randomness request could be triggered for one wei.
 - A revoked licence could be bought again.
 - A holding on auction could not be taken off auction.
+- Anyone could replace an auction the owner had priced with an oracle-priced one.
+- A ticket raffle could be aborted while its draw was pending, vetoing a result.
 
 Accepted and documented in [SECURITY.md](../SECURITY.md), not fixed:
 
@@ -110,5 +114,7 @@ and check after every step that:
 - NFT contracts with transfer hooks, blocklists or other non-standard behaviour.
 - The web app's own security (it has been tested for function, not reviewed for
   attacks).
-- The fixes made after the full-system audit have regression tests but have not
-  been through another independent pass.
+- Slots and the Lottery contract have tests but have not been through an
+  independent review.
+- The fixes made after review 5 have regression tests but have not been through
+  another independent pass.

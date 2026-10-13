@@ -41,8 +41,9 @@ contract IPLicenseManager is Ownable2Step, ReentrancyGuard {
     mapping(address collection => mapping(uint8 tier => Tier)) public tiers;
     uint256 public licenseCount;
     mapping(uint256 licenseId => License) public licenses;
-    /// @notice The licence that counts for a licensee and holding: the one in force that ends last.
-    mapping(address licensee => mapping(uint256 vaultId => uint256 licenseId)) public latestLicenseOf;
+    /// @notice The licence that counts for a licensee, holding and tier: the one in force that ends last.
+    mapping(address licensee => mapping(uint256 vaultId => mapping(uint8 tier => uint256 licenseId))) public
+        latestLicenseOf;
     /// @notice Set when a licence is revoked: the licensee cannot buy another for that holding until
     ///         the owner lifts the ban.
     mapping(address licensee => mapping(uint256 vaultId => bool)) public isBanned;
@@ -104,36 +105,42 @@ contract IPLicenseManager is Ownable2Step, ReentrancyGuard {
             usageScope: usageScope
         });
         // a shorter licence never hides a longer one that is still in force
-        License storage current = licenses[latestLicenseOf[msg.sender][vaultId]];
+        License storage current = licenses[latestLicenseOf[msg.sender][vaultId][tier]];
         if (current.revoked || current.end <= block.timestamp || end >= current.end) {
-            latestLicenseOf[msg.sender][vaultId] = licenseId;
+            latestLicenseOf[msg.sender][vaultId][tier] = licenseId;
         }
         emit LicenseIssued(licenseId, msg.sender, vaultId, tier, end, msg.value, usageScope);
         if (msg.value != 0) treasury.depositFee{value: msg.value}(collection);
     }
 
-    /// @notice Whether `licensee` holds a licence in force for the holding.
-    function hasValidLicense(address licensee, uint256 vaultId) external view returns (bool valid) {
-        (valid,,) = validLicenseOf(licensee, vaultId);
+    /// @notice Whether `licensee` holds a licence of `tier` in force for the holding.
+    function hasValidLicense(address licensee, uint256 vaultId, uint8 tier)
+        external
+        view
+        returns (bool valid)
+    {
+        (valid,) = validLicenseOf(licensee, vaultId, tier);
     }
 
-    /// @notice The licence in force for `licensee` on the holding, with its tier and end time. A licence
-    ///         is in force until its term ends, it is revoked, or the NFT goes to auction or leaves the
-    ///         Vault.
-    function validLicenseOf(address licensee, uint256 vaultId)
+    /// @notice Whether `licensee`'s licence of `tier` for the holding is in force, and when it ends. A
+    ///         licence is in force until its term ends or it is revoked, while the licensee is not
+    ///         banned from the holding and the Vault holds the NFT outside an auction.
+    function validLicenseOf(address licensee, uint256 vaultId, uint8 tier)
         public
         view
-        returns (bool valid, uint8 tier, uint40 end)
+        returns (bool valid, uint40 end)
     {
-        License storage l = licenses[latestLicenseOf[licensee][vaultId]];
-        if (l.licensee == address(0) || l.revoked || block.timestamp >= l.end) return (false, 0, 0);
+        if (isBanned[licensee][vaultId]) return (false, 0);
+        License storage l = licenses[latestLicenseOf[licensee][vaultId][tier]];
+        if (l.licensee == address(0) || l.revoked || block.timestamp >= l.end) return (false, 0);
         (, Vault.Status status) = _holding(vaultId);
-        if (status != Vault.Status.Locked && status != Vault.Status.Unlocked) return (false, 0, 0);
-        return (true, l.tier, l.end);
+        if (status != Vault.Status.Locked && status != Vault.Status.Unlocked) return (false, 0);
+        return (true, l.end);
     }
 
     /// @notice Governance may revoke a licence for a breach of its terms. No refund is paid, and the
-    ///         licensee is banned from licensing that holding again until `setBan` lifts it.
+    ///         licensee is banned from that holding: none of their licences for it is valid and they
+    ///         cannot buy another until `setBan` lifts it.
     function revokeLicense(uint256 licenseId) external onlyOwner {
         License storage l = licenses[licenseId];
         if (l.licensee == address(0)) revert UnknownLicense();

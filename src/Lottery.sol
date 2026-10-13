@@ -66,6 +66,8 @@ contract Lottery is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     mapping(address collection => uint256 roundId) public currentRoundOf;
     uint256 public roundCount;
     mapping(uint256 roundId => Round) public rounds;
+    /// @notice The minimum pot of each round, fixed when it opens.
+    mapping(uint256 roundId => uint256) public minPotOf;
     mapping(uint256 roundId => Entry[]) private _entries;
     /// @notice What each buyer paid into a round, refundable if the round is not drawn.
     mapping(uint256 roundId => mapping(address => uint256)) public paidBy;
@@ -127,6 +129,7 @@ contract Lottery is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
             r.endTime = uint40(block.timestamp + config.duration);
             r.feeBps = uint16(feeBps);
             r.status = Status.Open;
+            minPotOf[roundId] = minPot;
             emit RoundOpened(roundId, collection, config.ticketPrice, r.endTime);
         }
         uint256 cost = uint256(r.ticketPrice) * count;
@@ -153,7 +156,7 @@ contract Lottery is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         if (r.status != Status.Open) revert WrongStatus(r.status);
         if (block.timestamp < r.endTime) revert StillOpen();
 
-        if (r.ticketsSold == 0 || uint256(r.ticketPrice) * r.ticketsSold < minPot) {
+        if (r.ticketsSold == 0 || uint256(r.ticketPrice) * r.ticketsSold < minPotOf[roundId]) {
             r.status = Status.Refunding;
             emit RoundRefunding(roundId);
             return;
@@ -209,6 +212,12 @@ contract Lottery is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         Round storage r = rounds[roundId];
         if (r.status != Status.Open && r.status != Status.Drawing) revert WrongStatus(r.status);
         uint256 readyAt = r.endTime + ABORT_DELAY;
+        if (r.status == Status.Drawing) {
+            // never while an answer to the pending request would still be accepted: otherwise whoever saw
+            // the result first could choose between letting it stand and aborting
+            uint256 answerDeadline = r.requestedAt + DRAW_TIMEOUT;
+            if (answerDeadline > readyAt) readyAt = answerDeadline;
+        }
         if (block.timestamp < readyAt) revert TooEarly(readyAt);
         _clearRequest(roundId);
         r.status = Status.Refunding;
@@ -265,7 +274,7 @@ contract Lottery is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         emit ConfigSet(collection, ticketPrice, duration, active);
     }
 
-    /// @dev The fee applies to rounds opened afterwards; the minimum pot applies at `draw`.
+    /// @dev Both apply to rounds opened afterwards.
     function setParams(uint256 feeBps_, uint256 minPot_) external onlyOwner {
         if (feeBps_ > MAX_FEE_BPS) revert InvalidParams();
         feeBps = feeBps_;

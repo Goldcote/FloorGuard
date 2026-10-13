@@ -69,6 +69,8 @@ contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     mapping(uint256 raffleId => Raffle) public raffles;
     /// @notice The platform fee of each raffle, fixed when it is created.
     mapping(uint256 raffleId => uint256) public feeBpsOf;
+    /// @notice The minimum pot of each raffle, fixed when it is created.
+    mapping(uint256 raffleId => uint256) public minPotOf;
     /// @notice Whether the creator has taken the NFT back from a cancelled or refunded raffle.
     mapping(uint256 raffleId => bool) public nftReturned;
     mapping(uint256 raffleId => Entry[]) private _entries;
@@ -163,6 +165,7 @@ contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
             winner: address(0)
         });
         feeBpsOf[raffleId] = feeBps;
+        minPotOf[raffleId] = minPot;
         IERC721(collection).transferFrom(msg.sender, address(this), tokenId);
         emit RaffleCreated(
             raffleId, msg.sender, collection, tokenId, ticketPrice, minTickets, maxTickets, endTime
@@ -212,9 +215,11 @@ contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         Raffle storage r = raffles[raffleId];
         if (r.status != Status.Open) revert WrongStatus(r.status);
         if (block.timestamp < r.endTime && r.ticketsSold < r.maxTickets) revert StillOpen();
+        // a raffle that sold out early has ended now; the abort clock runs from here
+        if (block.timestamp < r.endTime) r.endTime = uint40(block.timestamp);
 
         if (
-            r.ticketsSold < r.minTickets || uint256(r.ticketPrice) * r.ticketsSold < minPot
+            r.ticketsSold < r.minTickets || uint256(r.ticketPrice) * r.ticketsSold < minPotOf[raffleId]
                 || r.ticketsSold == 0
         ) {
             r.status = Status.Refunding;
@@ -237,9 +242,19 @@ contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     function abort(uint256 raffleId) external {
         Raffle storage r = raffles[raffleId];
         uint256 readyAt;
-        if (r.status == Status.Open || r.status == Status.Drawing) readyAt = r.endTime + ABORT_DELAY;
-        else if (r.status == Status.Won) readyAt = r.requestedAt + ABORT_DELAY;
-        else revert WrongStatus(r.status);
+        if (r.status == Status.Open) {
+            readyAt = r.endTime + ABORT_DELAY;
+        } else if (r.status == Status.Drawing) {
+            // never while an answer to the pending request would still be accepted: otherwise whoever saw
+            // the result first could choose between letting it stand and aborting
+            readyAt = r.endTime + ABORT_DELAY;
+            uint256 answerDeadline = r.requestedAt + DRAW_TIMEOUT;
+            if (answerDeadline > readyAt) readyAt = answerDeadline;
+        } else if (r.status == Status.Won) {
+            readyAt = r.requestedAt + ABORT_DELAY;
+        } else {
+            revert WrongStatus(r.status);
+        }
         if (block.timestamp < readyAt) revert TooEarly(readyAt);
 
         uint256 requestId = currentRequest[raffleId];
@@ -355,7 +370,7 @@ contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
 
     // ------------------------------------------------------------------ admin
 
-    /// @dev The fee applies to raffles created afterwards; the minimum pot applies at `close`.
+    /// @dev Both apply to raffles created afterwards.
     function setParams(uint256 feeBps_, uint256 minPot_) external onlyOwner {
         if (feeBps_ > MAX_FEE_BPS) revert InvalidParams();
         feeBps = feeBps_;

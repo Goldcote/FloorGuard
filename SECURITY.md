@@ -4,7 +4,7 @@
 
 FloorGuard has had no professional audit, no formal verification and no testnet
 soak. The test suite covers the behaviour described in `docs/ARCHITECTURE.md`,
-which is not the same as being safe. Four automated review passes have been run
+which is not the same as being safe. Five automated review passes have been run
 and their findings fixed; [docs/AUDIT.md](docs/AUDIT.md) records them. That is
 not a professional audit.
 
@@ -16,8 +16,10 @@ not a professional audit.
 - **Oracle manipulation.** `SalesFloorOracle` can be moved by four wash trades in
   a single transaction, whatever the organic volume. Pushing it down is free,
   because the fee on a 1 wei sale rounds to zero; pushing it up costs the fee on
-  each inflated sale. Vault auctions do not rely on it for their sale price, but
-  anything else that settles on this oracle is exposed. Do not point the
+  each inflated sale. Vault auctions use it for their reserve and opening price:
+  a low reading cannot open an auction below 16 times the unlock price, but a
+  high reading can hold an auction above the market until it is restarted.
+  Anything else that settles on this oracle is exposed. Do not point the
   PredictionMarket at it. `PushFloorOracle` trusts its reporters completely.
 - **Vault unlock timing.** Because the oracle can be pushed down for free, anyone
   can keep a holding from unlocking on its own; the owner can still unlock it.
@@ -69,6 +71,13 @@ not a professional audit.
 - **IP licences are records, not rights.** `IPLicenseManager` records payments.
   Whether the Vault can sublicense a collection's artwork depends on that
   collection's terms.
+- **Owner changes that reach open positions.** A licence tier's duration can be
+  changed between a buyer signing and the purchase being mined; only the price
+  is checked. Fees and minimum pots are fixed per market, raffle and round when
+  they are created.
+- **Stranded ETH.** Rounding dust in the PredictionMarket is never swept. Games,
+  ticket raffle and lottery payouts go only to the account that earned them, so
+  a contract that cannot receive ETH cannot collect.
 - **Non-standard NFTs.** Collections with transfer hooks, blocklists or
   non-standard ERC-721 behaviour have not been considered.
 

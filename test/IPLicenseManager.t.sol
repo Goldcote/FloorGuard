@@ -29,8 +29,8 @@ contract IPLicenseManagerTest is Base {
     function test_license_feeFundsBuybacksAndIsValidForItsTerm() public {
         uint256 id = _request(bob);
         assertEq(treasury.budgetOf(address(nft)), 0.1 ether);
-        assertTrue(licenses.hasValidLicense(bob, vaultId));
-        assertFalse(licenses.hasValidLicense(carol, vaultId));
+        assertTrue(licenses.hasValidLicense(bob, vaultId, CREATOR));
+        assertFalse(licenses.hasValidLicense(carol, vaultId, CREATOR));
 
         (
             address licensee,
@@ -49,7 +49,7 @@ contract IPLicenseManagerTest is Base {
         assertEq(scope, "YouTube thumbnails");
 
         skip(90 days);
-        assertFalse(licenses.hasValidLicense(bob, vaultId));
+        assertFalse(licenses.hasValidLicense(bob, vaultId, CREATOR));
     }
 
     function test_license_validation() public {
@@ -76,17 +76,17 @@ contract IPLicenseManagerTest is Base {
 
         vm.prank(gov);
         licenses.revokeLicense(id);
-        assertFalse(licenses.hasValidLicense(bob, vaultId));
+        assertFalse(licenses.hasValidLicense(bob, vaultId, CREATOR));
     }
 
     function test_licenceLapsesWhenTheNftLeavesTheVault() public {
         _request(bob);
         vm.startPrank(gov);
         vault.governanceUnlock(vaultId);
-        assertTrue(licenses.hasValidLicense(bob, vaultId)); // unlocked but still held
+        assertTrue(licenses.hasValidLicense(bob, vaultId, CREATOR)); // unlocked but still held
         vault.startAuctionWithPrices(vaultId, 2 ether, 1 ether);
         vm.stopPrank();
-        assertFalse(licenses.hasValidLicense(bob, vaultId));
+        assertFalse(licenses.hasValidLicense(bob, vaultId, CREATOR));
 
         vm.prank(carol);
         vm.expectRevert(IPLicenseManager.NotInVault.selector);
@@ -102,7 +102,7 @@ contract IPLicenseManagerTest is Base {
 
         vm.prank(carol);
         licenses.requestLicense(vaultId, 0, "profile picture");
-        assertTrue(licenses.hasValidLicense(carol, vaultId));
+        assertTrue(licenses.hasValidLicense(carol, vaultId, 0));
         assertEq(treasury.budgetOf(address(nft)), 0);
     }
 
@@ -131,22 +131,54 @@ contract IPLicenseManagerTest is Base {
         licenses.setBan(bob, vaultId, false);
         vm.prank(bob);
         licenses.requestLicense(vaultId, 0, "");
-        assertTrue(licenses.hasValidLicense(bob, vaultId));
+        assertTrue(licenses.hasValidLicense(bob, vaultId, 0));
     }
 
-    /// A shorter licence bought later does not hide a longer one that is still in force.
-    function test_shorterLicenceDoesNotHideALongerOne() public {
+    /// Licences are tracked per tier: buying another tier never hides or shortens one already held,
+    /// and within a tier a shorter licence does not replace a longer one in force.
+    function test_licencesAreTrackedPerTier() public {
+        vm.startPrank(gov);
+        licenses.setTier(address(nft), 0, 0, 3650 days, true);
+        licenses.setTier(address(nft), 2, 0.2 ether, 30 days, true);
+        vm.stopPrank();
+
+        _request(bob); // CREATOR, 90 days
+        vm.startPrank(bob);
+        licenses.requestLicense(vaultId, 0, "");
+        licenses.requestLicense{value: 0.2 ether}(vaultId, 2, "");
+        vm.stopPrank();
+
+        (bool valid, uint40 end) = licenses.validLicenseOf(bob, vaultId, CREATOR);
+        assertTrue(valid);
+        assertEq(end, block.timestamp + 90 days);
+        (valid, end) = licenses.validLicenseOf(bob, vaultId, 2);
+        assertTrue(valid);
+        assertEq(end, block.timestamp + 30 days);
+
+        // a shorter licence in the same tier does not replace the longer one
         vm.prank(gov);
-        licenses.setTier(address(nft), 0, 0, 1 days, true);
-        _request(bob); // 90 days
+        licenses.setTier(address(nft), CREATOR, 0.1 ether, 1 days, true);
+        _request(bob);
+        (, end) = licenses.validLicenseOf(bob, vaultId, CREATOR);
+        assertEq(end, block.timestamp + 90 days);
+
+        skip(31 days);
+        assertFalse(licenses.hasValidLicense(bob, vaultId, 2));
+        assertTrue(licenses.hasValidLicense(bob, vaultId, CREATOR));
+    }
+
+    /// Revoking one licence bans the licensee from the holding, whatever other licences they hold.
+    function test_revokingOneLicenceInvalidatesAllTiersForThatHolding() public {
+        vm.prank(gov);
+        licenses.setTier(address(nft), 0, 0, 3650 days, true);
         vm.prank(bob);
         licenses.requestLicense(vaultId, 0, "");
+        uint256 id = _request(bob);
 
-        skip(2 days);
-        (bool valid, uint8 tier, uint40 end) = licenses.validLicenseOf(bob, vaultId);
-        assertTrue(valid);
-        assertEq(tier, CREATOR);
-        assertEq(end, block.timestamp + 88 days);
+        vm.prank(gov);
+        licenses.revokeLicense(id);
+        assertFalse(licenses.hasValidLicense(bob, vaultId, 0));
+        assertFalse(licenses.hasValidLicense(bob, vaultId, CREATOR));
     }
 
     function test_onlyLockedHoldingsCanBeLicensedAndDurationIsBounded() public {

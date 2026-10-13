@@ -53,6 +53,8 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
 
     uint256 public marketCount;
     mapping(uint256 marketId => Market) public markets;
+    /// @notice The fee of each market, fixed when it is created.
+    mapping(uint256 marketId => uint256) public feeBpsOf;
     mapping(uint256 marketId => mapping(address => Stake)) public stakes;
 
     event MarketCreated(
@@ -104,6 +106,7 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
         if (!fresh) revert OracleUnavailable();
 
         marketId = ++marketCount;
+        feeBpsOf[marketId] = feeBps;
         Market storage m = markets[marketId];
         m.collection = collection;
         m.startPrice = uint128(price);
@@ -168,6 +171,7 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
         Stake memory s = stakes[marketId][msg.sender];
         if (s.higher == 0 && s.lower == 0) revert NothingToClaim();
         delete stakes[marketId][msg.sender];
+        uint256 marketFeeBps = feeBpsOf[marketId];
 
         uint256 payout;
         uint256 fee;
@@ -181,10 +185,10 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
                 higherWon ? (m.higherPool, m.lowerPool) : (m.lowerPool, m.higherPool);
             if (won != 0) {
                 uint256 profit = won * losePool / winPool;
-                fee = profit * feeBps / BPS;
+                fee = profit * marketFeeBps / BPS;
                 payout = won + profit - fee;
             }
-            pointsFee = fee + lost * feeBps / BPS;
+            pointsFee = fee + lost * marketFeeBps / BPS;
         }
 
         emit Claimed(marketId, msg.sender, payout, fee);
@@ -214,7 +218,7 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
         emit CollectionSupportSet(collection, supported);
     }
 
-    /// @dev A fee change applies to markets that are already open.
+    /// @dev A fee change applies to markets created afterwards.
     function setParams(uint256 feeBps_, uint256 minBet_, uint256 maxOracleAge_) external onlyOwner {
         if (feeBps_ > MAX_FEE_BPS) revert TooHigh();
         feeBps = feeBps_;

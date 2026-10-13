@@ -55,6 +55,7 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
 
     error InactiveCollection();
     error InvalidConfig();
+    error NotAContract();
     error BidBelowMinimum(uint256 bid, uint256 minPrice);
     error InsufficientBudget(uint256 budget, uint256 bid);
     error FillCooldown(uint256 readyAt);
@@ -142,6 +143,9 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
     }
 
     function setSaleRecorder(ISaleRecorder saleRecorder_) external onlyOwner {
+        if (address(saleRecorder_) != address(0) && address(saleRecorder_).code.length == 0) {
+            revert NotAContract();
+        }
         saleRecorder = saleRecorder_;
         emit SaleRecorderSet(address(saleRecorder_));
     }

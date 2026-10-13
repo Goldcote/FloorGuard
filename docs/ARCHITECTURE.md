@@ -55,8 +55,8 @@ On each sale the price is split three ways:
 - **Fee** (`feeBps`, default 2%, hard cap 5%) goes to the Treasury as budget for
   that collection.
 - **Royalty** is read from ERC-2981 and truncated at `royaltyCapBps` (default 5%,
-  hard cap 10%). If the receiver cannot take ETH, the royalty goes to the
-  collection's budget instead.
+  hard cap 10%). If the receiver cannot take ETH, the royalty is added to the
+  protocol fee instead and treated like it.
 - **The rest** goes to the seller. `minProceeds` protects the seller from a fee
   or royalty change between signing and inclusion.
 
@@ -149,19 +149,26 @@ Each buyback creates a holding with its purchase price and time.
 - `unlock` is permissionless and succeeds when the lock time has passed **and**
   the oracle floor is fresh and at least 130% of the purchase price.
 - The owner can `governanceUnlock` early, or `relock` to extend.
-- Once unlocked, the owner can `sendToRaffle` or `startAuction`. If the owner
-  does nothing for 30 days, anyone can start the auction.
-- The Dutch auction opens at 16 times its reserve and halves every day, reaching
-  the reserve after four days, where it holds. The reserve is the oracle floor,
-  but never less than the unlock price (130% of the purchase price). The opening
-  price is deliberately far above any plausible market price: the sale price is
-  found by buyers competing on the way down, so it does not depend on the oracle
-  reading. This matters because the sales oracle can be pushed down for free.
-- An auction that reached its reserve without a buyer can be restarted by anyone.
-  Proceeds go to the collection's budget.
-- `startAuctionWithPrices` lets the owner sell below the reserve, for example to
-  exit a collection that has collapsed or whose oracle is dead, and
-  `cancelAuction` takes a holding off auction again.
+- Once unlocked, the owner can `sendToRaffle`, `relock` or `startAuction`. From
+  30 days after the unlock, anyone can start the auction, whatever the owner did
+  in the meantime.
+- The reserve of an oracle-priced auction is the highest of the oracle floor, the
+  unlock price (130% of the purchase price) and an owner-set minimum for the
+  collection (`minReserveOf`).
+- The auction opens at 16 times its reserve, or 16 times the floor recorded when
+  the holding unlocked if that is higher. The price halves every day and holds
+  at the reserve. The opening price is deliberately far above the market, so the
+  sale price is found by buyers competing on the way down. This matters because
+  the sales oracle can be pushed down for free: a low reading lowers the reserve
+  towards the unlock price but cannot make the auction open below market, unless
+  the market is more than 16 times that opening basis.
+- An oracle-priced auction whose price has fallen to its reserve without a buyer
+  can be restarted by anyone, at fresh oracle prices. Proceeds go to the
+  collection's budget.
+- `startAuctionWithPrices` lets the owner choose the prices, for example to exit
+  a collection that has collapsed or whose oracle is dead. Only the owner can
+  restart or replace such an auction. `cancelAuction` takes a holding off
+  auction and starts the 30-day window again.
 
 ## PredictionMarket
 
@@ -204,7 +211,9 @@ ticket bought after a round has ended opens the next. When a round ends, anyone
 can `draw` it: one random ticket wins the pot, 5% of which goes to the
 collection's buyback budget. A round whose pot is below `minPot` is refunded
 instead of drawn, and a round still undrawn a week after its end can be aborted
-into refunds by anyone. Ticket price and fee are fixed for a round when it opens.
+into refunds by anyone, though never while an answer to a pending draw would
+still be accepted. Ticket price, fee and minimum pot are fixed for a round when
+it opens.
 
 ## Ticket raffles
 
@@ -215,7 +224,8 @@ anyone can `close` it:
 
 - if the minimum was reached and the ticket revenue is at least `minPot`, a
   random ticket wins the NFT, the creator receives the ticket revenue and 5%
-  goes to the collection's buyback budget;
+  goes to the Treasury as a fee for the collection (so the project share, if
+  any, is taken from it first);
 - if not, every buyer can take a refund and the creator can reclaim the NFT.
 
 The creator can cancel only while no ticket has been sold, and the fee is fixed
@@ -223,18 +233,26 @@ when the raffle is created. Late randomness is ignored, as in the other modules.
 
 Buyers can always reach either a draw or a refund. If a raffle cannot finish,
 because its randomness never arrives or the NFT cannot be transferred, anyone
-can `abort` it into refunds a week after its end, or a week after the winner
-was drawn if nobody could settle it.
+can `abort` it into refunds a week after it ended (its scheduled end, or the
+moment it was closed if it sold out earlier), or a week after its draw was
+requested if a winner was drawn but nobody could settle. A raffle cannot be
+aborted while an answer to its pending draw would still be accepted.
 
 ## IP licensing
 
 `IPLicenseManager` sells time-limited licences for the artwork of NFTs held in
 the Vault. The owner defines numbered tiers per collection, each with a price
 and a duration. The licence fee goes to the Treasury as a fee for that
-collection. Only locked holdings can be licensed. A licence stops being valid
-when its term ends, when the owner revokes it, or when the NFT goes to auction
-or leaves the Vault, which can happen before the term is up. A revoked licensee
-cannot buy another licence for that holding until the owner lifts the ban.
+collection, so the project share, if any, is taken from it first. Only locked
+holdings can be licensed, and licences are tracked per tier: holding one tier
+never hides or shortens another.
+
+A licence is in force until its term ends or it is revoked, while the Vault
+holds the NFT outside an auction. It is suspended while the NFT is on auction,
+in force again if the auction is cancelled, and over for good once the NFT is
+sold or raffled, which can happen before the term is up. Revoking any licence
+bans that licensee from the holding: none of their licences for it is valid and
+they cannot buy another until the owner lifts the ban.
 
 The contract records who paid for which licence and nothing more. Whether the
 Vault may sublicense a collection's artwork depends on that collection's own
@@ -244,7 +262,8 @@ terms, and the licence text has to exist off-chain.
 
 Points are credited per ETH of **fees that reach the buyback budget**, not per
 ETH of volume, at a rate set per module. A project's share of a fee earns no
-points. On the Marketplace both buyer and seller are credited for
+points. Three modules credit points: the Marketplace, the PredictionMarket and
+Games. Ticket raffle, lottery and licence fees fund buybacks but earn none. On the Marketplace both buyer and seller are credited for
 the sale's fee, and in Games the player is credited for the edge on each wager. On the PredictionMarket winners are credited for the fee they
 pay, and losers for the fee their stake funded. Because points follow fees,
 farming them always pays into buyback budgets.
@@ -259,7 +278,8 @@ Activated balances are the leaves of a 16-ary sum tree, six levels deep (about
 random point reads at most 96 slots and never loops over users.
 
 `VaultRaffle.draw` requests randomness once the seven-day announce period has
-passed, and freezes point weights until the randomness arrives. Points cannot be
+passed, and freezes point weights until the randomness arrives. Only one draw
+can be in flight at a time. Points cannot be
 activated in that window, so they count from the next raffle. Without the
 freeze, anyone who saw the random word before it landed could add just enough
 points to steer the result. The winner keeps 20% of their points. Randomness
@@ -298,7 +318,7 @@ reads the push oracle.
 The contracts are plain Solidity 0.8.28 compiled for the Cancun EVM, pay in
 native ETH and trade standard ERC-721 tokens. They deploy unchanged to Ethereum
 mainnet and to EVM rollups such as Base, Arbitrum and Optimism. The largest
-contract is about 7 KB, well under the 24 KB limit.
+contract is under 10 KB, well under the 24 KB limit.
 
 ## Not built yet
 

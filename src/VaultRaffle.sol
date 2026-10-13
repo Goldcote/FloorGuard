@@ -40,8 +40,8 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     /// @notice Time between a raffle opening and its earliest draw, so holders can see it coming.
     uint256 public announcePeriod = 7 days;
 
-    /// @notice After any draw is reset, no draw can be requested before this time. Contract-wide, so
-    ///         staggered resets across several raffles cannot keep points frozen without a break.
+    /// @notice After any draw is reset, no draw can be requested before this time. Together with the
+    ///         rule of one draw at a time, this leaves a window in which points can be activated.
     uint256 public nextDrawAt;
 
     uint256 public raffleCount;
@@ -66,6 +66,7 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     error TooEarly(uint256 readyAt);
     error NoPoints();
     error StaleRequest();
+    error DrawInFlight();
 
     constructor(address owner_, IPoints points_, address vault_, IRandomnessProvider randomness_)
         Ownable(owner_)
@@ -97,6 +98,8 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
         if (r.status != Status.Open) revert WrongStatus(r.status);
         if (block.timestamp < r.drawAfter) revert TooEarly(r.drawAfter);
         if (block.timestamp < nextDrawAt) revert TooEarly(nextDrawAt);
+        // one draw at a time: overlapping draws could keep point weights frozen without a break
+        if (points.freezeCount() != 0) revert DrawInFlight();
         if (points.totalPoints() == 0) revert NoPoints();
 
         r.status = Status.Drawing;
