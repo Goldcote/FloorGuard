@@ -174,10 +174,26 @@ contract VaultTest is Base {
         vault.startAuction(vaultId);
 
         skip(3 days);
-        _pushFloor(8 ether); // floor fell, nobody bought at 13
+        _pushFloor(20 ether); // floor rose while the auction sat at 13
         vm.prank(carol);
         vault.startAuction(vaultId);
-        assertEq(vault.auctionPrice(vaultId), 12 ether);
+        assertEq(vault.auctionPrice(vaultId), 30 ether);
+    }
+
+    /// A public auction never goes below the unlock price, whatever the oracle says.
+    function test_auction_reserveIgnoresOracleBelowUnlockPrice() public {
+        _unlockByConditions();
+        skip(30 days);
+        _pushFloor(1); // oracle pushed down to 1 wei
+        vm.prank(carol);
+        vault.startAuction(vaultId);
+        assertEq(vault.auctionPrice(vaultId), 19.5 ether);
+        skip(3 days);
+        assertEq(vault.auctionPrice(vaultId), 13 ether); // 130% of the 10 ETH purchase price
+
+        vm.prank(carol);
+        vm.expectRevert(abi.encodeWithSelector(Vault.PriceNotMet.selector, 13 ether, 1));
+        vault.buy{value: 1}(vaultId);
     }
 
     function test_auction_requiresFreshOracleUnlessGovernanceSetsPrices() public {

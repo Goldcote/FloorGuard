@@ -56,6 +56,11 @@ On each sale the price is split three ways:
 - **The rest** goes to the seller. `minProceeds` protects the seller from a fee
   or royalty change between signing and inclusion.
 
+Any ERC-721 contract can be traded, but only collections the owner marks as
+supported take part in the flywheel. For an unsupported contract the fee goes to
+the Treasury's unallocated pool, no points are earned and no sale is recorded in
+the oracle. This stops someone deploying a throwaway collection to farm points.
+
 ## Treasury and budgets
 
 Fees are not pooled. `deposit(collection)` credits that collection's budget, so
@@ -94,17 +99,21 @@ Each buyback creates a holding with its purchase price and time.
 - The owner can `governanceUnlock` early, or `relock` to extend.
 - Once unlocked, the owner can `sendToRaffle` or `startAuction`. If the owner
   does nothing for 30 days, anyone can start the auction.
-- The Dutch auction runs from 150% of the oracle floor down to the floor over
-  three days and then holds. An auction that ran out without a buyer can be
+- The Dutch auction runs from 150% of the reserve down to the reserve over three
+  days and then holds. The reserve is the oracle floor, but never less than the
+  unlock price (130% of the purchase price), so a manipulated oracle cannot make
+  the Vault sell cheaply. An auction that ran out without a buyer can be
   restarted by anyone at fresh prices. Proceeds go to the collection's budget.
-- `startAuctionWithPrices` lets the owner exit a collection whose oracle is dead.
+- `startAuctionWithPrices` lets the owner sell below the reserve, for example to
+  exit a collection that has collapsed or whose oracle is dead.
 
 ## PredictionMarket
 
 Anyone can open a market on a supported collection. The floor is snapshotted at
-creation, betting is open for `bettingPeriod`, and the market settles on the
-floor at `duration`. Betting must close before settlement so nobody bets on a
-price they can already see.
+creation, betting is open for `bettingPeriod` (at most half of `duration`), and
+the market settles on a floor price published at or after `duration`. A price
+from before the settlement time is never accepted, so nobody can bet on the
+price the market will settle on.
 
 - Winners split the losing pool in proportion to their stake. The fee is taken
   from their winnings, not their stake.
@@ -124,10 +133,11 @@ holders). Crediting writes seven slots. Picking the holder of a random point
 reads at most 96 slots and never loops over users.
 
 `VaultRaffle.draw` requests randomness once the seven-day announce period has
-passed. The winner is chosen inside the randomness callback, from the point
-balances at that moment, and then keeps 20% of their points. Choosing the winner
-in a later transaction would let anyone who had seen the random word buy points
-to steer the result.
+passed, and freezes point weights until the randomness arrives. Points earned in
+that window are held in `pendingOf` and count from the next raffle. Without the
+freeze, anyone who saw the random word before it landed could add just enough
+points to steer the result. The winner keeps 20% of their points. A request
+abandoned through `resetDraw` is never accepted later.
 
 ## Oracles
 
@@ -152,7 +162,7 @@ reads the push oracle.
 | One shared treasury | A budget per collection | Fees from a collection defend that collection |
 | Chainlink NFT floor feeds, Reservoir | Pluggable oracle with two implementations | Avoids depending on one external feed |
 | Points per ETH of volume | Points per ETH of fees | Volume can be wash traded for free in some modules; fees cannot |
-| Snapshot of points at raffle time | Live balances when randomness arrives | An on-chain snapshot of every holder is too expensive; the result is still unpredictable |
+| Snapshot of points at raffle time | Weights frozen from the draw request until randomness arrives | Same effect as a snapshot without copying every balance |
 | Royalties not mentioned | ERC-2981 honoured, capped | The 2024 paper's starting point was zero-royalty venues |
 
 ## Not built yet

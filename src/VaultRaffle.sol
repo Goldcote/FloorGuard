@@ -8,8 +8,8 @@ import {IPoints, IVaultRaffle, IRandomnessProvider, IRandomnessConsumer} from ".
 /// @title VaultRaffle
 /// @notice Raffles vault NFTs to points holders. Nobody buys tickets: each holder's chance is their
 ///         share of all points when the randomness arrives. The winner then loses most of their points.
-/// @dev The winner is chosen inside the randomness callback. Choosing later would let anyone who has seen
-///      the random word shift the point weights to steer the result.
+/// @dev Point weights are frozen from `draw` until the randomness arrives. Otherwise anyone who saw the
+///      random word before it landed could add just enough points to steer the result.
 contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     enum Status {
         None,
@@ -41,6 +41,8 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     uint256 public raffleCount;
     mapping(uint256 raffleId => Raffle) public raffles;
     mapping(uint256 requestId => uint256 raffleId) public raffleOfRequest;
+    /// @notice The only randomness request a raffle will accept; cleared by `resetDraw`.
+    mapping(uint256 raffleId => uint256 requestId) public currentRequest;
 
     event RaffleOpened(
         uint256 indexed raffleId, address indexed collection, uint256 indexed tokenId, uint256 drawAfter
@@ -57,6 +59,7 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     error WrongStatus(Status status);
     error TooEarly(uint256 readyAt);
     error NoPoints();
+    error StaleRequest();
 
     constructor(address owner_, IPoints points_, address vault_, IRandomnessProvider randomness_)
         Ownable(owner_)
@@ -91,8 +94,10 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
 
         r.status = Status.Drawing;
         r.requestedAt = uint40(block.timestamp);
+        points.freeze();
         uint256 requestId = randomness.requestRandomness();
         raffleOfRequest[requestId] = raffleId;
+        currentRequest[raffleId] = requestId;
         emit DrawRequested(raffleId, requestId);
     }
 
@@ -102,9 +107,12 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
         uint256 raffleId = raffleOfRequest[requestId];
         Raffle storage r = raffles[raffleId];
         if (r.status != Status.Drawing) revert WrongStatus(r.status);
+        if (currentRequest[raffleId] != requestId) revert StaleRequest();
         delete raffleOfRequest[requestId];
+        delete currentRequest[raffleId];
 
         if (points.totalPoints() == 0) {
+            points.unfreeze();
             r.status = Status.Open;
             emit DrawReset(raffleId);
             return;
@@ -113,6 +121,7 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
         r.winner = winner;
         r.status = Status.Won;
         points.resetWinner(winner);
+        points.unfreeze();
         emit WinnerDrawn(raffleId, winner);
     }
 
@@ -123,6 +132,8 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
         uint256 readyAt = r.requestedAt + DRAW_TIMEOUT;
         if (block.timestamp < readyAt) revert TooEarly(readyAt);
         r.status = Status.Open;
+        delete currentRequest[raffleId];
+        points.unfreeze();
         emit DrawReset(raffleId);
     }
 

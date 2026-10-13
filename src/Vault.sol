@@ -167,7 +167,10 @@ contract Vault is IVault, Ownable2Step, ReentrancyGuard {
 
     // ------------------------------------------------------------------ auction
 
-    /// @notice Start a Dutch auction from 150% of the oracle floor down to the floor. The owner may start
+    /// @notice Start a Dutch auction from 150% of the reserve down to the reserve. The reserve is the oracle
+    ///         floor, but never less than the unlock price (130% of the purchase price), so a manipulated
+    ///         oracle cannot make the Vault sell cheaply. Selling below that needs the owner and
+    ///         `startAuctionWithPrices`. The owner may start
     ///         it as soon as the holding is unlocked; anyone may once the governance window has passed.
     ///         An auction that ran its full duration without a buyer can be restarted at fresh prices.
     function startAuction(uint256 vaultId) external {
@@ -179,7 +182,9 @@ contract Vault is IVault, Ownable2Step, ReentrancyGuard {
         }
         (bool fresh, uint256 floor) = _tryFloor(h.collection);
         if (!fresh) revert StaleOracle();
-        _startAuction(vaultId, floor * AUCTION_START_BPS / BPS, floor);
+        uint256 reserve = uint256(h.purchasePrice) * UNLOCK_BPS / BPS;
+        if (floor > reserve) reserve = floor;
+        _startAuction(vaultId, reserve * AUCTION_START_BPS / BPS, reserve);
     }
 
     /// @notice Governance override for collections without a usable oracle price.
