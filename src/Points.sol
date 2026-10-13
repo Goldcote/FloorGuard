@@ -150,7 +150,9 @@ contract Points is IPoints, Ownable2Step {
         emit RateSet(source, pointsPerEth);
     }
 
+    /// @dev Not allowed mid-draw: the old raffle could never unfreeze and points would stay frozen.
     function setRaffle(address raffle_) external onlyOwner {
+        if (freezeCount != 0) revert Frozen();
         raffle = raffle_;
         emit RaffleSet(raffle_);
     }

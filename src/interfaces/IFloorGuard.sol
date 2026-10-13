@@ -17,7 +17,8 @@ interface ITreasury {
     function deposit(address collection) external payable;
     /// @notice Deposit a protocol fee earned on `collection`. The collection's project share, if one is
     ///         set, is put aside for the project; the rest becomes buyback budget.
-    function depositFee(address collection) external payable;
+    /// @return toBudget The part of the fee that became buyback budget.
+    function depositFee(address collection) external payable returns (uint256 toBudget);
     function spend(address collection, uint256 amount, address payable to) external;
     function budgetOf(address collection) external view returns (uint256);
 }

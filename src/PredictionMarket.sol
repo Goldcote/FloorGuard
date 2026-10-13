@@ -81,6 +81,7 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
     error NothingToClaim();
     error TooHigh();
     error TransferFailed();
+    error NotAContract();
 
     constructor(address owner_, ITreasury treasury_, IFloorOracle oracle_) Ownable(owner_) {
         treasury = treasury_;
@@ -187,7 +188,11 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
         }
 
         emit Claimed(marketId, msg.sender, payout, fee);
-        if (fee != 0) treasury.depositFee{value: fee}(m.collection);
+        if (fee != 0) {
+            // points follow what reached the buyback budget, not the project's share of the fee
+            uint256 toBudget = treasury.depositFee{value: fee}(m.collection);
+            pointsFee = pointsFee * toBudget / fee;
+        }
         if (pointsFee != 0 && address(points) != address(0)) {
             // points are a bonus; a failure there must never block a payout
             try points.creditFee(msg.sender, pointsFee) {} catch {}
@@ -220,6 +225,7 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
     }
 
     function setPoints(IPoints points_) external onlyOwner {
+        if (address(points_) != address(0) && address(points_).code.length == 0) revert NotAContract();
         points = points_;
         emit PointsSet(address(points_));
     }

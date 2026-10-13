@@ -668,6 +668,11 @@ export const marketplaceAbi = [
   },
   {
     "type": "error",
+    "name": "NotAContract",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NotOfferer",
     "inputs": []
   },
@@ -836,6 +841,19 @@ export const treasuryAbi = [
   },
   {
     "type": "function",
+    "name": "claimProjectShareTo",
+    "inputs": [
+      {
+        "name": "to",
+        "type": "address",
+        "internalType": "address payable"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "deposit",
     "inputs": [
       {
@@ -857,7 +875,13 @@ export const treasuryAbi = [
         "internalType": "address"
       }
     ],
-    "outputs": [],
+    "outputs": [
+      {
+        "name": "toBudget",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
     "stateMutability": "payable"
   },
   {
@@ -3398,6 +3422,11 @@ export const predictionMarketAbi = [
   },
   {
     "type": "error",
+    "name": "NotAContract",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NotResolvable",
     "inputs": []
   },
@@ -4055,6 +4084,19 @@ export const vaultRaffleAbi = [
   },
   {
     "type": "function",
+    "name": "REDRAW_COOLDOWN",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "acceptOwnership",
     "inputs": [],
     "outputs": [],
@@ -4654,6 +4696,19 @@ export const gamesAbi = [
   },
   {
     "type": "function",
+    "name": "MAX_TOTAL_EXPOSURE_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MIN_CHANCE_BPS",
     "inputs": [],
     "outputs": [
@@ -4973,6 +5028,19 @@ export const gamesAbi = [
     "inputs": [],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "reserved",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -5389,6 +5457,11 @@ export const gamesAbi = [
   },
   {
     "type": "error",
+    "name": "NotAContract",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NotRandomness",
     "inputs": []
   },
@@ -5426,10 +5499,31 @@ export const gamesAbi = [
   },
   {
     "type": "error",
+    "name": "RequestIdInUse",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "TooEarly",
     "inputs": [
       {
         "name": "readyAt",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "TotalExposureTooHigh",
+    "inputs": [
+      {
+        "name": "total",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "limit",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -6862,6 +6956,11 @@ export const errorsAbi = [
   },
   {
     "type": "error",
+    "name": "NotAContract",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NotAuthorised",
     "inputs": []
   },
@@ -6996,6 +7095,11 @@ export const errorsAbi = [
   },
   {
     "type": "error",
+    "name": "RequestIdInUse",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "StaleOracle",
     "inputs": []
   },
@@ -7024,6 +7128,22 @@ export const errorsAbi = [
     "type": "error",
     "name": "TooManyUsers",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TotalExposureTooHigh",
+    "inputs": [
+      {
+        "name": "total",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "limit",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",

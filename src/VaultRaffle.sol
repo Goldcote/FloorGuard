@@ -30,6 +30,8 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
 
     /// @notice A draw stuck without randomness for this long can be reset by anyone.
     uint256 public constant DRAW_TIMEOUT = 1 days;
+    /// @notice Wait between a reset and the next draw, so points cannot be kept frozen without a break.
+    uint256 public constant REDRAW_COOLDOWN = 1 hours;
 
     IPoints public immutable points;
     /// @notice The only address allowed to open raffles (the Vault).
@@ -109,14 +111,14 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
         if (r.status != Status.Drawing) revert WrongStatus(r.status);
         if (currentRequest[raffleId] != requestId) revert StaleRequest();
         delete raffleOfRequest[requestId];
-        delete currentRequest[raffleId];
 
-        if (points.totalPoints() == 0) {
-            points.unfreeze();
-            r.status = Status.Open;
-            emit DrawReset(raffleId);
+        // Randomness that arrives after the timeout is not used. Otherwise whoever saw the result first
+        // could choose between letting it stand and resetting the draw.
+        if (points.totalPoints() == 0 || block.timestamp >= r.requestedAt + DRAW_TIMEOUT) {
+            _reset(raffleId, r);
             return;
         }
+        delete currentRequest[raffleId];
         address winner = points.pick(randomWord);
         r.winner = winner;
         r.status = Status.Won;
@@ -131,7 +133,12 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
         if (r.status != Status.Drawing) revert WrongStatus(r.status);
         uint256 readyAt = r.requestedAt + DRAW_TIMEOUT;
         if (block.timestamp < readyAt) revert TooEarly(readyAt);
+        _reset(raffleId, r);
+    }
+
+    function _reset(uint256 raffleId, Raffle storage r) private {
         r.status = Status.Open;
+        r.drawAfter = uint40(block.timestamp + REDRAW_COOLDOWN);
         delete currentRequest[raffleId];
         points.unfreeze();
         emit DrawReset(raffleId);
