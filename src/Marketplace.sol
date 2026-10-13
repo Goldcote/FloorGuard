@@ -37,6 +37,11 @@ contract Marketplace is Ownable2Step, ReentrancyGuard {
     /// @notice Royalties above this share of the price are truncated. Zero disables royalties.
     uint256 public royaltyCapBps = 500;
 
+    /// @notice Collections the protocol defends. Their fees are earmarked for their own buybacks, their
+    ///         trades earn points and their collection-offer fills feed the oracle. Any other contract
+    ///         can still be traded, but its fees go to the Treasury's unallocated pool and earn nothing.
+    mapping(address collection => bool) public isSupported;
+
     uint256 public offerCount;
     mapping(uint256 offerId => Offer) public offers;
 
@@ -64,6 +69,7 @@ contract Marketplace is Ownable2Step, ReentrancyGuard {
     event RoyaltyCapSet(uint256 royaltyCapBps);
     event SaleRecorderSet(address saleRecorder);
     event PointsSet(address points);
+    event CollectionSupportSet(address indexed collection, bool supported);
 
     error InvalidPrice();
     error InvalidQuantity();
@@ -166,15 +172,22 @@ contract Marketplace is Ownable2Step, ReentrancyGuard {
                 royalty = 0;
             }
         }
-        if (fee != 0) treasury.deposit{value: fee}(offer.collection);
+        bool supported = isSupported[offer.collection];
+        if (fee != 0) {
+            if (supported) treasury.deposit{value: fee}(offer.collection);
+            else _send(address(treasury), fee);
+        }
         _send(msg.sender, proceeds);
 
-        if (offer.collectionWide && address(saleRecorder) != address(0)) {
-            saleRecorder.recordSale(offer.collection, price);
-        }
-        if (address(points) != address(0) && fee != 0) {
-            points.creditFee(msg.sender, fee);
-            points.creditFee(offer.offerer, fee);
+        if (supported) {
+            if (offer.collectionWide && address(saleRecorder) != address(0)) {
+                saleRecorder.recordSale(offer.collection, price);
+            }
+            if (address(points) != address(0) && fee != 0) {
+                // points are a bonus; a failure there must never block a trade
+                try points.creditFee(msg.sender, fee) {} catch {}
+                try points.creditFee(offer.offerer, fee) {} catch {}
+            }
         }
         emit OfferAccepted(offerId, msg.sender, offer.collection, tokenId, price, fee, royalty);
     }
@@ -196,6 +209,11 @@ contract Marketplace is Ownable2Step, ReentrancyGuard {
     function setSaleRecorder(ISaleRecorder saleRecorder_) external onlyOwner {
         saleRecorder = saleRecorder_;
         emit SaleRecorderSet(address(saleRecorder_));
+    }
+
+    function setCollectionSupport(address collection, bool supported) external onlyOwner {
+        isSupported[collection] = supported;
+        emit CollectionSupportSet(collection, supported);
     }
 
     function setPoints(IPoints points_) external onlyOwner {

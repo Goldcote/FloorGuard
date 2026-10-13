@@ -25,6 +25,11 @@ contract Points is IPoints, Ownable2Step {
     /// @notice Share of their points a raffle winner keeps.
     uint256 public winnerKeepBps = 2_000;
 
+    /// @notice Number of raffle draws in flight. While non-zero, credits are held back.
+    uint256 public freezeCount;
+    /// @notice Credits earned during a draw, not yet counted in `pointsOf` or `totalPoints`.
+    mapping(address => uint256) public pendingOf;
+
     address[] private _users;
     mapping(address => uint256) private _indexPlusOne;
     /// @dev `_nodes[level][i]` is the sum of the 16 children below it; level 0 holds user balances.
@@ -38,18 +43,49 @@ contract Points is IPoints, Ownable2Step {
 
     error NotAuthorised();
     error NoPoints();
+    error Frozen();
     error TooManyUsers();
     error InvalidBps();
 
     constructor(address owner_) Ownable(owner_) {}
 
     /// @inheritdoc IPoints
+    /// @dev While a raffle draw is in flight the credit is held in `pendingOf` and reaches the tree with
+    ///      the user's next credit or a call to `flush`.
     function creditFee(address user, uint256 feeWei) external {
         uint256 rate = rateOf[msg.sender];
         if (rate == 0) revert NotAuthorised();
         uint256 amount = feeWei * rate / 1 ether;
         if (amount == 0) return;
+        emit PointsCredited(user, msg.sender, amount);
 
+        if (freezeCount != 0) {
+            pendingOf[user] += amount;
+            return;
+        }
+        _credit(user, amount + pendingOf[user]);
+    }
+
+    /// @notice Move a user's held-back credits into the tree. Anyone may call when no draw is in flight.
+    function flush(address user) external {
+        if (freezeCount != 0) revert Frozen();
+        if (pendingOf[user] != 0) _credit(user, pendingOf[user]);
+    }
+
+    /// @inheritdoc IPoints
+    function freeze() external {
+        if (msg.sender != raffle) revert NotAuthorised();
+        ++freezeCount;
+    }
+
+    /// @inheritdoc IPoints
+    function unfreeze() external {
+        if (msg.sender != raffle) revert NotAuthorised();
+        --freezeCount;
+    }
+
+    function _credit(address user, uint256 amount) private {
+        delete pendingOf[user];
         uint256 index = _indexPlusOne[user];
         if (index == 0) {
             if (_users.length == MAX_USERS) revert TooManyUsers();
@@ -58,7 +94,6 @@ contract Points is IPoints, Ownable2Step {
             _indexPlusOne[user] = index;
         }
         _update(index - 1, amount, true);
-        emit PointsCredited(user, msg.sender, amount);
     }
 
     function pointsOf(address user) public view returns (uint256) {
