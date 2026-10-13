@@ -82,14 +82,14 @@ export function Licences() {
                         {tiers.length === 0 ? (
                           <p className="muted small">No licence tiers are set for this collection.</p>
                         ) : (
-                          <div className="tier-row" role="group" aria-label={`Licence tiers for holding ${holding.id}`}>
+                          <div className="licence-tier-row" role="group" aria-label={`Licence tiers for holding ${holding.id}`}>
                             {tiers.map((t) => {
                               const on = isSelected && tier?.tier === t.tier;
                               return (
                                 <button
                                   key={t.tier}
                                   type="button"
-                                  className={on ? "tier on" : "tier"}
+                                  className={on ? "licence-tier on" : "licence-tier"}
                                   aria-pressed={on}
                                   disabled={!locked}
                                   onClick={() => {
@@ -97,9 +97,9 @@ export function Licences() {
                                     setTierText(t.tier.toString());
                                   }}
                                 >
-                                  <span className="tier-name">Tier {t.tier}</span>
+                                  <span className="licence-tier-name">Tier {t.tier}</span>
                                   <strong>{t.price === 0n ? "Free" : `${eth(t.price)} ETH`}</strong>
-                                  <span className="tier-term">{duration(t.duration)}</span>
+                                  <span className="licence-tier-term">{duration(t.duration)}</span>
                                 </button>
                               );
                             })}

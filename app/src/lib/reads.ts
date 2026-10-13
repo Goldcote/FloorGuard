@@ -343,6 +343,8 @@ export function withSlippage(amount: bigint, slippageBps: bigint): bigint {
 // ---------------------------------------------------------------- predictions
 
 export const Outcome = { Pending: 0, Higher: 1, Lower: 2, Void: 3 } as const;
+/** `PredictionMarket.createMarket`: a market must last at least this many times its betting period. */
+export const MARKET_DURATION_PER_BETTING = 10;
 export const OUTCOME_NAMES = ["Pending", "Higher", "Lower", "Void"] as const;
 
 export type Market = {
@@ -1270,9 +1272,40 @@ export type BetProof = {
   /** What the contract actually paid and took, from the BetSettled event. */
   paidPayout: bigint;
   paidFee: bigint;
+  /**
+   * How the fee was split when the bet settled: the part sent to the Treasury (buyback budget plus
+   * any project share), read from the Treasury's events in the settlement transaction, and the part
+   * the bankroll kept. Undefined when those events could not be read; the split in force now is
+   * then the only guide.
+   */
+  feeToTreasury?: bigint;
+  feeKeptByBankroll?: bigint;
   placedTx: Hash;
   settledTx: Hash;
 };
+
+/**
+ * What the Games contract sent to the Treasury in one transaction: the `Deposited` amounts that came
+ * from it, plus what was set aside for the project in the same transaction. Undefined if the node
+ * will not return the logs.
+ */
+async function feeSentToTreasury(client: Client, d: Deployment, blockNumber: bigint, tx: Hash): Promise<bigint | undefined> {
+  try {
+    const treasury = { address: d.treasury, abi: treasuryAbi } as const;
+    const range = { fromBlock: blockNumber, toBlock: blockNumber, strict: true } as const;
+    const [deposited, accrued] = await Promise.all([
+      getContractEvents(client, { ...treasury, eventName: "Deposited", args: { from: d.games }, ...range }),
+      getContractEvents(client, { ...treasury, eventName: "ProjectShareAccrued", ...range }),
+    ]);
+    const mine = <T extends { transactionHash: Hash }>(logs: T[]) => logs.filter((log) => log.transactionHash === tx);
+    const toBudget = mine(deposited).reduce((sum, log) => sum + log.args.amount, 0n);
+    // a project's share is only accrued together with a fee deposit
+    const toProject = mine(deposited).length === 0 ? 0n : mine(accrued).reduce((sum, log) => sum + log.args.amount, 0n);
+    return toBudget + toProject;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Everything needed to recompute a settled bet, from its two events. Undefined if it is not settled. */
 export async function readBetProof(client: Client, d: Deployment, requestId: bigint, fromBlock = 0n): Promise<BetProof | undefined> {
@@ -1300,6 +1333,8 @@ export async function readBetProof(client: Client, d: Deployment, requestId: big
     edgeBps = wager === 0n ? 0n : (result.args.fee * BPS) / wager;
     while ((wager * edgeBps) / BPS < result.args.fee) edgeBps++;
   }
+  const feeToTreasury = result.args.fee === 0n ? 0n : await feeSentToTreasury(client, d, result.blockNumber, result.transactionHash);
+  const splitKnown = feeToTreasury !== undefined && feeToTreasury <= result.args.fee;
   return {
     requestId,
     wager,
@@ -1309,6 +1344,8 @@ export async function readBetProof(client: Client, d: Deployment, requestId: big
     roll: Number(result.args.roll),
     paidPayout: result.args.payout,
     paidFee: result.args.fee,
+    feeToTreasury: splitKnown ? feeToTreasury : undefined,
+    feeKeptByBankroll: splitKnown ? result.args.fee - feeToTreasury : undefined,
     placedTx: bet.transactionHash,
     settledTx: result.transactionHash,
   };

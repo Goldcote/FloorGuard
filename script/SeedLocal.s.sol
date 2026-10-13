@@ -51,7 +51,7 @@ contract SeedLocal is Script {
         pushOracle.setReporter(deployer, true);
         pushOracle.pushFloor(address(nft), 1 ether);
         prediction.setCollectionSupport(address(nft), true);
-        uint256 marketId = prediction.createMarket(address(nft), 6 hours, 1 days);
+        uint256 marketId = prediction.createMarket(address(nft), 2 hours, 1 days);
         prediction.placeBet{value: 0.5 ether}(marketId, true);
         prediction.placeBet{value: 0.3 ether}(marketId, false);
         Games games = Games(json.readAddress(".games"));

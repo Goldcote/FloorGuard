@@ -155,6 +155,10 @@ more than the wager is presented as a win; a 1x result is shown as "stake return
 wagered, paid back and net figures stay on screen. Sound (WebAudio, no files) is off until turned on
 in the header.
 
+In a development build the stages register `window.__fgPreview.*` hooks (for example
+`__fgPreview.dice(roll, percent)`) that play a result moment with a chosen roll without placing a
+bet. They do not exist in a production build.
+
 ## Dice (formerly the Games tab)
 
 Dice and coinflip against the house bankroll (`Games.sol`), backing the selected collection: half of the edge on
@@ -255,7 +259,8 @@ npm run build       # typecheck + production build into dist/
 npm test            # integration test, see below
 ```
 
-`npm test` runs six files. `test/fairness.test.ts` (payout recomputation), `test/wallets.test.ts`
+`npm test` runs seven files. `test/gameviz.test.ts` checks the pure functions behind the Play
+stages (`src/fx/gameviz.ts`). `test/fairness.test.ts` (payout recomputation), `test/wallets.test.ts`
 (wallet menu ordering), `test/demo.test.ts` (the demo simulator against the contracts' rules),
 `test/house.test.ts` (house share arithmetic against `Games.sol`'s formulas) and `test/viz.test.ts`
 (the curve, lock, auction and split maths behind the charts, and the landing's explainer model) need
@@ -277,6 +282,7 @@ src/lib/errors.ts            custom error -> readable message
 src/lib/gameMath.ts          fee, stake, dice payout, slots table, pot split: used by live and demo
 src/lib/house.ts             house shares: the contract's arithmetic, the reads, the history from events
 src/viz/                     visualisations: curve maths, flywheel diagram, hero, charts, lock mechanisms
+src/fx/                      effects for the Play stages: motion, particles, counts, reveal clock (see its README)
 src/styles.css               tokens, base components and the shell; src/styles/ holds the page styles
 src/demo/                    demo mode: the in-browser simulated protocol and the mode switch
 src/routes.ts                hash routes; src/theme.ts light/dark; src/brand.tsx logo and floor line
@@ -285,5 +291,5 @@ src/hooks.ts                 react-query wrappers around lib/reads.ts (5 s polli
 src/tx.tsx                   transaction runner: review dialog, simulate, sign, wait, result
 src/localWallet.ts           local-only connector for anvil's unlocked accounts
 src/tabs/                    one file per page, plus Verify.tsx and gamesShared.tsx
-test/                        anvil integration test and five chain-free unit test files
+test/                        anvil integration test and six chain-free unit test files
 ```

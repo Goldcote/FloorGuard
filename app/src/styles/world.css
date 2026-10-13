@@ -2748,7 +2748,7 @@
   font-size: var(--fs-xl);
 }
 
-.catch {
+.auction-catch {
   padding: var(--s5);
   margin-bottom: var(--s4);
   border: 1px solid var(--border-strong);
@@ -2804,7 +2804,7 @@
   white-space: nowrap;
 }
 
-.catch.at-reserve .catch-price {
+.auction-catch.at-reserve .catch-price {
   color: var(--accent);
 }
 
@@ -3093,13 +3093,13 @@
   margin-right: 4px;
 }
 
-.tier-row {
+.licence-tier-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   gap: var(--s2);
 }
 
-.tier {
+.licence-tier {
   position: relative;
   display: flex;
   flex-direction: column;
@@ -3115,29 +3115,29 @@
   transition: transform 0.18s var(--ease-spring), border-color 0.18s ease, background-color 0.18s ease;
 }
 
-.tier:hover:not(:disabled) {
+.licence-tier:hover:not(:disabled) {
   transform: translateY(-3px);
   border-color: var(--accent-line);
 }
 
-.tier.on {
+.licence-tier.on {
   border-style: solid;
   border-color: var(--accent);
   background: var(--accent-soft);
 }
 
-.tier:disabled {
+.licence-tier:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.tier-name,
-.tier-term {
+.licence-tier-name,
+.licence-tier-term {
   font-size: var(--fs-xs);
   color: var(--muted);
 }
 
-.tier strong {
+.licence-tier strong {
   font-family: var(--display);
   font-size: var(--fs-lg);
 }
@@ -3339,7 +3339,7 @@
   }
 
   .bid-stage,
-  .catch {
+  .auction-catch {
     padding: var(--s3);
     border-radius: 16px;
   }
@@ -3427,7 +3427,7 @@
   .rung:hover,
   .token-offer:hover,
   .token-pick:hover,
-  .tier:hover:not(:disabled) {
+  .licence-tier:hover:not(:disabled) {
     transform: none;
   }
 }
@@ -3452,18 +3452,18 @@
 }
 
 .vessel-free,
-.key.free {
+.vessel-key.free {
   background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 55%, transparent), color-mix(in srgb, var(--accent) 28%, transparent));
   border-top: 2px solid var(--accent);
 }
 
 .vessel-reserved,
-.key.reserved {
+.vessel-key.reserved {
   background: repeating-linear-gradient(135deg, var(--warn) 0 5px, transparent 5px 10px), var(--warn-bg);
 }
 
 .vessel-wagers,
-.key.wagers {
+.vessel-key.wagers {
   background: var(--text);
   opacity: 0.55;
 }
@@ -3511,7 +3511,7 @@
   color: var(--muted);
 }
 
-.key {
+.vessel-key {
   display: inline-block;
   width: 12px;
   height: 12px;

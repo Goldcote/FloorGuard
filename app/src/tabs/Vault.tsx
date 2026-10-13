@@ -124,7 +124,7 @@ export function Vault() {
                     // owner priced by hand only by the owner.
                     const canRestart = a.atReserve && (!a.ownerPriced || isOwner);
                     return (
-                      <article key={h.id.toString()} className={a.atReserve ? "catch at-reserve" : "catch"}>
+                      <article key={h.id.toString()} className={a.atReserve ? "auction-catch at-reserve" : "auction-catch"}>
                         <header className="catch-head">
                           <TokenTile tokenId={h.tokenId} size={72} state="auction" />
                           <div>

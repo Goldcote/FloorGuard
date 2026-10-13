@@ -2,7 +2,9 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, useSyncEx
 import type { Address } from "viem";
 import { FloorLine, Logo, NavIcon, Wordmark } from "./brand";
 import { getMode, modeWasChosen, setMode, useMode } from "./demo/mode";
-import { demoReads, resetDemo } from "./demo/sim";
+import { DEMO_CHAIN_ID, demoReads, resetDemo } from "./demo/sim";
+import { DICE_REVEAL_MS, SLOTS_REVEAL_MS } from "./fx/gameviz";
+import { observeReveal, useRevealClock } from "./fx/reveal";
 import { deployments } from "./generated/addresses";
 import { useDemoSync, useIsDeployed, useProtocol, useRead } from "./hooks";
 import { decodeError } from "./lib/errors";
@@ -67,11 +69,24 @@ function ModeSwitch() {
   );
 }
 
+/**
+ * The play balance. A bet's payout reaches the simulated balance the instant it settles, a second or
+ * two before the game stage has finished showing the result, so the figure here waits for the same
+ * reveal clock the stages use (src/fx/reveal.ts) and never gives a result away early.
+ */
 function DemoBalance() {
-  const balance = useRead(["demoBalance"], async () => demoReads.balance());
+  // one read for both, so the balance and the bets it depends on are always from the same moment
+  const query = useRead(["demoBalance"], async () => ({ balance: demoReads.balance(), bets: demoReads.userBets().slice(0, 6) }));
+  useRevealClock();
+  const revealing = (query.data?.bets ?? []).some(
+    (bet) =>
+      observeReveal(`bet:${DEMO_CHAIN_ID}:${bet.requestId}`, bet.status === "pending" ? "pending" : bet.status === "won" || bet.status === "lost" ? "settled" : "other", bet.kind === "slots" ? SLOTS_REVEAL_MS : DICE_REVEAL_MS) === "revealing",
+  );
+  const shown = useRef<bigint>();
+  if (query.data && !revealing) shown.current = query.data.balance;
   return (
     <span className="pill balance-pill" title="Play money. It has no value and cannot be withdrawn.">
-      <strong>{balance.data !== undefined ? eth(balance.data, 4) : "…"}</strong> play ETH
+      <strong>{shown.current !== undefined ? eth(shown.current, 4) : "…"}</strong> play ETH
       <button type="button" className="link-btn" onClick={() => resetDemo()} title="Start the demo over">
         reset
       </button>

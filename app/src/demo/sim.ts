@@ -58,7 +58,7 @@ export const isDemo = (client: unknown): boolean => (client as { demo?: boolean 
 // ---------------------------------------------------------------- state
 
 type Offer = Omit<R.Offer, "filled"> & { filled: number };
-type Bet = R.GameBet & { player: Address; edgeBps: bigint; placedAt: number };
+type Bet = R.GameBet & { player: Address; edgeBps: bigint; placedAt: number; kept?: bigint };
 type Entry = { buyer: Address; count: number };
 type Round = Omit<R.LotteryRound, "userPaid" | "userTickets" | "pot" | "prize"> & { entries: Entry[]; ticket?: bigint };
 type Raffle = Omit<R.TicketRaffle, "userPaid" | "userTickets"> & { entries: Entry[]; ticket?: bigint };
@@ -414,7 +414,7 @@ export const demoReads = {
   raffles: (): R.Raffles => ({ raffles: [...s.vaultRaffles].reverse(), raffleCount: BigInt(s.vaultRaffles.length), totalPoints: s.points.active + s.points.others, nextDrawAt: 0, drawInFlight: s.vaultRaffles.some((r) => r.status === 2), minPointsToDraw: MIN_POINTS_TO_DRAW }),
   games: (): R.GamesState => ({ bankroll: s.bankroll, reserved: s.reserved, maxTotalExposureBps: 2_000n, edgeBps: EDGE, minBet: MIN_BET, maxExposureBps: 100n, maxWagerBps: MAX_WAGER_BPS, maxWager: (s.bankroll * MAX_WAGER_BPS) / BPS, bankrollShareBps: BANKROLL_SHARE, supported: true, refundTimeout: DAY, userOwed: 0n }),
   gameQuote: (wager: bigint, chanceBps: number): R.GameQuote => diceQuote(wager, chanceBps, EDGE),
-  userBets: (): R.GameBet[] => [...s.bets].reverse().map(({ player: _p, edgeBps: _e, placedAt: _t, ...bet }) => bet),
+  userBets: (): R.GameBet[] => [...s.bets].reverse().map(({ player: _p, edgeBps: _e, placedAt: _t, kept: _k, ...bet }) => bet),
   ticketRaffles: (): R.TicketRaffles => ({
     raffles: [...s.raffles].reverse().map(raffleView), raffleCount: BigInt(s.raffles.length), minPot: MIN_POT, feeBps: POT_FEE,
     minDuration: 3_600, maxDuration: 30 * DAY, drawTimeout: DAY, abortDelay: 7 * DAY, collectionSupported: true, userOwed: s.raffleOwed,
@@ -446,7 +446,7 @@ export const demoReads = {
   betProof(requestId: bigint): R.BetProof | undefined {
     const bet = s.bets.find((b) => b.requestId === requestId);
     if (!bet || bet.roll === undefined) return undefined;
-    return { requestId, wager: bet.wager, chanceBps: bet.chanceBps, edgeBps: bet.edgeBps, edgeSource: "stored", roll: bet.roll, paidPayout: bet.payout ?? 0n, paidFee: bet.fee ?? 0n, placedTx: fakeHash(requestId, 1), settledTx: fakeHash(requestId, 2) };
+    return { requestId, wager: bet.wager, chanceBps: bet.chanceBps, edgeBps: bet.edgeBps, edgeSource: "stored", roll: bet.roll, paidPayout: bet.payout ?? 0n, paidFee: bet.fee ?? 0n, feeKeptByBankroll: bet.kept, feeToTreasury: bet.kept === undefined ? undefined : (bet.fee ?? 0n) - bet.kept, placedTx: fakeHash(requestId, 1), settledTx: fakeHash(requestId, 2) };
   },
   drawProof(kind: "lottery" | "ticketRaffle", id: bigint): R.DrawProof | undefined {
     const item = kind === "lottery" ? s.rounds.find((r) => r.id === id) : s.raffles.find((r) => r.id === id);
@@ -473,6 +473,7 @@ function settleBet(bet: Bet) {
   s.balance += r.payout;
   // the bankroll's share of the edge, if any, stays in the bankroll; the rest goes to the Treasury
   const kept = (r.fee * BANKROLL_SHARE) / BPS;
+  bet.kept = kept;
   s.bankroll += kept;
   fee(r.fee - kept, DEMO_USER);
   Object.assign(bet, { status: r.payout > 0n ? "won" : "lost", roll, payout: r.payout, fee: r.fee, refundableAt: undefined });

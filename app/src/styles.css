@@ -1243,97 +1243,6 @@ table.facts th {
   margin-top: var(--s3);
 }
 
-.roll-track {
-  position: relative;
-  height: 44px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-}
-
-.roll-win {
-  height: 100%;
-  background: var(--good-bg);
-  border-right: 2px solid var(--good);
-  color: var(--good);
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  padding-left: var(--s2);
-  white-space: nowrap;
-  overflow: hidden;
-  transition: width 0.15s ease;
-}
-
-.roll-marker {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  margin-left: -1px;
-  background: var(--text);
-}
-
-.roll-marker span {
-  position: absolute;
-  top: 50%;
-  left: 6px;
-  transform: translateY(-50%);
-  background: var(--text);
-  color: var(--surface);
-  border-radius: 4px;
-  padding: 0 5px;
-  font-size: var(--fs-xs);
-  font-weight: 700;
-}
-
-.roll-marker.won {
-  background: var(--good);
-}
-
-.roll-marker.lost {
-  background: var(--bad);
-}
-
-.roll-marker.rolling {
-  animation: roll-sweep 0.9s ease-in-out infinite alternate;
-}
-
-@keyframes roll-sweep {
-  from {
-    left: 1%;
-  }
-  to {
-    left: 99%;
-  }
-}
-
-.slot-machine {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  margin: var(--s4) auto var(--s2);
-  padding: var(--s4) var(--s4) var(--s3);
-  max-width: 560px;
-  background: linear-gradient(180deg, var(--surface-2), var(--bg-2));
-  border: 1px solid var(--border-strong);
-  border-radius: 22px;
-  box-shadow: var(--shadow);
-  transition: box-shadow 0.3s ease, border-color 0.3s ease;
-}
-
-.slot-machine.is-win {
-  border-color: var(--gold);
-  box-shadow: 0 0 0 1px var(--gold), 0 0 42px color-mix(in srgb, var(--gold) 45%, transparent);
-}
-
-.slot-machine.is-win .game-result {
-  color: var(--gold);
-}
-
 .machine-top {
   display: flex;
   gap: 6px;
@@ -1404,92 +1313,10 @@ table.facts th {
   color: var(--good);
 }
 
-.reel-face {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: 100%;
-}
-
-.reel.landed .reel-face {
-  animation: reel-land 0.28s cubic-bezier(0.2, 1.4, 0.4, 1);
-}
-
-@keyframes reel-land {
-  from {
-    transform: translateY(-22%);
-  }
-  to {
-    transform: translateY(0);
-  }
-}
-
 .pay-table .symbols .glyph {
   width: 22px;
   height: 22px;
   vertical-align: middle;
-}
-
-.reels {
-  position: relative;
-  display: flex;
-  gap: var(--s2);
-  padding: var(--s2);
-  background: var(--bg);
-  border: 1px solid var(--border-strong);
-  border-radius: 14px;
-}
-
-.reel {
-  position: relative;
-  width: clamp(76px, 25vw, 150px);
-  height: clamp(96px, 28vw, 150px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  background: linear-gradient(180deg, var(--bg-2), var(--surface) 50%, var(--bg-2));
-  border-radius: 10px;
-  font-family: var(--display);
-  font-size: 52px;
-  font-weight: 700;
-  line-height: 1;
-  color: var(--text);
-}
-
-.reel-strip {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  display: flex;
-  flex-direction: column;
-  animation: reel-spin 0.55s linear infinite;
-  opacity: 0.75;
-  filter: blur(0.6px);
-}
-
-.reel-strip span {
-  height: clamp(96px, 28vw, 150px);
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.reel-still {
-  display: none;
-  color: var(--muted);
-}
-
-@keyframes reel-spin {
-  from {
-    transform: translateY(0);
-  }
-  to {
-    transform: translateY(-50%);
-  }
 }
 
 .btn.spin {
@@ -1631,21 +1458,8 @@ table.facts th {
   }
 
   .spinner,
-  .skeleton span,
-  .roll-marker.rolling {
+  .skeleton span {
     animation: none;
-  }
-
-  .roll-marker.rolling {
-    left: 50%;
-  }
-
-  .reel-strip {
-    display: none;
-  }
-
-  .reel-still {
-    display: block;
   }
 }
 
@@ -1766,101 +1580,6 @@ table.facts th {
 
 .demo-note {
   color: var(--gold);
-}
-
-.session {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--s1) var(--s4);
-  align-items: baseline;
-  margin: var(--s3) 0;
-  padding: var(--s2) var(--s3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  font-size: var(--fs-sm);
-  color: var(--muted);
-}
-
-.session strong {
-  color: var(--text);
-  font-family: var(--display);
-}
-
-.session .net {
-  margin-left: auto;
-}
-
-.session .net.up strong {
-  color: var(--gold);
-}
-
-.session .net.down strong {
-  color: var(--bad);
-}
-
-.dice-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: center;
-  gap: var(--s5);
-  margin-bottom: var(--s4);
-}
-
-.multiplier {
-  display: flex;
-  flex-direction: column;
-}
-
-.multiplier-value {
-  font-family: var(--display);
-  font-size: var(--fs-2xl);
-  font-weight: 700;
-  line-height: 1;
-}
-
-.coin {
-  position: relative;
-  width: 84px;
-  height: 84px;
-  transform-style: preserve-3d;
-  transition: transform 0.7s cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.coin.tails {
-  transform: rotateY(180deg);
-}
-
-.coin.flipping {
-  animation: coin-flip 0.7s linear infinite;
-}
-
-@keyframes coin-flip {
-  to {
-    transform: rotateY(360deg) rotateX(20deg);
-  }
-}
-
-.coin-face {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  backface-visibility: hidden;
-  font-family: var(--display);
-  font-weight: 700;
-  border: 3px solid var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.coin-face.back {
-  transform: rotateY(180deg);
-  border-color: var(--border-strong);
-  background: var(--surface-2);
-  color: var(--muted);
 }
 
 .page-title {
@@ -2165,9 +1884,7 @@ main.landing {
   }
 
   .story::before,
-  .is-spinning .machine-top span,
-  .coin.flipping,
-  .reel.landed .reel-face {
+  .is-spinning .machine-top span {
     animation: none;
   }
 

@@ -44,6 +44,7 @@ export const deployments: Partial<Record<number, Deployment>> = {
     "gamesRandomness": "0x0DCd1Bf9A1b36cE34237eEaFef220932846BCD82",
     "ticketRaffleRandomness": "0x9A676e781A523b5d0C0e43731313A708CB607508",
     "lotteryRandomness": "0x959922bE3CAee4b8Cd9a407cc3ac1C251C2007B1",
-    "owner": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+    "owner": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "demoCollection": "0xa82fF9aFd8f496c3d6ac40E2a0F282E47488CFc9"
   }
 };

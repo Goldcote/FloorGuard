@@ -109,8 +109,27 @@ Rules for anything that moves:
 - The status panel on the landing quotes `SECURITY.md` and `docs/AUDIT.md`. When those change, it
   changes.
 
+## Effects for the Play stages (`src/fx/`)
+
+A small, dependency-free library: motion primitives, a particle layer, counting numbers, screen
+responses, presence, the reveal clock and the pure functions that decide what a stage draws from a
+settled result (`gameviz.ts`). Its API and rules are in [src/fx/README.md](src/fx/README.md);
+`test/gameviz.test.ts` checks that what the stages draw is a pure function of the result.
+
+- **The reveal clock** (`fx/reveal.ts`) is shared: a result that reached the app is not shown
+  anywhere else until the stage has finished showing it. The play balance in the header observes the
+  same clock, so it never gives a result away early.
+- **Class names.** `styles.css` holds tokens, base components and the shell; page styles live in
+  `styles/world.css` and `styles/play.css`. Page-specific classes carry a prefix for their page or
+  component (`lp-`, `story-`, `fly-`, `ov-`, `bid-`, `vault-`, `auction-`, `licence-`, `market-`,
+  `house-`, `vessel-`, `walk-`), so the two files cannot collide. Some older classes in `world.css`
+  are still unprefixed (`.figure`, `.holding`, `.rung`, `.stream`, `.fuel`, `.chart`); prefix them
+  when you next touch them.
+
 ## Development aids
 
 `?always-visible` keeps animation loops running in a tab the browser reports as hidden (an embedded
-preview pane); `?reduce-motion` takes the script-driven calm path. Both are ignored in a production
-build.
+preview pane); `?reduce-motion` takes the script-driven calm path. On the Play stages, in a
+development build only, `window.__fgPreview.*` (for example `__fgPreview.dice(roll, percent)`, and
+the hooks the slots and lottery stages register) plays a result moment with a chosen roll, without
+placing a bet, to look at a rare outcome. All of these are ignored in a production build.

@@ -35,7 +35,7 @@ function Vessel({ h }: { h: HouseState }) {
       <dl className="vessel-legend">
         <div>
           <dt>
-            <i className="key free" /> Free bankroll
+            <i className="vessel-key free" /> Free bankroll
           </dt>
           <dd>
             <Num value={toEth(h.bankroll)} format={(n) => n.toFixed(4)} /> <small>ETH</small>
@@ -44,7 +44,7 @@ function Vessel({ h }: { h: HouseState }) {
         </div>
         <div>
           <dt>
-            <i className="key reserved" /> Set aside for open bets
+            <i className="vessel-key reserved" /> Set aside for open bets
           </dt>
           <dd>
             <Num value={toEth(h.reserved)} format={(n) => n.toFixed(4)} /> <small>ETH</small>
@@ -53,7 +53,7 @@ function Vessel({ h }: { h: HouseState }) {
         </div>
         <div>
           <dt>
-            <i className="key wagers" /> Wagers in play
+            <i className="vessel-key wagers" /> Wagers in play
           </dt>
           <dd>
             <Num value={toEth(h.openWagers)} format={(n) => n.toFixed(4)} /> <small>ETH</small>
