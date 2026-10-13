@@ -119,6 +119,18 @@ Issues and pull requests are welcome. Please run `forge fmt` and `forge test`
 before opening a pull request, and add tests for behaviour you change. Report
 vulnerabilities privately, as described in [SECURITY.md](SECURITY.md).
 
+## Supporting development
+
+FloorGuard is built in the open and has no token, no team allocation and no
+protocol fee for its developers. If you want to support the work, donations are
+welcome at:
+
+**`goldcote.eth`**
+
+Check what the name resolves to yourself before sending anything. Donations go
+to the developers, not to the protocol's Treasury, and buy nothing: no points,
+no rights and no say over the protocol.
+
 ## Licence
 
 [MIT](LICENSE)
