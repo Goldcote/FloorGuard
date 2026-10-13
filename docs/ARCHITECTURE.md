@@ -130,8 +130,15 @@ is involved, and a manipulated oracle cannot make the engine overpay. Anyone can
 also buy the cheapest listing on another venue and sell it into the bid, which is
 how the bid supports floors elsewhere.
 
-The owner's `maxPrice` is the only guard against overpaying; see
-[SECURITY.md](../SECURITY.md).
+The owner's `maxPrice` is the main guard against overpaying; see
+[SECURITY.md](../SECURITY.md). The owner can also set a cooldown between two
+buybacks of a collection (`setFillCooldown`), which limits how fast anyone with
+a cheap supply of tokens can sell into the bid.
+
+The bid only finds the true floor for a collection with a fixed supply. If
+tokens can still be minted, the cheapest seller is the minter and the bid finds
+the mint price instead. Only fully minted collections whose owner cannot mint
+more should be supported.
 
 ## Vault
 
@@ -142,13 +149,17 @@ Each buyback creates a holding with its purchase price and time.
 - The owner can `governanceUnlock` early, or `relock` to extend.
 - Once unlocked, the owner can `sendToRaffle` or `startAuction`. If the owner
   does nothing for 30 days, anyone can start the auction.
-- The Dutch auction runs from 150% of the reserve down to the reserve over three
-  days and then holds. The reserve is the oracle floor, but never less than the
-  unlock price (130% of the purchase price), so a manipulated oracle cannot make
-  the Vault sell cheaply. An auction that ran out without a buyer can be
-  restarted by anyone at fresh prices. Proceeds go to the collection's budget.
+- The Dutch auction opens at 16 times its reserve and halves every day, reaching
+  the reserve after four days, where it holds. The reserve is the oracle floor,
+  but never less than the unlock price (130% of the purchase price). The opening
+  price is deliberately far above any plausible market price: the sale price is
+  found by buyers competing on the way down, so it does not depend on the oracle
+  reading. This matters because the sales oracle can be pushed down for free.
+- An auction that reached its reserve without a buyer can be restarted by anyone.
+  Proceeds go to the collection's budget.
 - `startAuctionWithPrices` lets the owner sell below the reserve, for example to
-  exit a collection that has collapsed or whose oracle is dead.
+  exit a collection that has collapsed or whose oracle is dead, and
+  `cancelAuction` takes a holding off auction again.
 
 ## PredictionMarket
 

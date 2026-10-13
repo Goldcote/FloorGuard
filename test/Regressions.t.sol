@@ -6,6 +6,8 @@ import {PredictionMarket} from "../src/PredictionMarket.sol";
 import {Points} from "../src/Points.sol";
 import {VaultRaffle} from "../src/VaultRaffle.sol";
 import {Games} from "../src/Games.sol";
+import {BuybackEngine} from "../src/BuybackEngine.sol";
+import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {Treasury} from "../src/Treasury.sol";
 import {MockNFT, RejectETH} from "./mocks/MockNFT.sol";
 import {MockRandomness} from "./mocks/MockRandomness.sol";
@@ -293,4 +295,107 @@ contract RegressionsTest is Base {
         games.setPoints(IPoints(address(0))); // turning points off is allowed
         vm.stopPrank();
     }
+
+    // ------------------------------------------------------------------ full-system audit
+
+    /// The sales oracle can be pushed to 1 wei for free, but an auction opens at 16 times the unlock
+    /// price and halves daily, so it is still above the real market when buyers start competing.
+    function test_auctionCannotBeSnipedBelowMarketByPushingTheOracleDown() public {
+        vm.prank(gov);
+        vault.setOracle(salesOracle);
+        vm.prank(gov);
+        engine.configureBid(address(nft), 10 ether, 15 ether, 0, 0, true);
+        treasury.deposit{value: 10 ether}(address(nft));
+        _mintApproved(alice, 1, address(engine));
+        vm.prank(alice);
+        uint256 vaultId = engine.sell(address(nft), 1, 0); // bought at 10 ETH; the market is now 30 ETH
+        vm.prank(gov);
+        vault.governanceUnlock(vaultId);
+        skip(30 days);
+
+        // four free wash sales at 1 wei take over the median
+        nft.mint(carol, 50);
+        vm.startPrank(carol);
+        nft.setApprovalForAll(address(marketplace), true);
+        for (uint256 i; i < 4; ++i) {
+            uint256 id = marketplace.makeCollectionOffer{value: 1}(address(nft), 1, block.timestamp + 1);
+            marketplace.acceptOffer(id, 50, 0);
+        }
+        (uint256 floor,) = salesOracle.floorPrice(address(nft));
+        assertEq(floor, 1);
+
+        vault.startAuction(vaultId);
+        vm.stopPrank();
+        assertEq(vault.auctionPrice(vaultId), 208 ether);
+        skip(2 days + 12 hours);
+        assertGt(vault.auctionPrice(vaultId), 30 ether); // still above the real market after 2.5 days
+        skip(2 days);
+        assertEq(vault.auctionPrice(vaultId), 13 ether); // and never below the unlock price
+    }
+
+    /// A buyback cooldown limits how fast anyone with cheap supply can sell into the bid.
+    function test_fillCooldownSlowsRepeatedBuybacks() public {
+        vm.startPrank(gov);
+        engine.configureBid(address(nft), 1 ether, 2 ether, 1_000, 500, true);
+        engine.setFillCooldown(address(nft), 1 hours);
+        vm.stopPrank();
+        treasury.deposit{value: 10 ether}(address(nft));
+        _mintApproved(alice, 1, address(engine));
+        _mintApproved(alice, 2, address(engine));
+
+        vm.startPrank(alice);
+        engine.sell(address(nft), 1, 0);
+        vm.expectRevert(
+            abi.encodeWithSelector(BuybackEngine.FillCooldown.selector, block.timestamp + 1 hours)
+        );
+        engine.sell(address(nft), 2, 0);
+        skip(1 hours);
+        engine.sell(address(nft), 2, 0);
+        vm.stopPrank();
+    }
+
+    /// A collection without ERC-2981 whose fallback returns nothing can still be traded.
+    function test_collectionWithSilentFallbackIsTradeable() public {
+        FallbackNFT odd = new FallbackNFT();
+        odd.mint(alice, 1);
+        vm.prank(alice);
+        odd.approve(address(marketplace), 1);
+        vm.prank(bob);
+        uint256 id = marketplace.makeOffer{value: 1 ether}(address(odd), 1, block.timestamp + 1 days);
+        vm.prank(alice);
+        marketplace.acceptOffer(id, 1, 0);
+        assertEq(odd.ownerOf(1), bob);
+    }
+
+    /// A prediction loser's points are scaled by the project share, like a winner's.
+    function test_predictionLoserPointsExcludeTheProjectShare() public {
+        vm.prank(gov);
+        treasury.setProjectShare(address(nft), makeAddr("project"), 5_000);
+        _pushFloor(10 ether);
+        uint256 marketId = prediction.createMarket(address(nft), 1 hours, 1 days);
+        vm.prank(alice);
+        prediction.placeBet{value: 1 ether}(marketId, true);
+        vm.prank(bob);
+        prediction.placeBet{value: 1 ether}(marketId, false);
+        skip(1 days);
+        _pushFloor(11 ether);
+        prediction.resolve(marketId);
+        vm.prank(alice);
+        prediction.claim(marketId);
+        vm.prank(bob);
+        prediction.claim(marketId);
+        assertEq(points.pendingOf(bob), points.pendingOf(alice));
+        assertEq(points.pendingOf(bob), 0.015 ether * POINTS_RATE / 1 ether);
+    }
+}
+
+/// @dev An ERC-721 without ERC-2981 whose fallback accepts any call and returns nothing.
+contract FallbackNFT is ERC721 {
+    constructor() ERC721("Fallback", "FB") {}
+
+    function mint(address to, uint256 tokenId) external {
+        _mint(to, tokenId);
+    }
+
+    fallback() external {}
 }

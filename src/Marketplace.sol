@@ -183,7 +183,8 @@ contract Marketplace is Ownable2Step, ReentrancyGuard {
 
         if (supported) {
             if (offer.collectionWide && address(saleRecorder) != address(0)) {
-                saleRecorder.recordSale(offer.collection, price);
+                // price reporting is best effort and must never block a trade
+                try saleRecorder.recordSale(offer.collection, price) {} catch {}
             }
             if (address(points) != address(0) && toBudget != 0) {
                 // Points follow what reached the buyback budget, not the project's share of the fee.
@@ -234,14 +235,14 @@ contract Marketplace is Ownable2Step, ReentrancyGuard {
     {
         uint256 cap = price * royaltyCapBps / BPS;
         if (cap == 0) return (address(0), 0);
-        try IERC2981(collection).royaltyInfo{gas: ROYALTY_GAS}(tokenId, price) returns (
-            address r, uint256 a
-        ) {
-            if (r == address(0)) return (address(0), 0);
-            return (r, a > cap ? cap : a);
-        } catch {
-            return (address(0), 0);
-        }
+        // Low-level call: a collection without ERC-2981 may revert or return nothing, and neither may
+        // stop the sale.
+        (bool ok, bytes memory data) =
+            collection.staticcall{gas: ROYALTY_GAS}(abi.encodeCall(IERC2981.royaltyInfo, (tokenId, price)));
+        if (!ok || data.length != 64) return (address(0), 0);
+        (uint256 rawReceiver, uint256 a) = abi.decode(data, (uint256, uint256));
+        if (rawReceiver == 0 || rawReceiver > type(uint160).max) return (address(0), 0);
+        return (address(uint160(rawReceiver)), a > cap ? cap : a);
     }
 
     function _send(address to, uint256 amount) private {

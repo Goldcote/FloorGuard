@@ -30,6 +30,10 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
     ISaleRecorder public saleRecorder;
 
     mapping(address collection => Bid) public bids;
+    /// @notice Minimum time between two buybacks of a collection. Slows down anyone who can supply tokens
+    ///         below the market price, such as a minter of a collection that is still minting.
+    mapping(address collection => uint256) public fillCooldownOf;
+    mapping(address collection => uint256) public lastFillAt;
 
     event BidConfigured(
         address indexed collection,
@@ -47,11 +51,13 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
         uint256 vaultId
     );
     event SaleRecorderSet(address saleRecorder);
+    event FillCooldownSet(address indexed collection, uint256 cooldown);
 
     error InactiveCollection();
     error InvalidConfig();
     error BidBelowMinimum(uint256 bid, uint256 minPrice);
     error InsufficientBudget(uint256 budget, uint256 bid);
+    error FillCooldown(uint256 readyAt);
 
     constructor(address owner_, ITreasury treasury_, IVault vault_) Ownable(owner_) {
         treasury = treasury_;
@@ -84,6 +90,9 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
     {
         Bid storage bid = bids[collection];
         if (!bid.active) revert InactiveCollection();
+        uint256 readyAt = lastFillAt[collection] + fillCooldownOf[collection];
+        if (lastFillAt[collection] != 0 && block.timestamp < readyAt) revert FillCooldown(readyAt);
+        lastFillAt[collection] = block.timestamp;
 
         uint256 price = currentBid(collection);
         if (price < minPrice) revert BidBelowMinimum(price, minPrice);
@@ -97,7 +106,10 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
         vaultId = vault.registerDeposit(collection, tokenId, price);
         treasury.spend(collection, price, payable(msg.sender));
 
-        if (address(saleRecorder) != address(0)) saleRecorder.recordSale(collection, price);
+        if (address(saleRecorder) != address(0)) {
+            // price reporting is best effort and must never block a buyback
+            try saleRecorder.recordSale(collection, price) {} catch {}
+        }
         emit Buyback(collection, tokenId, msg.sender, price, vaultId);
     }
 
@@ -122,6 +134,11 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
             active: active
         });
         emit BidConfigured(collection, basePrice, maxPrice, growthBpsPerDay, stepDownBps, active);
+    }
+
+    function setFillCooldown(address collection, uint256 cooldown) external onlyOwner {
+        fillCooldownOf[collection] = cooldown;
+        emit FillCooldownSet(collection, cooldown);
     }
 
     function setSaleRecorder(ISaleRecorder saleRecorder_) external onlyOwner {

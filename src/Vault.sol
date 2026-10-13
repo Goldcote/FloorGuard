@@ -41,8 +41,14 @@ contract Vault is IVault, Ownable2Step, ReentrancyGuard {
     uint256 public constant LOCK_DURATION = 180 days;
     uint256 public constant UNLOCK_BPS = 13_000;
     uint256 public constant GOVERNANCE_WINDOW = 30 days;
-    uint256 public constant AUCTION_DURATION = 3 days;
-    uint256 public constant AUCTION_START_BPS = 15_000;
+    /// @notice An auction opens at this multiple of its reserve, far above any plausible market price,
+    ///         and halves every `AUCTION_HALF_LIFE` until it reaches the reserve. The sale price is found
+    ///         by buyers competing on the way down, not by where the auction starts.
+    uint256 public constant AUCTION_START_MULTIPLE = 16;
+    uint256 public constant AUCTION_HALF_LIFE = 1 days;
+    /// @notice Time for the price to fall from the start to the reserve; after it, an unsold auction can
+    ///         be restarted.
+    uint256 public constant AUCTION_DURATION = 4 days;
 
     ITreasury public immutable treasury;
     /// @notice The only address allowed to register deposits (the BuybackEngine).
@@ -62,6 +68,7 @@ contract Vault is IVault, Ownable2Step, ReentrancyGuard {
     event Unlocked(uint256 indexed vaultId, bool byGovernance);
     event Relocked(uint256 indexed vaultId, uint256 lockedUntil);
     event AuctionStarted(uint256 indexed vaultId, uint256 startPrice, uint256 endPrice);
+    event AuctionCancelled(uint256 indexed vaultId);
     event AuctionSold(uint256 indexed vaultId, address indexed buyer, uint256 price);
     event SentToRaffle(uint256 indexed vaultId, uint256 raffleId);
     event EngineSet(address engine);
@@ -167,12 +174,13 @@ contract Vault is IVault, Ownable2Step, ReentrancyGuard {
 
     // ------------------------------------------------------------------ auction
 
-    /// @notice Start a Dutch auction from 150% of the reserve down to the reserve. The reserve is the oracle
-    ///         floor, but never less than the unlock price (130% of the purchase price), so a manipulated
-    ///         oracle cannot make the Vault sell cheaply. Selling below that needs the owner and
-    ///         `startAuctionWithPrices`. The owner may start
-    ///         it as soon as the holding is unlocked; anyone may once the governance window has passed.
-    ///         An auction that ran its full duration without a buyer can be restarted at fresh prices.
+    /// @notice Start a Dutch auction. The reserve is the oracle floor, but never less than the unlock
+    ///         price (130% of the purchase price), and the auction opens at 16 times the reserve. A
+    ///         manipulated oracle therefore cannot make the Vault sell cheaply: a low reading still opens
+    ///         far above the market and the price is found on the way down. Selling below the unlock
+    ///         price needs the owner and `startAuctionWithPrices`. The owner may start an auction as soon
+    ///         as the holding is unlocked; anyone may once the governance window has passed. An auction
+    ///         that reached its reserve without a buyer can be restarted.
     function startAuction(uint256 vaultId) external {
         Holding memory h = holdings[vaultId];
         _checkAuctionable(vaultId, h);
@@ -184,7 +192,7 @@ contract Vault is IVault, Ownable2Step, ReentrancyGuard {
         if (!fresh) revert StaleOracle();
         uint256 reserve = uint256(h.purchasePrice) * UNLOCK_BPS / BPS;
         if (floor > reserve) reserve = floor;
-        _startAuction(vaultId, reserve * AUCTION_START_BPS / BPS, reserve);
+        _startAuction(vaultId, reserve * AUCTION_START_MULTIPLE, reserve);
     }
 
     /// @notice Governance override for collections without a usable oracle price.
@@ -196,17 +204,32 @@ contract Vault is IVault, Ownable2Step, ReentrancyGuard {
         _startAuction(vaultId, startPrice, endPrice);
     }
 
-    /// @notice Current auction price. Falls linearly, then stays at the end price.
+    /// @notice Current auction price: halves every `AUCTION_HALF_LIFE`, falling linearly within each
+    ///         half-life, and never goes below the end price.
     function auctionPrice(uint256 vaultId) public view returns (uint256) {
         Status status = holdings[vaultId].status;
         if (status != Status.Auction) revert WrongStatus(status);
         Auction memory a = auctions[vaultId];
         uint256 elapsed = block.timestamp - a.startTime;
-        if (elapsed >= AUCTION_DURATION) return a.endPrice;
-        return a.startPrice - uint256(a.startPrice - a.endPrice) * elapsed / AUCTION_DURATION;
+        uint256 halvings = elapsed / AUCTION_HALF_LIFE;
+        if (halvings >= 128) return a.endPrice;
+        uint256 price = uint256(a.startPrice) >> halvings;
+        price -= (price / 2) * (elapsed % AUCTION_HALF_LIFE) / AUCTION_HALF_LIFE;
+        return price > a.endPrice ? price : a.endPrice;
     }
 
-    /// @notice Buy an auctioned NFT at the current price. Excess ETH is refunded.
+    /// @notice Governance override: take a holding off auction, back to unlocked, so it can be relocked,
+    ///         raffled or auctioned again.
+    function cancelAuction(uint256 vaultId) external onlyOwner {
+        Holding storage h = holdings[vaultId];
+        if (h.status != Status.Auction) revert WrongStatus(h.status);
+        h.status = Status.Unlocked;
+        delete auctions[vaultId];
+        emit AuctionCancelled(vaultId);
+    }
+
+    /// @notice Buy an auctioned NFT at the current price. `msg.value` is the most the buyer will pay;
+    ///         anything above the price is refunded.
     function buy(uint256 vaultId) external payable nonReentrant {
         uint256 price = auctionPrice(vaultId);
         if (msg.value < price) revert PriceNotMet(price, msg.value);

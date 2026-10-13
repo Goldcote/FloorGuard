@@ -21,6 +21,7 @@ interface ITreasury {
     function depositFee(address collection) external payable returns (uint256 toBudget);
     function spend(address collection, uint256 amount, address payable to) external;
     function budgetOf(address collection) external view returns (uint256);
+    function projectShareOf(address collection) external view returns (address recipient, uint16 bps);
 }
 
 interface IVault {

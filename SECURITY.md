@@ -4,8 +4,9 @@
 
 FloorGuard has had no professional audit, no formal verification and no testnet
 soak. The test suite covers the behaviour described in `docs/ARCHITECTURE.md`,
-which is not the same as being safe. Two automated review passes have been run
-and their findings fixed (`test/Regressions.t.sol`); that is not an audit.
+which is not the same as being safe. Four automated review passes have been run
+and their findings fixed; [docs/AUDIT.md](docs/AUDIT.md) records them. That is
+not a professional audit.
 
 ## Known limitations
 
@@ -15,9 +16,25 @@ and their findings fixed (`test/Regressions.t.sol`); that is not an audit.
 - **Oracle manipulation.** `SalesFloorOracle` can be moved by four wash trades in
   a single transaction, whatever the organic volume. Pushing it down is free,
   because the fee on a 1 wei sale rounds to zero; pushing it up costs the fee on
-  each inflated sale. The Vault defends against a low reading with an auction
-  reserve, but anything else that settles on this oracle is exposed. Do not point
-  the PredictionMarket at it. `PushFloorOracle` trusts its reporters completely.
+  each inflated sale. Vault auctions do not rely on it for their sale price, but
+  anything else that settles on this oracle is exposed. Do not point the
+  PredictionMarket at it. `PushFloorOracle` trusts its reporters completely.
+- **Vault unlock timing.** Because the oracle can be pushed down for free, anyone
+  can keep a holding from unlocking on its own; the owner can still unlock it.
+  Pushing the oracle up to force an early unlock costs fees and only works after
+  the 180-day lock.
+- **Collections with open supply.** If tokens of a supported collection can still
+  be minted, whoever can mint below the bid can sell fresh tokens into it and
+  take the collection's whole budget. Support only fully minted collections
+  whose owner cannot mint more, and set a buyback cooldown.
+- **Prediction settlement needs a keeper.** A market settles on the oracle price
+  at the moment `resolve` is called, provided it was published after the
+  settlement time. If nobody resolves promptly, whoever benefits can wait for a
+  price they like. Someone has to call `resolve` as soon as the first price after
+  settlement is published.
+- **Points need activating.** Pending points do not count in a raffle. Someone
+  has to call `flushMany` for holders before each draw, or holders must activate
+  their own.
 - **Buyback overpayment.** The rising bid is capped only by the owner-set
   `maxPrice`. If a collection's budget is empty for a long time and is then
   refilled, sellers may be paid more than the market floor. The bid only steps
