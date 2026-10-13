@@ -8,6 +8,8 @@ import {Marketplace} from "../src/Marketplace.sol";
 import {BuybackEngine} from "../src/BuybackEngine.sol";
 import {PredictionMarket} from "../src/PredictionMarket.sol";
 import {Games} from "../src/Games.sol";
+import {TicketRaffle} from "../src/TicketRaffle.sol";
+import {IPLicenseManager} from "../src/IPLicenseManager.sol";
 import {PushFloorOracle} from "../src/oracles/PushFloorOracle.sol";
 import {MockNFT} from "../test/mocks/MockNFT.sol";
 
@@ -54,6 +56,19 @@ contract SeedLocal is Script {
         Games games = Games(json.readAddress(".games"));
         games.setCollectionSupport(address(nft), true);
         games.fundBankroll{value: 50 ether}();
+
+        // token 10 is raffled: 0.05 ETH a ticket, 5 to 40 tickets, for three days
+        TicketRaffle ticketRaffle = TicketRaffle(json.readAddress(".ticketRaffle"));
+        ticketRaffle.setCollectionSupport(address(nft), true);
+        nft.setApprovalForAll(address(ticketRaffle), true);
+        uint256 raffleId = ticketRaffle.create(address(nft), 10, 0.05 ether, 5, 40, 3 days);
+        ticketRaffle.buy{value: 0.1 ether}(raffleId, 2);
+
+        // licence tiers for vault NFTs of the demo collection: 0 personal (free), 1 creator, 2 commercial
+        IPLicenseManager licenses = IPLicenseManager(json.readAddress(".ipLicenseManager"));
+        licenses.setTier(address(nft), 0, 0, 30 days, true);
+        licenses.setTier(address(nft), 1, 0.1 ether, 90 days, true);
+        licenses.setTier(address(nft), 2, 0.5 ether, 365 days, true);
         vm.stopBroadcast();
 
         vm.writeJson(vm.toString(address(nft)), path, ".demoCollection");

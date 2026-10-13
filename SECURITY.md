@@ -31,8 +31,9 @@ and their findings fixed (`test/Regressions.t.sol`); that is not an audit.
 - **Late information in prediction markets.** Betting closes at most halfway
   through a market and settlement needs a price published after the settlement
   time, but later bettors still see more recent prices than earlier ones.
-- **Games.** Operating games of chance is regulated or prohibited in many
-  jurisdictions; deploying `Games` is the operator's legal responsibility. The
+- **Games and paid raffles.** Operating games of chance and paid raffles is
+  regulated or prohibited in many jurisdictions; deploying `Games` or
+  `TicketRaffle` is the operator's legal responsibility. The
   bankroll carries variance: a run of player wins can shrink it. The fairness of
   every bet rests on the randomness provider.
 - **Shared randomness subscription.** The deploy script puts the raffle and the
@@ -41,6 +42,9 @@ and their findings fixed (`test/Regressions.t.sol`); that is not an audit.
   the cost of a request.
 - **No slippage guard on bets.** The owner can change the games edge (up to 10%)
   between a player signing a bet and it being mined.
+- **IP licences are records, not rights.** `IPLicenseManager` records payments.
+  Whether the Vault can sublicense a collection's artwork depends on that
+  collection's terms.
 - **Non-standard NFTs.** Collections with transfer hooks, blocklists or
   non-standard ERC-721 behaviour have not been considered.
 

@@ -10,6 +10,9 @@ import {PredictionMarket} from "../src/PredictionMarket.sol";
 import {Points} from "../src/Points.sol";
 import {VaultRaffle} from "../src/VaultRaffle.sol";
 import {Games} from "../src/Games.sol";
+import {TicketRaffle} from "../src/TicketRaffle.sol";
+import {IPLicenseManager} from "../src/IPLicenseManager.sol";
+import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
 import {SalesFloorOracle} from "../src/oracles/SalesFloorOracle.sol";
 import {PushFloorOracle} from "../src/oracles/PushFloorOracle.sol";
 import {ChainlinkVRFRandomness, IVRFCoordinatorV2Plus} from "../src/randomness/ChainlinkVRFRandomness.sol";
@@ -22,8 +25,11 @@ import {MockRandomness} from "../test/mocks/MockRandomness.sol";
 /// repointed by the owner afterwards.
 ///
 /// Environment:
-///   OWNER              final owner of every contract (default: the deployer). Ownership is two-step,
-///                      so OWNER must call `acceptOwnership()` on each contract.
+///   OWNER              who controls the protocol (default: the deployer); use a multisig. Ownership is
+///                      two-step: finish the handover with script/AcceptOwnership.s.sol.
+///   TIMELOCK_DELAY     optional, in seconds. If set, an OpenZeppelin TimelockController with OWNER as
+///                      its only proposer and executor is deployed and becomes the owner of every
+///                      contract, so each owner action waits out the delay in public first.
 ///   VRF_COORDINATOR    Chainlink VRF v2.5 coordinator. Required with VRF_KEY_HASH and VRF_SUB_ID on
 ///                      public networks. On a local chain (31337) a mock provider is deployed instead.
 contract Deploy is Script {
@@ -40,8 +46,12 @@ contract Deploy is Script {
         Points points;
         VaultRaffle raffle;
         Games games;
+        TicketRaffle ticketRaffle;
+        IPLicenseManager licenses;
         address randomness;
         address gamesRandomness;
+        address ticketRaffleRandomness;
+        address timelock;
     }
 
     function run() external {
@@ -64,11 +74,26 @@ contract Deploy is Script {
         d.raffle = new VaultRaffle(deployer, d.points, address(d.vault), IRandomnessProvider(address(0)));
         d.games = new Games(deployer, d.treasury, IRandomnessProvider(address(0)));
 
-        // Each VRF adapter serves one consumer; both must be added to the VRF subscription.
+        d.ticketRaffle = new TicketRaffle(deployer, d.treasury, IRandomnessProvider(address(0)));
+        d.licenses = new IPLicenseManager(deployer, d.vault, d.treasury);
+
+        uint256 timelockDelay = vm.envOr("TIMELOCK_DELAY", uint256(0));
+        if (timelockDelay != 0) {
+            address[] memory controllers = new address[](1);
+            controllers[0] = owner;
+            d.timelock = address(new TimelockController(timelockDelay, controllers, controllers, address(0)));
+            owner = d.timelock;
+        }
+
+        // Each VRF adapter serves one consumer; all three must be added to a VRF subscription.
         d.randomness = _randomness(vrfCoordinator, owner, address(d.raffle));
         d.gamesRandomness = vrfCoordinator == address(0)
             ? d.randomness
             : _randomness(vrfCoordinator, owner, address(d.games));
+        d.ticketRaffleRandomness = vrfCoordinator == address(0)
+            ? address(new MockRandomness())
+            : _randomness(vrfCoordinator, owner, address(d.ticketRaffle));
+        d.ticketRaffle.setRandomness(IRandomnessProvider(d.ticketRaffleRandomness));
 
         d.treasury.setSpender(address(d.engine));
         d.vault.setEngine(address(d.engine));
@@ -98,6 +123,8 @@ contract Deploy is Script {
             d.points.transferOwnership(owner);
             d.raffle.transferOwnership(owner);
             d.games.transferOwnership(owner);
+            d.ticketRaffle.transferOwnership(owner);
+            d.licenses.transferOwnership(owner);
         }
         vm.stopBroadcast();
         _write(d, owner);
@@ -117,6 +144,10 @@ contract Deploy is Script {
         vm.serializeAddress(key, "pushFloorOracle", address(d.pushOracle));
         vm.serializeAddress(key, "randomness", d.randomness);
         vm.serializeAddress(key, "gamesRandomness", d.gamesRandomness);
+        vm.serializeAddress(key, "ticketRaffle", address(d.ticketRaffle));
+        vm.serializeAddress(key, "ticketRaffleRandomness", d.ticketRaffleRandomness);
+        vm.serializeAddress(key, "ipLicenseManager", address(d.licenses));
+        vm.serializeAddress(key, "timelock", d.timelock);
         string memory json = vm.serializeAddress(key, "owner", owner);
         string memory path = string.concat("deployments/", vm.toString(block.chainid), ".json");
         vm.writeJson(json, path);
