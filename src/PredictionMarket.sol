@@ -187,7 +187,7 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
         }
 
         emit Claimed(marketId, msg.sender, payout, fee);
-        if (fee != 0) treasury.deposit{value: fee}(m.collection);
+        if (fee != 0) treasury.depositFee{value: fee}(m.collection);
         if (pointsFee != 0 && address(points) != address(0)) {
             // points are a bonus; a failure there must never block a payout
             try points.creditFee(msg.sender, pointsFee) {} catch {}

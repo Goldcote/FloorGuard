@@ -9,10 +9,11 @@ import {Vault} from "../src/Vault.sol";
 import {PredictionMarket} from "../src/PredictionMarket.sol";
 import {Points} from "../src/Points.sol";
 import {VaultRaffle} from "../src/VaultRaffle.sol";
+import {Games} from "../src/Games.sol";
 import {SalesFloorOracle} from "../src/oracles/SalesFloorOracle.sol";
 import {PushFloorOracle} from "../src/oracles/PushFloorOracle.sol";
 import {ChainlinkVRFRandomness, IVRFCoordinatorV2Plus} from "../src/randomness/ChainlinkVRFRandomness.sol";
-import {IRandomnessProvider} from "../src/interfaces/IFloorGuard.sol";
+import {IRandomnessProvider, IRandomnessConsumer} from "../src/interfaces/IFloorGuard.sol";
 import {MockRandomness} from "../test/mocks/MockRandomness.sol";
 
 /// @notice Deploys and wires the protocol, then writes the addresses to `deployments/<chainId>.json`.
@@ -28,6 +29,21 @@ import {MockRandomness} from "../test/mocks/MockRandomness.sol";
 contract Deploy is Script {
     uint256 internal constant POINTS_PER_ETH_OF_FEES = 2_500e18;
 
+    struct Deployment {
+        Treasury treasury;
+        SalesFloorOracle salesOracle;
+        PushFloorOracle pushOracle;
+        Marketplace marketplace;
+        Vault vault;
+        BuybackEngine engine;
+        PredictionMarket prediction;
+        Points points;
+        VaultRaffle raffle;
+        Games games;
+        address randomness;
+        address gamesRandomness;
+    }
+
     function run() external {
         address vrfCoordinator = vm.envOr("VRF_COORDINATOR", address(0));
         require(vrfCoordinator != address(0) || block.chainid == 31337, "VRF_COORDINATOR required");
@@ -35,74 +51,88 @@ contract Deploy is Script {
         vm.startBroadcast();
         (, address deployer,) = vm.readCallers();
         address owner = vm.envOr("OWNER", deployer);
+        Deployment memory d;
 
-        Treasury treasury = new Treasury(deployer);
-        SalesFloorOracle salesOracle = new SalesFloorOracle(deployer);
-        PushFloorOracle pushOracle = new PushFloorOracle(deployer);
-        Marketplace marketplace = new Marketplace(deployer, treasury);
-        Vault vault = new Vault(deployer, treasury, salesOracle);
-        BuybackEngine engine = new BuybackEngine(deployer, treasury, vault);
-        PredictionMarket prediction = new PredictionMarket(deployer, treasury, pushOracle);
-        Points points = new Points(deployer);
-        VaultRaffle raffle =
-            new VaultRaffle(deployer, points, address(vault), IRandomnessProvider(address(0)));
+        d.treasury = new Treasury(deployer);
+        d.salesOracle = new SalesFloorOracle(deployer);
+        d.pushOracle = new PushFloorOracle(deployer);
+        d.marketplace = new Marketplace(deployer, d.treasury);
+        d.vault = new Vault(deployer, d.treasury, d.salesOracle);
+        d.engine = new BuybackEngine(deployer, d.treasury, d.vault);
+        d.prediction = new PredictionMarket(deployer, d.treasury, d.pushOracle);
+        d.points = new Points(deployer);
+        d.raffle = new VaultRaffle(deployer, d.points, address(d.vault), IRandomnessProvider(address(0)));
+        d.games = new Games(deployer, d.treasury, IRandomnessProvider(address(0)));
 
-        address randomness;
-        if (vrfCoordinator == address(0)) {
-            randomness = address(new MockRandomness());
-        } else {
-            randomness = address(
-                new ChainlinkVRFRandomness(
-                    owner,
-                    IVRFCoordinatorV2Plus(vrfCoordinator),
-                    raffle,
-                    vm.envBytes32("VRF_KEY_HASH"),
-                    vm.envUint("VRF_SUB_ID")
-                )
-            );
-        }
+        // Each VRF adapter serves one consumer; both must be added to the VRF subscription.
+        d.randomness = _randomness(vrfCoordinator, owner, address(d.raffle));
+        d.gamesRandomness = vrfCoordinator == address(0)
+            ? d.randomness
+            : _randomness(vrfCoordinator, owner, address(d.games));
 
-        treasury.setSpender(address(engine));
-        vault.setEngine(address(engine));
-        vault.setRaffle(raffle);
-        raffle.setRandomness(IRandomnessProvider(randomness));
-        marketplace.setSaleRecorder(salesOracle);
-        engine.setSaleRecorder(salesOracle);
-        salesOracle.setReporter(address(marketplace), true);
-        salesOracle.setReporter(address(engine), true);
-        points.setRaffle(address(raffle));
-        points.setRate(address(marketplace), POINTS_PER_ETH_OF_FEES);
-        points.setRate(address(prediction), POINTS_PER_ETH_OF_FEES);
-        marketplace.setPoints(points);
-        prediction.setPoints(points);
+        d.treasury.setSpender(address(d.engine));
+        d.vault.setEngine(address(d.engine));
+        d.vault.setRaffle(d.raffle);
+        d.raffle.setRandomness(IRandomnessProvider(d.randomness));
+        d.games.setRandomness(IRandomnessProvider(d.gamesRandomness));
+        d.marketplace.setSaleRecorder(d.salesOracle);
+        d.engine.setSaleRecorder(d.salesOracle);
+        d.salesOracle.setReporter(address(d.marketplace), true);
+        d.salesOracle.setReporter(address(d.engine), true);
+        d.points.setRaffle(address(d.raffle));
+        d.points.setRate(address(d.marketplace), POINTS_PER_ETH_OF_FEES);
+        d.points.setRate(address(d.prediction), POINTS_PER_ETH_OF_FEES);
+        d.points.setRate(address(d.games), POINTS_PER_ETH_OF_FEES);
+        d.marketplace.setPoints(d.points);
+        d.prediction.setPoints(d.points);
+        d.games.setPoints(d.points);
 
         if (owner != deployer) {
-            treasury.transferOwnership(owner);
-            salesOracle.transferOwnership(owner);
-            pushOracle.transferOwnership(owner);
-            marketplace.transferOwnership(owner);
-            vault.transferOwnership(owner);
-            engine.transferOwnership(owner);
-            prediction.transferOwnership(owner);
-            points.transferOwnership(owner);
-            raffle.transferOwnership(owner);
+            d.treasury.transferOwnership(owner);
+            d.salesOracle.transferOwnership(owner);
+            d.pushOracle.transferOwnership(owner);
+            d.marketplace.transferOwnership(owner);
+            d.vault.transferOwnership(owner);
+            d.engine.transferOwnership(owner);
+            d.prediction.transferOwnership(owner);
+            d.points.transferOwnership(owner);
+            d.raffle.transferOwnership(owner);
+            d.games.transferOwnership(owner);
         }
         vm.stopBroadcast();
+        _write(d, owner);
+    }
 
+    function _write(Deployment memory d, address owner) private {
         string memory key = "deployment";
-        vm.serializeAddress(key, "treasury", address(treasury));
-        vm.serializeAddress(key, "marketplace", address(marketplace));
-        vm.serializeAddress(key, "buybackEngine", address(engine));
-        vm.serializeAddress(key, "vault", address(vault));
-        vm.serializeAddress(key, "predictionMarket", address(prediction));
-        vm.serializeAddress(key, "points", address(points));
-        vm.serializeAddress(key, "vaultRaffle", address(raffle));
-        vm.serializeAddress(key, "salesFloorOracle", address(salesOracle));
-        vm.serializeAddress(key, "pushFloorOracle", address(pushOracle));
-        vm.serializeAddress(key, "randomness", randomness);
+        vm.serializeAddress(key, "treasury", address(d.treasury));
+        vm.serializeAddress(key, "marketplace", address(d.marketplace));
+        vm.serializeAddress(key, "buybackEngine", address(d.engine));
+        vm.serializeAddress(key, "vault", address(d.vault));
+        vm.serializeAddress(key, "predictionMarket", address(d.prediction));
+        vm.serializeAddress(key, "points", address(d.points));
+        vm.serializeAddress(key, "vaultRaffle", address(d.raffle));
+        vm.serializeAddress(key, "games", address(d.games));
+        vm.serializeAddress(key, "salesFloorOracle", address(d.salesOracle));
+        vm.serializeAddress(key, "pushFloorOracle", address(d.pushOracle));
+        vm.serializeAddress(key, "randomness", d.randomness);
+        vm.serializeAddress(key, "gamesRandomness", d.gamesRandomness);
         string memory json = vm.serializeAddress(key, "owner", owner);
         string memory path = string.concat("deployments/", vm.toString(block.chainid), ".json");
         vm.writeJson(json, path);
         console2.log("Deployment written to", path);
+    }
+
+    function _randomness(address vrfCoordinator, address owner, address consumer) private returns (address) {
+        if (vrfCoordinator == address(0)) return address(new MockRandomness());
+        return address(
+            new ChainlinkVRFRandomness(
+                owner,
+                IVRFCoordinatorV2Plus(vrfCoordinator),
+                IRandomnessConsumer(consumer),
+                vm.envBytes32("VRF_KEY_HASH"),
+                vm.envUint("VRF_SUB_ID")
+            )
+        );
     }
 }

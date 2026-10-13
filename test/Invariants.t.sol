@@ -110,6 +110,8 @@ contract InvariantsTest is Base {
         super.setUp();
         vm.prank(gov);
         engine.configureBid(address(nft), 1 ether, 5 ether, 2_000, 1_000, true);
+        vm.prank(gov);
+        treasury.setProjectShare(address(nft), makeAddr("project"), 2_500);
         handler = new Handler(marketplace, engine, treasury, nft);
         targetContract(address(handler));
     }
@@ -127,7 +129,10 @@ contract InvariantsTest is Base {
 
     /// Every wei in the treasury is accounted to a budget or to the unallocated pool.
     function invariant_treasuryFullyAccounted() public view {
-        assertEq(address(treasury).balance, treasury.budgetOf(address(nft)) + treasury.unallocated());
+        assertEq(
+            address(treasury).balance,
+            treasury.budgetOf(address(nft)) + treasury.unallocated() + treasury.totalOwed()
+        );
     }
 
     /// The engine never holds ETH or NFTs; everything it buys is in the vault and registered.

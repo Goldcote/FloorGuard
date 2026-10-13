@@ -11,6 +11,7 @@ import {PushFloorOracle} from "../src/oracles/PushFloorOracle.sol";
 import {PredictionMarket} from "../src/PredictionMarket.sol";
 import {Points} from "../src/Points.sol";
 import {VaultRaffle} from "../src/VaultRaffle.sol";
+import {Games} from "../src/Games.sol";
 import {MockNFT} from "./mocks/MockNFT.sol";
 import {MockRandomness} from "./mocks/MockRandomness.sol";
 
@@ -31,6 +32,7 @@ abstract contract Base is Test {
     PredictionMarket internal prediction;
     Points internal points;
     VaultRaffle internal raffle;
+    Games internal games;
     MockRandomness internal randomness;
     MockNFT internal nft;
 
@@ -65,6 +67,10 @@ abstract contract Base is Test {
         points.setRate(address(prediction), POINTS_RATE);
         marketplace.setPoints(points);
         prediction.setPoints(points);
+
+        games = new Games(gov, treasury, randomness);
+        games.setPoints(points);
+        points.setRate(address(games), POINTS_RATE);
         vm.stopPrank();
 
         nft = new MockNFT();
@@ -72,6 +78,8 @@ abstract contract Base is Test {
         prediction.setCollectionSupport(address(nft), true);
         vm.prank(gov);
         marketplace.setCollectionSupport(address(nft), true);
+        vm.prank(gov);
+        games.setCollectionSupport(address(nft), true);
         vm.deal(alice, 1_000 ether);
         vm.deal(bob, 1_000 ether);
         vm.deal(carol, 1_000 ether);
