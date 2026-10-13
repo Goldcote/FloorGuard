@@ -1,10 +1,10 @@
 import type { Address } from "viem";
 import { useProtocol, useChainTime, useRead } from "../hooks";
-import { flushPointsCall } from "../lib/calls";
+import { claimProjectShareCall, flushPointsCall } from "../lib/calls";
 import { bps, dateTime, eth, points, relative } from "../lib/format";
 import { readOverview, type Floor } from "../lib/reads";
 import { useTx } from "../tx";
-import { ActionButton, Badge, Card, QueryView, Stat } from "../ui";
+import { ActionButton, Addr, Badge, Card, QueryView, Stat } from "../ui";
 
 function FloorStat({ label, floor, now, usedBy }: { label: string; floor: Floor; now: number; usedBy: string }) {
   if (!floor.ok) {
@@ -28,6 +28,11 @@ export function Overview({ collection }: { collection: Address }) {
     void run("Activate pending points", (send) => send("Activate points", flushPointsCall(d, user)));
   };
   const query = useRead(["overview", collection, user], (client, d) => readOverview(client, d, collection, user));
+
+  const claimShare = () => {
+    if (!d) return;
+    void run("Claim project share", (send) => send("Claim", claimProjectShareCall(d)));
+  };
 
   return (
     <Card title="Overview">
@@ -68,6 +73,28 @@ export function Overview({ collection }: { collection: Address }) {
                   o.marketplaceSupported
                     ? "Trading fees fund this collection's buybacks and earn points"
                     : "It can be traded, but fees go to the unallocated pool and earn no points"
+                }
+              />
+              <Stat
+                label="Project share"
+                value={o.projectShare.bps > 0 ? bps(o.projectShare.bps) : <Badge tone="muted">None</Badge>}
+                hint={
+                  <>
+                    {o.projectShare.bps > 0 ? (
+                      <>
+                        Of this collection's protocol fees, paid to <Addr address={o.projectShare.recipient} />. The rest
+                        funds buybacks.
+                      </>
+                    ) : (
+                      "All of this collection's protocol fees fund buybacks."
+                    )}
+                    {o.userProjectShareOwed !== undefined && o.userProjectShareOwed > 0n && (
+                      <span className="pending">
+                        {eth(o.userProjectShareOwed)} ETH of project shares is owed to you.
+                        <ActionButton onClick={claimShare}>Claim</ActionButton>
+                      </span>
+                    )}
+                  </>
                 }
               />
               <Stat

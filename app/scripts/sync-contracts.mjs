@@ -17,6 +17,7 @@ const deploymentsDir = join(repoDir, "deployments");
 const generatedDir = join(appDir, "src", "generated");
 
 // Export name -> Foundry artifact name. ERC721 is OpenZeppelin's, used for approvals and its errors.
+// MockRandomness is the local-chain randomness provider (test/mocks), used only on chain 31337.
 const CONTRACTS = {
   marketplaceAbi: "Marketplace",
   treasuryAbi: "Treasury",
@@ -25,9 +26,11 @@ const CONTRACTS = {
   predictionMarketAbi: "PredictionMarket",
   pointsAbi: "Points",
   vaultRaffleAbi: "VaultRaffle",
+  gamesAbi: "Games",
   salesFloorOracleAbi: "SalesFloorOracle",
   pushFloorOracleAbi: "PushFloorOracle",
   erc721Abi: "ERC721",
+  mockRandomnessAbi: "MockRandomness",
 };
 
 // Keys written by script/Deploy.s.sol. `demoCollection` is optional (script/SeedLocal.s.sol).
@@ -39,9 +42,11 @@ const REQUIRED_KEYS = [
   "predictionMarket",
   "points",
   "vaultRaffle",
+  "games",
   "salesFloorOracle",
   "pushFloorOracle",
   "randomness",
+  "gamesRandomness",
   "owner",
 ];
 const OPTIONAL_KEYS = ["demoCollection"];
