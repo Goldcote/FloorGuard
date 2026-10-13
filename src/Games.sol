@@ -6,8 +6,8 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {ITreasury, IPoints, IRandomnessProvider, IRandomnessConsumer} from "./interfaces/IFloorGuard.sol";
 
 /// @title Games
-/// @notice A dice game against a house bankroll. The player picks a chance of winning between 1% and
-///         95%; a coinflip is a 50% roll. An edge is taken from every wager and paid to the Treasury as
+/// @notice Dice and slots against a house bankroll. In dice the player picks a chance of winning between
+///         1% and 95%; a coinflip is a 50% roll. Slots pay a fixed table of multiples from one roll. An edge is taken from every wager and paid to the Treasury as
 ///         a fee for the collection the player chose to back. The rest of the wager is played at fair
 ///         odds, so the bankroll has no expected gain or loss: all of the house's take funds buybacks.
 /// @dev The house's side of every open bet is set aside when the bet is placed, so the contract can
@@ -27,6 +27,9 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     uint256 public constant MIN_CHANCE_BPS = 100;
     uint256 public constant MAX_CHANCE_BPS = 9_500;
     uint256 public constant MAX_EDGE_BPS = 1_000;
+    /// @notice The `chanceBps` recorded for a slots spin, which has no single chance of winning.
+    uint256 public constant SLOTS = 0;
+    uint256 public constant SLOTS_MAX_MULTIPLIER = 50;
     /// @notice A bet whose randomness never arrived can be refunded after this long.
     uint256 public constant REFUND_TIMEOUT = 1 days;
     /// @notice The most the house may have at risk across all open bets, as a share of its total funds.
@@ -107,12 +110,38 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         nonReentrant
         returns (uint256 requestId)
     {
-        if (!isSupported[collection]) revert UnsupportedCollection();
         if (chanceBps < MIN_CHANCE_BPS || chanceBps > MAX_CHANCE_BPS) revert InvalidChance();
+        (uint256 payout, uint256 fee) = quote(msg.value, chanceBps);
+        return _place(collection, chanceBps, payout - (msg.value - fee));
+    }
+
+    /// @notice Spin the slots with `msg.value`. One roll pays 50x, 10x, 5x, 2x or 1x the stake after the
+    ///         edge, or nothing, with chances chosen so that the stake is played at fair odds: see
+    ///         `slotsMultiplier`.
+    function spin(address collection) external payable nonReentrant returns (uint256 requestId) {
+        uint256 stake = msg.value - msg.value * edgeBps / BPS;
+        return _place(collection, SLOTS, stake * (SLOTS_MAX_MULTIPLIER - 1));
+    }
+
+    /// @notice What a slots roll pays, as a multiple of the stake. The chances are 0.2% for 50x, 1% for
+    ///         10x, 4% for 5x, 15% for 2x and 30% for 1x, which average exactly 1x.
+    function slotsMultiplier(uint256 roll) public pure returns (uint256) {
+        if (roll < 20) return 50;
+        if (roll < 120) return 10;
+        if (roll < 520) return 5;
+        if (roll < 2_020) return 2;
+        if (roll < 5_020) return 1;
+        return 0;
+    }
+
+    /// @dev `chanceBps` is `SLOTS` for a slots spin. `exposure` is the most the house can lose on the bet.
+    function _place(address collection, uint256 chanceBps, uint256 exposure)
+        private
+        returns (uint256 requestId)
+    {
+        if (!isSupported[collection]) revert UnsupportedCollection();
         if (msg.value < minBet) revert BetTooSmall();
 
-        (uint256 payout, uint256 fee) = quote(msg.value, chanceBps);
-        uint256 exposure = payout - (msg.value - fee);
         uint256 limit = bankroll * maxExposureBps / BPS;
         if (exposure > limit) revert ExposureTooHigh(exposure, limit);
         uint256 totalLimit = (bankroll + reserved) * MAX_TOTAL_EXPOSURE_BPS / BPS;
@@ -153,14 +182,15 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         uint256 fee = uint256(bet.wager) * bet.edgeBps / BPS;
         uint256 stake = bet.wager - fee;
         uint256 roll = randomWord % BPS;
-        bool won = roll < bet.chanceBps;
         uint256 payout;
+        if (bet.chanceBps == SLOTS) payout = stake * slotsMultiplier(roll);
+        else if (roll < bet.chanceBps) payout = stake + bet.exposure;
+        // whatever the player does not win of the stake and the house's reserve returns to the bankroll
+        bankroll += stake + bet.exposure - payout;
+        bool won = payout != 0;
         if (won) {
-            payout = stake + bet.exposure;
             (bool ok,) = bet.player.call{value: payout, gas: PAYOUT_GAS}("");
             if (!ok) owedTo[bet.player] += payout;
-        } else {
-            bankroll += stake + bet.exposure;
         }
 
         if (fee != 0) {

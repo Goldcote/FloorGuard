@@ -38,8 +38,9 @@ flowchart LR
    to the budget, or raffled.
 4. **Prediction markets.** Anyone can bet on a collection's floor going up or
    down. 3% of winnings funds buybacks.
-5. **Games.** Dice and coinflip against a house bankroll. The 2% edge on every
-   wager funds buybacks for the collection the player backs.
+5. **Games.** Dice, coinflip and slots against a house bankroll, and a pooled
+   lottery per collection. The 2% edge on every wager and 5% of every lottery
+   pot fund buybacks for the collection the player backs.
 6. **Ticket raffles.** Anyone can raffle an NFT for paid tickets; 5% of ticket
    revenue funds buybacks.
 7. **IP licensing.** Licences to use the artwork of NFTs held in the Vault, with
@@ -60,7 +61,7 @@ where the code departs from the concept document.
 | Web app in `app/` | Reads and transactions tested against a local chain; not yet tested with a browser wallet. See [app/README.md](app/README.md) |
 | Audit | None |
 
-Slots, lotteries and a governance token from the concept document are not built. The full list is at the end of the architecture document.
+A governance token from the concept document is not built. The full list is at the end of the architecture document.
 
 ## Getting started
 

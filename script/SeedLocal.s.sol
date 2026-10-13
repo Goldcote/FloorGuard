@@ -9,6 +9,7 @@ import {BuybackEngine} from "../src/BuybackEngine.sol";
 import {PredictionMarket} from "../src/PredictionMarket.sol";
 import {Games} from "../src/Games.sol";
 import {TicketRaffle} from "../src/TicketRaffle.sol";
+import {Lottery} from "../src/Lottery.sol";
 import {IPLicenseManager} from "../src/IPLicenseManager.sol";
 import {PushFloorOracle} from "../src/oracles/PushFloorOracle.sol";
 import {MockNFT} from "../test/mocks/MockNFT.sol";
@@ -77,5 +78,10 @@ contract SeedLocal is Script {
         licenses.setTier(address(nft), 0, 0, 30 days, true);
         licenses.setTier(address(nft), 1, 0.1 ether, 90 days, true);
         licenses.setTier(address(nft), 2, 0.5 ether, 365 days, true);
+
+        // a weekly lottery at 0.01 ETH a ticket, with a few tickets already sold
+        Lottery lottery = Lottery(json.readAddress(".lottery"));
+        lottery.setConfig(address(nft), 0.01 ether, 7 days, true);
+        lottery.buy{value: 0.05 ether}(address(nft), 5);
     }
 }

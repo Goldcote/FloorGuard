@@ -9,6 +9,7 @@ import {BuybackEngine} from "../src/BuybackEngine.sol";
 import {PredictionMarket} from "../src/PredictionMarket.sol";
 import {Games} from "../src/Games.sol";
 import {TicketRaffle} from "../src/TicketRaffle.sol";
+import {Lottery} from "../src/Lottery.sol";
 
 /// @notice Onboards an NFT collection in one run. Must be broadcast by the protocol owner.
 ///
@@ -22,6 +23,7 @@ import {TicketRaffle} from "../src/TicketRaffle.sol";
 ///   PROJECT_SHARE_BPS    optional: that share in basis points, at most 5000
 ///   ENABLE_PREDICTIONS   optional (default false). Only enable with a trustworthy oracle price.
 ///   ENABLE_GAMES         optional (default false)
+///   LOTTERY_TICKET_PRICE optional, in wei: starts a weekly lottery for the collection at this price
 ///   ENABLE_TICKET_RAFFLES optional (default false): lets holders raffle tokens of this collection
 contract AddCollection is Script {
     using stdJson for string;
@@ -51,6 +53,11 @@ contract AddCollection is Script {
         }
         if (vm.envOr("ENABLE_TICKET_RAFFLES", false)) {
             TicketRaffle(json.readAddress(".ticketRaffle")).setCollectionSupport(collection, true);
+        }
+        uint256 lotteryTicketPrice = vm.envOr("LOTTERY_TICKET_PRICE", uint256(0));
+        if (lotteryTicketPrice != 0) {
+            Lottery(json.readAddress(".lottery"))
+                .setConfig(collection, uint128(lotteryTicketPrice), 7 days, true);
         }
         if (vm.envOr("ENABLE_GAMES", false)) {
             Games(json.readAddress(".games")).setCollectionSupport(collection, true);

@@ -14,7 +14,8 @@ code are right. The differences are listed at the end.
 | `BuybackEngine` | Quotes a standing bid per collection that rises until a holder sells into it. Pays from the collection's budget and sends the NFT to the Vault. |
 | `Vault` | Locks bought NFTs. Unlock needs 180 days and a floor at 130% of the purchase price. Then raffle, relock or Dutch auction. |
 | `PredictionMarket` | Pooled higher/lower bets on a collection's floor. 3% fee on winnings to the Treasury. |
-| `Games` | Dice and coinflip against a house bankroll. The edge on each wager goes to the Treasury. |
+| `Games` | Dice, coinflip and slots against a house bankroll. The edge on each wager goes to the Treasury. |
+| `Lottery` | A pooled ETH lottery per collection. 5% of each pot goes to the Treasury. |
 | `TicketRaffle` | Anyone raffles an NFT for paid tickets. 5% of ticket revenue goes to the Treasury. |
 | `IPLicenseManager` | Sells time-limited licences for NFTs held in the Vault. Licence fees go to the Treasury. |
 | `Points` | Non-transferable points earned per ETH of fees generated. Raffle weights. |
@@ -82,6 +83,7 @@ collection cannot spend another's fees. ETH sent without a collection sits in
 | Marketplace escrow | Open offers | The seller on acceptance, or back to the offerer | The offerer and the seller |
 | Prediction pools | Bets | Winners, or refunds when void | The oracle price |
 | Ticket raffle revenue | Ticket sales | The raffle's creator, 5% to the Treasury, or refunds | The raffle outcome |
+| Lottery pots | Ticket sales | The round's winner, 5% to the Treasury, or refunds | The draw |
 
 There is no team wallet, staking pool or token. Vault auction proceeds are
 recycled capital and are not split with the project.
@@ -176,8 +178,10 @@ price the market will settle on.
 
 ## Games
 
-`Games` is one dice game: the player picks a chance of winning from 1% to 95%,
-and a coinflip is a 50% roll. The edge (default 2%) is taken from the wager and
+`Games` has two games on one bankroll. In dice the player picks a chance of
+winning from 1% to 95%, and a coinflip is a 50% roll. Slots pay a fixed table
+from one roll: 50x at 0.2%, 10x at 1%, 5x at 4%, 2x at 15% and 1x at 30%, which
+averages exactly 1x the stake. The edge (default 2%) is taken from the wager and
 paid to the Treasury as a fee for the collection the player chose to back. The
 rest is played at fair odds against the house bankroll, so the bankroll has no
 expected gain or loss and the whole house take funds buybacks.
@@ -191,6 +195,16 @@ leave to winning players or to the Treasury.
 
 Each bet costs the operator one randomness request, which on Ethereum mainnet is
 likely to exceed the fee on a small wager. Set `minBet` accordingly.
+
+## Lottery
+
+`Lottery` runs rounds per collection. The owner sets a ticket price and a round
+length for a collection; the first ticket bought opens a round, and the first
+ticket bought after a round has ended opens the next. When a round ends, anyone
+can `draw` it: one random ticket wins the pot, 5% of which goes to the
+collection's buyback budget. A round whose pot is below `minPot` is refunded
+instead of drawn, and a round still undrawn a week after its end can be aborted
+into refunds by anyone. Ticket price and fee are fixed for a round when it opens.
 
 ## Ticket raffles
 
@@ -288,7 +302,6 @@ contract is about 7 KB, well under the 24 KB limit.
 
 ## Not built yet
 
-- Slots and lotteries
 - Revenue-share and exclusive licences
 - A governance token; the owner is a single address, meant to be a multisig
 - Burning vault NFTs

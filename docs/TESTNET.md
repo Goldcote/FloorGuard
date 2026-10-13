@@ -62,8 +62,9 @@ Addresses are written to `deployments/84532.json`. Commit that file.
 
 ## 5. After deploying
 
-1. Add the `randomness`, `gamesRandomness` and `ticketRaffleRandomness` addresses
-   from the deployment file as consumers of the VRF subscription. Raffles and
+1. Add the `randomness`, `gamesRandomness`, `ticketRaffleRandomness` and
+   `lotteryRandomness` addresses from the deployment file as consumers of the
+   VRF subscription. Raffles and
    games cannot settle until this is done.
 2. Until this step is done the deployer account still owns every contract. If
    `OWNER` was set, that account finishes the handover with

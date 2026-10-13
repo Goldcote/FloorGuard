@@ -11,6 +11,7 @@ import {Points} from "../src/Points.sol";
 import {VaultRaffle} from "../src/VaultRaffle.sol";
 import {Games} from "../src/Games.sol";
 import {TicketRaffle} from "../src/TicketRaffle.sol";
+import {Lottery} from "../src/Lottery.sol";
 import {IPLicenseManager} from "../src/IPLicenseManager.sol";
 import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
 import {SalesFloorOracle} from "../src/oracles/SalesFloorOracle.sol";
@@ -47,6 +48,8 @@ contract Deploy is Script {
         VaultRaffle raffle;
         Games games;
         TicketRaffle ticketRaffle;
+        Lottery lottery;
+        address lotteryRandomness;
         IPLicenseManager licenses;
         address randomness;
         address gamesRandomness;
@@ -76,6 +79,7 @@ contract Deploy is Script {
 
         d.ticketRaffle = new TicketRaffle(deployer, d.treasury, IRandomnessProvider(address(0)));
         d.licenses = new IPLicenseManager(deployer, d.vault, d.treasury);
+        d.lottery = new Lottery(deployer, d.treasury, IRandomnessProvider(address(0)));
 
         uint256 timelockDelay = vm.envOr("TIMELOCK_DELAY", uint256(0));
         if (timelockDelay != 0) {
@@ -85,7 +89,7 @@ contract Deploy is Script {
             owner = d.timelock;
         }
 
-        // Each VRF adapter serves one consumer; all three must be added to a VRF subscription.
+        // Each VRF adapter serves one consumer; all four must be added to a VRF subscription.
         d.randomness = _randomness(vrfCoordinator, owner, address(d.raffle));
         d.gamesRandomness = vrfCoordinator == address(0)
             ? d.randomness
@@ -94,6 +98,10 @@ contract Deploy is Script {
             ? address(new MockRandomness())
             : _randomness(vrfCoordinator, owner, address(d.ticketRaffle));
         d.ticketRaffle.setRandomness(IRandomnessProvider(d.ticketRaffleRandomness));
+        d.lotteryRandomness = vrfCoordinator == address(0)
+            ? address(new MockRandomness())
+            : _randomness(vrfCoordinator, owner, address(d.lottery));
+        d.lottery.setRandomness(IRandomnessProvider(d.lotteryRandomness));
 
         d.treasury.setSpender(address(d.engine));
         d.vault.setEngine(address(d.engine));
@@ -125,6 +133,7 @@ contract Deploy is Script {
             d.games.transferOwnership(owner);
             d.ticketRaffle.transferOwnership(owner);
             d.licenses.transferOwnership(owner);
+            d.lottery.transferOwnership(owner);
         }
         vm.stopBroadcast();
         _write(d, owner);
@@ -147,6 +156,8 @@ contract Deploy is Script {
         vm.serializeAddress(key, "ticketRaffle", address(d.ticketRaffle));
         vm.serializeAddress(key, "ticketRaffleRandomness", d.ticketRaffleRandomness);
         vm.serializeAddress(key, "ipLicenseManager", address(d.licenses));
+        vm.serializeAddress(key, "lottery", address(d.lottery));
+        vm.serializeAddress(key, "lotteryRandomness", d.lotteryRandomness);
         vm.serializeAddress(key, "timelock", d.timelock);
         string memory json = vm.serializeAddress(key, "owner", owner);
         string memory path = string.concat("deployments/", vm.toString(block.chainid), ".json");

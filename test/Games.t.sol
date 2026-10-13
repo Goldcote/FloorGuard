@@ -170,6 +170,106 @@ contract GamesTest is Base {
     }
 }
 
+contract SlotsTest is Base {
+    function setUp() public override {
+        super.setUp();
+        games.fundBankroll{value: 1_000 ether}();
+    }
+
+    function _spin(uint256 wager, uint256 word) internal returns (uint256 paid) {
+        vm.prank(alice);
+        uint256 id = games.spin{value: wager}(address(nft));
+        uint256 before = alice.balance;
+        randomness.fulfill(id, word);
+        return alice.balance - before;
+    }
+
+    function test_payTableAveragesExactlyOneTimesTheStake() public view {
+        uint256 total;
+        for (uint256 roll; roll < 10_000; ++roll) {
+            total += games.slotsMultiplier(roll);
+        }
+        assertEq(total, 10_000);
+        assertEq(games.slotsMultiplier(0), 50);
+        assertEq(games.slotsMultiplier(19), 50);
+        assertEq(games.slotsMultiplier(20), 10);
+        assertEq(games.slotsMultiplier(120), 5);
+        assertEq(games.slotsMultiplier(520), 2);
+        assertEq(games.slotsMultiplier(2_020), 1);
+        assertEq(games.slotsMultiplier(5_020), 0);
+    }
+
+    function test_spin_reservesTheJackpotAndPaysByTheTable() public {
+        vm.prank(alice);
+        uint256 id = games.spin{value: 0.1 ether}(address(nft));
+        // stake 0.098 ETH after the 2% edge; the house sets aside 49 stakes for a 50x jackpot
+        assertEq(games.reserved(), 0.098 ether * 49);
+        assertEq(games.bankroll(), 1_000 ether - 0.098 ether * 49);
+
+        uint256 before = alice.balance;
+        randomness.fulfill(id, 0); // jackpot
+        assertEq(alice.balance - before, 4.9 ether);
+        assertEq(games.reserved(), 0);
+        assertEq(games.bankroll(), 1_000 ether + 0.098 ether - 4.9 ether);
+        assertEq(treasury.budgetOf(address(nft)), 0.002 ether);
+        assertEq(address(games).balance, games.bankroll());
+    }
+
+    function test_spin_eachTier() public {
+        assertEq(_spin(0.1 ether, 100), 0.98 ether); // 10x
+        assertEq(_spin(0.1 ether, 500), 0.49 ether); // 5x
+        assertEq(_spin(0.1 ether, 2_000), 0.196 ether); // 2x
+        assertEq(_spin(0.1 ether, 5_000), 0.098 ether); // 1x: the stake back, less the edge already taken
+        assertEq(_spin(0.1 ether, 9_999), 0); // nothing
+        assertEq(address(games).balance, games.bankroll());
+        assertEq(treasury.budgetOf(address(nft)), 0.01 ether);
+    }
+
+    function test_spin_limitsAndValidation() public {
+        // the jackpot may risk 1% of the bankroll (10 ETH): a 0.3 ETH spin would risk 14.4 ETH
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Games.ExposureTooHigh.selector, 0.294 ether * 49, 10 ether));
+        games.spin{value: 0.3 ether}(address(nft));
+
+        vm.prank(alice);
+        vm.expectRevert(Games.BetTooSmall.selector);
+        games.spin{value: 0.0001 ether}(address(nft));
+        vm.prank(alice);
+        vm.expectRevert(Games.UnsupportedCollection.selector);
+        games.spin{value: 0.1 ether}(makeAddr("other"));
+    }
+
+    function test_spin_refundAfterTimeout() public {
+        vm.prank(alice);
+        uint256 id = games.spin{value: 0.1 ether}(address(nft));
+        skip(1 days);
+        uint256 before = alice.balance;
+        games.refund(id);
+        assertEq(alice.balance - before, 0.1 ether);
+        assertEq(games.bankroll(), 1_000 ether);
+    }
+
+    /// Dice and slots mixed: every wei stays accounted for whatever the rolls.
+    function testFuzz_mixedGamesAccounting(
+        uint64[6] memory wagers,
+        bool[6] memory slots,
+        uint256[6] memory words
+    ) public {
+        uint256 before = alice.balance;
+        for (uint256 i; i < 6; ++i) {
+            uint256 wager = bound(wagers[i], 0.001 ether, 0.05 ether);
+            vm.prank(alice);
+            uint256 id = slots[i]
+                ? games.spin{value: wager}(address(nft))
+                : games.play{value: wager}(address(nft), 5_000);
+            randomness.fulfill(id, words[i]);
+        }
+        assertEq(games.reserved(), 0);
+        assertEq(address(games).balance, games.bankroll());
+        assertEq(before + 1_000 ether, alice.balance + games.bankroll() + treasury.budgetOf(address(nft)));
+    }
+}
+
 contract ProjectShareTest is Base {
     address internal project = makeAddr("project");
 

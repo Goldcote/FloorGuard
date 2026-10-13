@@ -49,8 +49,8 @@ not a professional audit.
   through a market and settlement needs a price published after the settlement
   time, but later bettors still see more recent prices than earlier ones.
 - **Games and paid raffles.** Operating games of chance and paid raffles is
-  regulated or prohibited in many jurisdictions; deploying `Games` or
-  `TicketRaffle` is the operator's legal responsibility. The
+  regulated or prohibited in many jurisdictions; deploying `Games`, `Lottery`
+  or `TicketRaffle` is the operator's legal responsibility. The
   bankroll carries variance: a run of player wins can shrink it. The fairness of
   every bet rests on the randomness provider.
 - **Shared randomness subscription.** The deploy script puts the raffle and the
