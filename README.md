@@ -50,7 +50,7 @@ where the code departs from the concept document.
 | Contracts in `src/` | Implemented, with unit, fuzz and invariant tests |
 | Chainlink VRF adapter | Written, not tested against a live coordinator |
 | Deployment | Local chain only; no testnet or mainnet deployment exists |
-| Web app in `app/` | Early; see [app/README.md](app/README.md) |
+| Web app in `app/` | Reads and transactions tested against a local chain; not yet tested with a browser wallet. See [app/README.md](app/README.md) |
 | Audit | None |
 
 Casino games, IP licensing and a governance token from the concept document are
