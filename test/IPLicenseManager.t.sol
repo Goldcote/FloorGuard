@@ -114,4 +114,50 @@ contract IPLicenseManagerTest is Base {
         assertEq(treasury.owedTo(project), 0.02 ether);
         assertEq(treasury.budgetOf(address(nft)), 0.08 ether);
     }
+
+    /// A revoked licensee cannot simply buy another licence.
+    function test_revokedLicenseeIsBannedUntilTheOwnerLiftsIt() public {
+        uint256 id = _request(bob);
+        vm.startPrank(gov);
+        licenses.setTier(address(nft), 0, 0, 30 days, true);
+        licenses.revokeLicense(id);
+        vm.stopPrank();
+
+        vm.prank(bob);
+        vm.expectRevert(IPLicenseManager.Banned.selector);
+        licenses.requestLicense(vaultId, 0, "");
+
+        vm.prank(gov);
+        licenses.setBan(bob, vaultId, false);
+        vm.prank(bob);
+        licenses.requestLicense(vaultId, 0, "");
+        assertTrue(licenses.hasValidLicense(bob, vaultId));
+    }
+
+    /// A shorter licence bought later does not hide a longer one that is still in force.
+    function test_shorterLicenceDoesNotHideALongerOne() public {
+        vm.prank(gov);
+        licenses.setTier(address(nft), 0, 0, 1 days, true);
+        _request(bob); // 90 days
+        vm.prank(bob);
+        licenses.requestLicense(vaultId, 0, "");
+
+        skip(2 days);
+        (bool valid, uint8 tier, uint40 end) = licenses.validLicenseOf(bob, vaultId);
+        assertTrue(valid);
+        assertEq(tier, CREATOR);
+        assertEq(end, block.timestamp + 88 days);
+    }
+
+    function test_onlyLockedHoldingsCanBeLicensedAndDurationIsBounded() public {
+        vm.prank(gov);
+        vault.governanceUnlock(vaultId);
+        vm.prank(bob);
+        vm.expectRevert(IPLicenseManager.NotInVault.selector);
+        licenses.requestLicense{value: 0.1 ether}(vaultId, CREATOR, "");
+
+        vm.prank(gov);
+        vm.expectRevert(IPLicenseManager.InvalidTier.selector);
+        licenses.setTier(address(nft), 3, 1 ether, type(uint40).max, true);
+    }
 }

@@ -183,25 +183,33 @@ likely to exceed the fee on a small wager. Set `minBet` accordingly.
 
 ## Ticket raffles
 
-`TicketRaffle` lets anyone raffle an NFT they own. The creator sets a ticket
-price, a minimum and maximum number of tickets and a duration, and the NFT is
-held in escrow. When the raffle ends, anyone can `close` it:
+`TicketRaffle` lets anyone raffle an NFT they own, from a collection the owner
+has approved. The creator sets a ticket price, a minimum and maximum number of
+tickets and a duration, and the NFT is held in escrow. When the raffle ends,
+anyone can `close` it:
 
-- if the minimum was reached, a random ticket wins the NFT, the creator receives
-  the ticket revenue and 5% goes to the Treasury (to the collection's budget if
-  the collection is supported, otherwise to the unallocated pool);
-- if not, the NFT goes back to the creator and every buyer can take a refund.
+- if the minimum was reached and the ticket revenue is at least `minPot`, a
+  random ticket wins the NFT, the creator receives the ticket revenue and 5%
+  goes to the collection's buyback budget;
+- if not, every buyer can take a refund and the creator can reclaim the NFT.
 
-The creator can cancel only while no ticket has been sold. Late randomness is
-ignored, as in the other modules.
+The creator can cancel only while no ticket has been sold, and the fee is fixed
+when the raffle is created. Late randomness is ignored, as in the other modules.
+
+Buyers can always reach either a draw or a refund. If a raffle cannot finish,
+because its randomness never arrives or the NFT cannot be transferred, anyone
+can `abort` it into refunds a week after its end, or a week after the winner
+was drawn if nobody could settle it.
 
 ## IP licensing
 
 `IPLicenseManager` sells time-limited licences for the artwork of NFTs held in
 the Vault. The owner defines numbered tiers per collection, each with a price
 and a duration. The licence fee goes to the Treasury as a fee for that
-collection. A licence stops being valid when its term ends, when the owner
-revokes it, or when the NFT goes to auction or leaves the Vault.
+collection. Only locked holdings can be licensed. A licence stops being valid
+when its term ends, when the owner revokes it, or when the NFT goes to auction
+or leaves the Vault, which can happen before the term is up. A revoked licensee
+cannot buy another licence for that holding until the owner lifts the ban.
 
 The contract records who paid for which licence and nothing more. Whether the
 Vault may sublicense a collection's artwork depends on that collection's own

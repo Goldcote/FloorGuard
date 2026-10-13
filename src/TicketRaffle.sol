@@ -7,11 +7,13 @@ import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {ITreasury, IRandomnessProvider, IRandomnessConsumer} from "./interfaces/IFloorGuard.sol";
 
 /// @title TicketRaffle
-/// @notice Anyone can raffle an NFT they own for paid tickets. When the raffle ends a random ticket
-///         wins the NFT, the creator receives the ticket revenue and a platform fee goes to the
-///         Treasury. If fewer than the creator's minimum number of tickets sell, the NFT goes back to
-///         the creator and every buyer can take a full refund.
-/// @dev Operating paid raffles is regulated or prohibited in many places.
+/// @notice Anyone can raffle an NFT of a supported collection for paid tickets. When the raffle ends a
+///         random ticket wins the NFT, the creator receives the ticket revenue and a platform fee goes
+///         to the Treasury. If too few tickets sell, the creator takes the NFT back and every buyer can
+///         take a full refund.
+/// @dev Buyers can always reach either a draw or a refund: a raffle that cannot finish, because its
+///      randomness never arrives or its NFT cannot be transferred, can be aborted into refunds by
+///      anyone after `ABORT_DELAY`. Operating paid raffles is regulated or prohibited in many places.
 contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     enum Status {
         None,
@@ -49,16 +51,26 @@ contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     uint256 public constant MAX_DURATION = 30 days;
     /// @notice A draw without randomness for this long can be reset; randomness arriving later is ignored.
     uint256 public constant DRAW_TIMEOUT = 1 days;
+    /// @notice How long after its end (or after its winner was drawn) an unfinished raffle can be
+    ///         aborted into refunds by anyone.
+    uint256 public constant ABORT_DELAY = 7 days;
 
     ITreasury public immutable treasury;
     IRandomnessProvider public randomness;
     uint256 public feeBps = 500;
-    /// @notice Collections whose raffle fees are earmarked for their own buybacks. Fees from any other
-    ///         contract go to the Treasury's unallocated pool.
+    /// @notice A raffle whose ticket revenue is below this is refunded instead of drawn, so that every
+    ///         draw pays a fee that can cover its randomness request.
+    uint256 public minPot = 0.05 ether;
+    /// @notice Collections that may be raffled. Only owner-approved contracts are accepted, because a
+    ///         contract with a fake or blockable transfer could cheat ticket buyers.
     mapping(address collection => bool) public isSupported;
 
     uint256 public raffleCount;
     mapping(uint256 raffleId => Raffle) public raffles;
+    /// @notice The platform fee of each raffle, fixed when it is created.
+    mapping(uint256 raffleId => uint256) public feeBpsOf;
+    /// @notice Whether the creator has taken the NFT back from a cancelled or refunded raffle.
+    mapping(uint256 raffleId => bool) public nftReturned;
     mapping(uint256 raffleId => Entry[]) private _entries;
     /// @notice What each buyer paid into a raffle, refundable if it does not reach its minimum.
     mapping(uint256 raffleId => mapping(address => uint256)) public paidBy;
@@ -86,11 +98,16 @@ contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     event RaffleSettled(uint256 indexed raffleId, address indexed winner, uint256 toCreator, uint256 fee);
     event Refunded(uint256 indexed raffleId, address indexed buyer, uint256 amount);
     event Withdrawn(address indexed account, uint256 amount);
-    event FeeSet(uint256 feeBps);
+    event RaffleAborted(uint256 indexed raffleId);
+    event NftReclaimed(uint256 indexed raffleId);
+    event ParamsSet(uint256 feeBps, uint256 minPot);
     event CollectionSupportSet(address indexed collection, bool supported);
     event RandomnessSet(address randomness);
 
     error InvalidParams();
+    error UnsupportedCollection();
+    error NotTokenOwner();
+    error AlreadyReclaimed();
     error WrongStatus(Status status);
     error NotCreator();
     error TicketsAlreadySold();
@@ -123,6 +140,8 @@ contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         uint32 maxTickets,
         uint256 duration
     ) external nonReentrant returns (uint256 raffleId) {
+        if (!isSupported[collection]) revert UnsupportedCollection();
+        if (IERC721(collection).ownerOf(tokenId) != msg.sender) revert NotTokenOwner();
         if (
             ticketPrice == 0 || maxTickets == 0 || minTickets > maxTickets || duration < MIN_DURATION
                 || duration > MAX_DURATION
@@ -143,6 +162,7 @@ contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
             status: Status.Open,
             winner: address(0)
         });
+        feeBpsOf[raffleId] = feeBps;
         IERC721(collection).transferFrom(msg.sender, address(this), tokenId);
         emit RaffleCreated(
             raffleId, msg.sender, collection, tokenId, ticketPrice, minTickets, maxTickets, endTime
@@ -179,6 +199,7 @@ contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         if (msg.sender != r.creator) revert NotCreator();
         if (r.ticketsSold != 0) revert TicketsAlreadySold();
         r.status = Status.Cancelled;
+        nftReturned[raffleId] = true;
         emit RaffleCancelled(raffleId);
         IERC721(r.collection).transferFrom(address(this), r.creator, r.tokenId);
     }
@@ -186,16 +207,18 @@ contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     // ------------------------------------------------------------------ ending
 
     /// @notice End a raffle once its time is up or it has sold out. Anyone may call. Requests the draw,
-    ///         or opens refunds and returns the NFT if the minimum was not reached.
+    ///         or opens refunds if too few tickets sold.
     function close(uint256 raffleId) external nonReentrant {
         Raffle storage r = raffles[raffleId];
         if (r.status != Status.Open) revert WrongStatus(r.status);
         if (block.timestamp < r.endTime && r.ticketsSold < r.maxTickets) revert StillOpen();
 
-        if (r.ticketsSold == 0 || r.ticketsSold < r.minTickets) {
+        if (
+            r.ticketsSold < r.minTickets || uint256(r.ticketPrice) * r.ticketsSold < minPot
+                || r.ticketsSold == 0
+        ) {
             r.status = Status.Refunding;
             emit RaffleRefunding(raffleId);
-            IERC721(r.collection).transferFrom(address(this), r.creator, r.tokenId);
             return;
         }
         r.status = Status.Drawing;
@@ -207,14 +230,49 @@ contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         emit DrawRequested(raffleId, requestId);
     }
 
+    /// @notice Turn a raffle that has not finished into refunds. Anyone may call once the raffle has been
+    ///         stuck for `ABORT_DELAY`: undrawn that long after its end, or unsettled that long after its
+    ///         winner was drawn. This is the way out when randomness never arrives or the NFT cannot be
+    ///         transferred.
+    function abort(uint256 raffleId) external {
+        Raffle storage r = raffles[raffleId];
+        uint256 readyAt;
+        if (r.status == Status.Open || r.status == Status.Drawing) readyAt = r.endTime + ABORT_DELAY;
+        else if (r.status == Status.Won) readyAt = r.requestedAt + ABORT_DELAY;
+        else revert WrongStatus(r.status);
+        if (block.timestamp < readyAt) revert TooEarly(readyAt);
+
+        uint256 requestId = currentRequest[raffleId];
+        if (requestId != 0) {
+            delete raffleOfRequest[requestId];
+            delete currentRequest[raffleId];
+        }
+        r.status = Status.Refunding;
+        r.winner = address(0);
+        emit RaffleAborted(raffleId);
+    }
+
+    /// @notice The creator takes the NFT back from a raffle that went to refunds.
+    function reclaim(uint256 raffleId) external nonReentrant {
+        Raffle storage r = raffles[raffleId];
+        if (r.status != Status.Refunding) revert WrongStatus(r.status);
+        if (msg.sender != r.creator) revert NotCreator();
+        if (nftReturned[raffleId]) revert AlreadyReclaimed();
+        nftReturned[raffleId] = true;
+        emit NftReclaimed(raffleId);
+        IERC721(r.collection).transferFrom(address(this), r.creator, r.tokenId);
+    }
+
     /// @inheritdoc IRandomnessConsumer
     function fulfillRandomness(uint256 requestId, uint256 randomWord) external {
         if (msg.sender != address(randomness)) revert NotRandomness();
         uint256 raffleId = raffleOfRequest[requestId];
+        if (raffleId == 0) revert StaleRequest();
         Raffle storage r = raffles[raffleId];
         if (r.status != Status.Drawing) revert WrongStatus(r.status);
         if (currentRequest[raffleId] != requestId) revert StaleRequest();
         delete currentRequest[raffleId];
+        delete raffleOfRequest[requestId];
 
         // late randomness is not used, so nobody can choose between a late result and a reset
         if (block.timestamp >= r.requestedAt + DRAW_TIMEOUT) {
@@ -236,6 +294,7 @@ contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         uint256 readyAt = r.requestedAt + DRAW_TIMEOUT;
         if (block.timestamp < readyAt) revert TooEarly(readyAt);
         r.status = Status.Open;
+        delete raffleOfRequest[currentRequest[raffleId]];
         delete currentRequest[raffleId];
         emit DrawReset(raffleId);
     }
@@ -247,19 +306,12 @@ contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         r.status = Status.Settled;
 
         uint256 pot = uint256(r.ticketPrice) * r.ticketsSold;
-        uint256 fee = pot * feeBps / BPS;
+        uint256 fee = pot * feeBpsOf[raffleId] / BPS;
         owedTo[r.creator] += pot - fee;
         emit RaffleSettled(raffleId, r.winner, pot - fee, fee);
 
         IERC721(r.collection).transferFrom(address(this), r.winner, r.tokenId);
-        if (fee != 0) {
-            if (isSupported[r.collection]) {
-                treasury.depositFee{value: fee}(r.collection);
-            } else {
-                (bool ok,) = address(treasury).call{value: fee}("");
-                if (!ok) revert TransferFailed();
-            }
-        }
+        if (fee != 0) treasury.depositFee{value: fee}(r.collection);
     }
 
     /// @notice Take back what the caller paid into a raffle that did not reach its minimum.
@@ -303,11 +355,12 @@ contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
 
     // ------------------------------------------------------------------ admin
 
-    /// @dev Applies to raffles that are already open.
-    function setFee(uint256 feeBps_) external onlyOwner {
+    /// @dev The fee applies to raffles created afterwards; the minimum pot applies at `close`.
+    function setParams(uint256 feeBps_, uint256 minPot_) external onlyOwner {
         if (feeBps_ > MAX_FEE_BPS) revert InvalidParams();
         feeBps = feeBps_;
-        emit FeeSet(feeBps_);
+        minPot = minPot_;
+        emit ParamsSet(feeBps_, minPot_);
     }
 
     function setCollectionSupport(address collection, bool supported) external onlyOwner {

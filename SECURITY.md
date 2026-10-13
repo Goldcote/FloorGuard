@@ -42,6 +42,13 @@ and their findings fixed (`test/Regressions.t.sol`); that is not an audit.
   the cost of a request.
 - **No slippage guard on bets.** The owner can change the games edge (up to 10%)
   between a player signing a bet and it being mined.
+- **Ticket raffle dilution.** A raffle's creator can buy most of the unsold
+  tickets just before the end. Their own ticket money comes back to them less
+  the fee, so this cheaply cuts other buyers' odds. Judge odds against the
+  maximum number of tickets, not the number sold so far.
+- **Deployer power until handover.** The deploying key owns every contract until
+  the final owner accepts ownership, which with a timelock takes at least the
+  timelock delay. Complete the handover before funding anything.
 - **IP licences are records, not rights.** `IPLicenseManager` records payments.
   Whether the Vault can sublicense a collection's artwork depends on that
   collection's terms.

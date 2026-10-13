@@ -40,6 +40,10 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     /// @notice Time between a raffle opening and its earliest draw, so holders can see it coming.
     uint256 public announcePeriod = 7 days;
 
+    /// @notice After any draw is reset, no draw can be requested before this time. Contract-wide, so
+    ///         staggered resets across several raffles cannot keep points frozen without a break.
+    uint256 public nextDrawAt;
+
     uint256 public raffleCount;
     mapping(uint256 raffleId => Raffle) public raffles;
     mapping(uint256 requestId => uint256 raffleId) public raffleOfRequest;
@@ -92,6 +96,7 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
         Raffle storage r = raffles[raffleId];
         if (r.status != Status.Open) revert WrongStatus(r.status);
         if (block.timestamp < r.drawAfter) revert TooEarly(r.drawAfter);
+        if (block.timestamp < nextDrawAt) revert TooEarly(nextDrawAt);
         if (points.totalPoints() == 0) revert NoPoints();
 
         r.status = Status.Drawing;
@@ -138,7 +143,7 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
 
     function _reset(uint256 raffleId, Raffle storage r) private {
         r.status = Status.Open;
-        r.drawAfter = uint40(block.timestamp + REDRAW_COOLDOWN);
+        nextDrawAt = block.timestamp + REDRAW_COOLDOWN;
         delete currentRequest[raffleId];
         points.unfreeze();
         emit DrawReset(raffleId);

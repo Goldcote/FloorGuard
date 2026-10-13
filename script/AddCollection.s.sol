@@ -8,6 +8,7 @@ import {Marketplace} from "../src/Marketplace.sol";
 import {BuybackEngine} from "../src/BuybackEngine.sol";
 import {PredictionMarket} from "../src/PredictionMarket.sol";
 import {Games} from "../src/Games.sol";
+import {TicketRaffle} from "../src/TicketRaffle.sol";
 
 /// @notice Onboards an NFT collection in one run. Must be broadcast by the protocol owner.
 ///
@@ -21,6 +22,7 @@ import {Games} from "../src/Games.sol";
 ///   PROJECT_SHARE_BPS    optional: that share in basis points, at most 5000
 ///   ENABLE_PREDICTIONS   optional (default false). Only enable with a trustworthy oracle price.
 ///   ENABLE_GAMES         optional (default false)
+///   ENABLE_TICKET_RAFFLES optional (default false): lets holders raffle tokens of this collection
 contract AddCollection is Script {
     using stdJson for string;
 
@@ -46,6 +48,9 @@ contract AddCollection is Script {
         }
         if (vm.envOr("ENABLE_PREDICTIONS", false)) {
             PredictionMarket(json.readAddress(".predictionMarket")).setCollectionSupport(collection, true);
+        }
+        if (vm.envOr("ENABLE_TICKET_RAFFLES", false)) {
+            TicketRaffle(json.readAddress(".ticketRaffle")).setCollectionSupport(collection, true);
         }
         if (vm.envOr("ENABLE_GAMES", false)) {
             Games(json.readAddress(".games")).setCollectionSupport(collection, true);

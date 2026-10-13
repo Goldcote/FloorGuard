@@ -65,7 +65,8 @@ Addresses are written to `deployments/84532.json`. Commit that file.
 1. Add the `randomness`, `gamesRandomness` and `ticketRaffleRandomness` addresses
    from the deployment file as consumers of the VRF subscription. Raffles and
    games cannot settle until this is done.
-2. If `OWNER` was set, that account finishes the handover with
+2. Until this step is done the deployer account still owns every contract. If
+   `OWNER` was set, that account finishes the handover with
    `script/AcceptOwnership.s.sol`. With a timelock, run it once with
    `STEP=schedule` and again after the delay with `STEP=execute`. A multisig
    submits the same calls itself.
