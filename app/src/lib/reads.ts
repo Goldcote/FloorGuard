@@ -6,6 +6,7 @@ import { getBlock, getCode, getContractEvents, readContract } from "viem/actions
 import {
   buybackEngineAbi,
   erc721Abi,
+  gamesAbi,
   marketplaceAbi,
   pointsAbi,
   predictionMarketAbi,
@@ -120,6 +121,10 @@ export type Overview = {
    * its own buybacks, do its trades earn points and do its collection-offer fills feed the oracle.
    */
   marketplaceSupported: boolean;
+  /** Share of the collection's fees paid to the NFT project itself. `bps` 0 means none. */
+  projectShare: { recipient: Address; bps: number };
+  /** Project shares the connected user can claim from the Treasury (as a recipient, any collection). */
+  userProjectShareOwed?: bigint;
   totalPoints: bigint;
   /** True while a raffle draw is in flight: pending points cannot be activated until it ends. */
   pointsFrozen: boolean;
@@ -139,8 +144,20 @@ export async function readOverview(
   user?: Address,
 ): Promise<Overview> {
   const pts = { address: d.points, abi: pointsAbi } as const;
-  const [floorBid, salesFloor, pushFloor, vault, marketplaceSupported, totalPoints, freezeCount, userPoints, userPendingPoints] =
-    await Promise.all([
+  const treasury = { address: d.treasury, abi: treasuryAbi } as const;
+  const [
+    floorBid,
+    salesFloor,
+    pushFloor,
+    vault,
+    marketplaceSupported,
+    totalPoints,
+    freezeCount,
+    userPoints,
+    userPendingPoints,
+    [shareRecipient, shareBps],
+    userProjectShareOwed,
+  ] = await Promise.all([
       readFloorBid(client, d, collection),
       readFloor(client, d.salesFloorOracle, collection),
       readFloor(client, d.pushFloorOracle, collection),
@@ -150,6 +167,8 @@ export async function readOverview(
       readContract(client, { ...pts, functionName: "freezeCount" }),
       user ? readContract(client, { ...pts, functionName: "pointsOf", args: [user] }) : undefined,
       user ? readContract(client, { ...pts, functionName: "pendingOf", args: [user] }) : undefined,
+      readContract(client, { ...treasury, functionName: "projectShareOf", args: [collection] }),
+      user ? readContract(client, { ...treasury, functionName: "owedTo", args: [user] }) : undefined,
     ]);
   return {
     floorBid,
@@ -161,6 +180,8 @@ export async function readOverview(
     ).length,
     holdingsTruncated: vault.holdingCount > BigInt(vault.holdings.length),
     marketplaceSupported,
+    projectShare: { recipient: shareRecipient, bps: shareBps },
+    userProjectShareOwed,
     totalPoints,
     pointsFrozen: freezeCount !== 0n,
     userPoints,
@@ -450,4 +471,131 @@ export async function readRaffles(client: Client, d: Deployment): Promise<Raffle
     }),
   );
   return { raffles, raffleCount, totalPoints };
+}
+
+// ---------------------------------------------------------------- games
+
+export type GamesState = {
+  /** House funds not set aside for open bets. */
+  bankroll: bigint;
+  edgeBps: bigint;
+  minBet: bigint;
+  /** The most the house may stand to lose on one bet, as a share of `bankroll`. */
+  maxExposureBps: bigint;
+  /** Whether bets can back the given collection. */
+  supported: boolean;
+  /** Seconds after which an unsettled bet can be refunded. */
+  refundTimeout: number;
+  /** Winnings or refunds that could not be delivered to the user and wait for `withdraw`. */
+  userOwed?: bigint;
+};
+
+export async function readGames(client: Client, d: Deployment, collection: Address, user?: Address): Promise<GamesState> {
+  const games = { address: d.games, abi: gamesAbi } as const;
+  const [bankroll, edgeBps, minBet, maxExposureBps, supported, refundTimeout, userOwed] = await Promise.all([
+    readContract(client, { ...games, functionName: "bankroll" }),
+    readContract(client, { ...games, functionName: "edgeBps" }),
+    readContract(client, { ...games, functionName: "minBet" }),
+    readContract(client, { ...games, functionName: "maxExposureBps" }),
+    readContract(client, { ...games, functionName: "isSupported", args: [collection] }),
+    readContract(client, { ...games, functionName: "REFUND_TIMEOUT" }),
+    user ? readContract(client, { ...games, functionName: "owedTo", args: [user] }) : undefined,
+  ]);
+  return { bankroll, edgeBps, minBet, maxExposureBps, supported, refundTimeout: Number(refundTimeout), userOwed };
+}
+
+export type GameQuote = { payout: bigint; fee: bigint };
+
+/** `Games.quote`: what a winning bet pays (wager included) and the fee taken from the wager. */
+export async function readGameQuote(client: Client, d: Deployment, wager: bigint, chanceBps: number): Promise<GameQuote> {
+  const [payout, fee] = await readContract(client, {
+    address: d.games,
+    abi: gamesAbi,
+    functionName: "quote",
+    args: [wager, BigInt(chanceBps)],
+  });
+  return { payout, fee };
+}
+
+/** House money a bet puts at risk. Mirrors the arithmetic of `Games.play`. */
+export function gameExposure(wager: bigint, chanceBps: number, edgeBps: bigint): bigint {
+  const fee = (wager * edgeBps) / BPS;
+  const payout = ((wager - fee) * BPS) / BigInt(chanceBps);
+  return payout - (wager - fee);
+}
+
+/**
+ * Largest wager `Games.play` accepts at `chanceBps`: the one whose exposure just fits within
+ * `bankroll * maxExposureBps`. Undefined when the edge takes the whole wager.
+ */
+export function maxGameWager(state: Pick<GamesState, "bankroll" | "maxExposureBps" | "edgeBps">, chanceBps: number): bigint | undefined {
+  const chance = BigInt(chanceBps);
+  if (state.edgeBps >= BPS || chance >= BPS) return undefined;
+  const limit = (state.bankroll * state.maxExposureBps) / BPS;
+  // exposure = wager * (1 - edge) * (1 / chance - 1), solved for the wager
+  let wager = (limit * chance * BPS) / ((BPS - chance) * (BPS - state.edgeBps));
+  // Integer rounding in the contract can put the estimate a few wei over the limit.
+  while (wager > 0n && gameExposure(wager, chanceBps, state.edgeBps) > limit) wager -= wager > 1_000n ? 1_000n : 1n;
+  return wager;
+}
+
+export type GameBet = {
+  requestId: bigint;
+  collection: Address;
+  wager: bigint;
+  chanceBps: number;
+  status: "pending" | "won" | "lost" | "refunded";
+  /** Settled bets: the roll (0..9999; below `chanceBps` wins), the payout and the fee. */
+  roll?: number;
+  payout?: bigint;
+  fee?: bigint;
+  /** Pending bets: when the bet can be refunded if its randomness has not arrived. */
+  refundableAt?: number;
+};
+
+/**
+ * The user's bets, newest first, from BetPlaced / BetSettled / BetRefunded logs filtered by player.
+ * Bets are keyed by randomness request id and cannot be enumerated on-chain, so there is no fallback
+ * if the RPC refuses the log query.
+ */
+export async function readUserBets(
+  client: Client,
+  d: Deployment,
+  user: Address,
+  refundTimeout: number,
+  fromBlock = 0n,
+): Promise<GameBet[]> {
+  const games = { address: d.games, abi: gamesAbi } as const;
+  const range = { fromBlock, toBlock: "latest", args: { player: user }, strict: true } as const;
+  const [placed, settled, refunded] = await Promise.all([
+    getContractEvents(client, { ...games, eventName: "BetPlaced", ...range }),
+    getContractEvents(client, { ...games, eventName: "BetSettled", ...range }),
+    getContractEvents(client, { ...games, eventName: "BetRefunded", ...range }),
+  ]);
+  const settledById = new Map(settled.map((log) => [log.args.requestId, log.args]));
+  const refundedIds = new Set(refunded.map((log) => log.args.requestId));
+
+  const bets = placed
+    .map((log): GameBet => {
+      const { requestId, collection, wager, chanceBps } = log.args;
+      const base = { requestId, collection, wager, chanceBps: Number(chanceBps) };
+      const result = settledById.get(requestId);
+      if (result) {
+        return { ...base, status: result.won ? "won" : "lost", roll: Number(result.roll), payout: result.payout, fee: result.fee };
+      }
+      return { ...base, status: refundedIds.has(requestId) ? "refunded" : "pending" };
+    })
+    .reverse()
+    .slice(0, MAX_ITEMS);
+
+  // `placedAt` of the open bets gives the moment a refund becomes possible.
+  await Promise.all(
+    bets
+      .filter((bet) => bet.status === "pending")
+      .map(async (bet) => {
+        const stored = await readContract(client, { ...games, functionName: "bets", args: [bet.requestId] });
+        bet.refundableAt = stored[6] + refundTimeout;
+      }),
+  );
+  return bets;
 }

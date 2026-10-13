@@ -40,7 +40,7 @@ const MESSAGES: Record<string, (args: Args) => string> = {
   StaleOracle: () => "The floor oracle has no fresh price for this collection.",
   PriceNotMet: ([price, sent]) => `The auction price is ${wei(price)} but only ${wei(sent)} was sent.`,
   // PredictionMarket
-  UnsupportedCollection: () => "Prediction markets are not enabled for this collection.",
+  UnsupportedCollection: () => "This collection is not enabled here.",
   InvalidDuration: () => "Invalid betting period or duration.",
   OracleUnavailable: () =>
     "The floor oracle has no fresh price (for settling: none published since the market's resolve time). Try again once the oracle is updated.",
@@ -60,6 +60,14 @@ const MESSAGES: Record<string, (args: Args) => string> = {
   NotVault: () => "Only the vault can open raffles.",
   NotRandomness: () => "Only the randomness provider can call this.",
   TooEarly: ([readyAt]) => `Too early: possible from ${when(readyAt)}.`,
+  // Games / Treasury project share
+  InvalidChance: () => "The chance of winning must be between 1% and 95%.",
+  ExposureTooHigh: ([exposure, limit]) =>
+    `This bet would put ${wei(exposure)} of the bankroll at risk; the limit per bet is ${wei(limit)}. Lower the wager or raise the chance.`,
+  UnknownBet: () => "This bet does not exist or is already settled or refunded.",
+  NothingOwed: () => "There is nothing owed to this account.",
+  InsufficientBankroll: () => "The bankroll is smaller than the requested amount.",
+  InvalidShare: () => "Invalid project share.",
   // Oracles
   NotReporter: () => "The caller is not an authorised price reporter.",
   InsufficientData: ([usable, required]) =>

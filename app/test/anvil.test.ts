@@ -30,28 +30,37 @@ import {
   buyCall,
   cancelOfferCall,
   claimMarketCall,
+  claimProjectShareCall,
   claimRaffleCall,
   drawRaffleCall,
   flushPointsCall,
   makeCollectionOfferCall,
   makeOfferCall,
+  mockFulfillCall,
   placeBetCall,
+  playCall,
+  refundBetCall,
   resolveMarketCall,
   sellCall,
   startAuctionCall,
   unlockCall,
+  withdrawGamesCall,
   type Call,
 } from "../src/lib/calls";
 import { decodeError, type DecodedError } from "../src/lib/errors";
 import {
+  gameExposure,
   HoldingStatus,
   impliedMultiple,
+  maxGameWager,
   Outcome,
   RaffleStatus,
   readChainTime,
   readExpectedProceeds,
   readFloor,
   readFloorBid,
+  readGameQuote,
+  readGames,
   readHoldings,
   readIsDeployed,
   readMarkets,
@@ -59,6 +68,7 @@ import {
   readOverview,
   readRaffles,
   readTokenState,
+  readUserBets,
   withSlippage,
 } from "../src/lib/reads";
 
@@ -94,6 +104,7 @@ const setupAbi = parseAbi([
   "function sendToRaffle(uint256 vaultId) returns (uint256)",
   "function pushFloor(address collection, uint256 price)",
   "function fulfill(uint256 requestId, uint256 randomWord)",
+  "function setProjectShare(address collection, address recipient, uint16 bps)",
 ]);
 
 describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
@@ -162,6 +173,22 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
     expect(overview.holdingCount).toBe(0n);
     expect(overview.collectionHoldingsInVault).toBe(0);
     expect(overview.marketplaceSupported).toBe(true);
+    // The seed sets no project share.
+    expect(BigInt(overview.projectShare.recipient)).toBe(0n);
+    expect(overview.projectShare.bps).toBe(0);
+    expect(overview.userProjectShareOwed).toBe(0n);
+
+    expect(await readGames(client, d, collection, owner)).toEqual({
+      bankroll: 50n * ETH,
+      edgeBps: 200n,
+      minBet: parseEther("0.001"),
+      maxExposureBps: 100n,
+      supported: true,
+      refundTimeout: DAY,
+      userOwed: 0n,
+    });
+    expect((await readGames(client, d, "0x000000000000000000000000000000000000dEaD")).supported).toBe(false);
+    expect(await readUserBets(client, d, owner, DAY)).toEqual([]);
     expect(overview.totalPoints).toBe(0n);
     expect(overview.pointsFrozen).toBe(false);
     expect(overview.userPoints).toBe(0n);
@@ -444,5 +471,117 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
     // The push oracle's price is over a day old now; both oracle states still render.
     expect(await readFloor(client, d.pushFloorOracle, collection)).toMatchObject({ ok: true, price: parseEther("1.2") });
     expect(await readFloor(client, d.salesFloorOracle, collection)).toMatchObject({ ok: false, errorName: "InsufficientData" });
+  });
+
+  it("games: quote, play, mock settle (win and loss), refund, project share", async () => {
+    await setup(owner, d.treasury, "setProjectShare", [collection, buyer, 2_000]);
+    let overview = await readOverview(client, d, collection, buyer);
+    expect(overview.projectShare).toEqual({ recipient: buyer, bps: 2_000 });
+    expect(overview.userProjectShareOwed).toBe(0n);
+
+    // 2% edge leaves a 0.98 stake; a fair coinflip pays 1.96. A 1% long shot pays 98x the stake.
+    expect(await readGameQuote(client, d, ETH, 5_000)).toEqual({ payout: parseEther("1.96"), fee: parseEther("0.02") });
+    expect(await readGameQuote(client, d, parseEther("0.1"), 100)).toEqual({ payout: parseEther("9.8"), fee: parseEther("0.002") });
+
+    // The house risks at most 1% of the 50 ETH bankroll per bet.
+    let games = await readGames(client, d, collection, seller);
+    const limit = parseEther("0.5");
+    for (const chance of [100, 3_300, 5_000, 9_500]) {
+      const max = maxGameWager(games, chance)!;
+      expect(gameExposure(max, chance, games.edgeBps)).toBeLessThanOrEqual(limit);
+      expect(gameExposure(max + parseEther("0.000001"), chance, games.edgeBps)).toBeGreaterThan(limit);
+    }
+    const maxCoinflip = maxGameWager(games, 5_000)!;
+    expect(maxCoinflip).toBeGreaterThan(parseEther("0.51"));
+    expect(maxCoinflip).toBeLessThan(parseEther("0.5103"));
+    const tooBig = await revertOf(seller, playCall(d, collection, 5_000, maxCoinflip + parseEther("0.001")));
+    expect(tooBig.name).toBe("ExposureTooHigh");
+    expect(tooBig.message).toMatch(/the limit per bet is 0\.5 ETH/);
+    expect(await revertOf(seller, playCall(d, collection, 9_600, ETH))).toMatchObject({ name: "InvalidChance" });
+    expect(await revertOf(seller, playCall(d, collection, 5_000, 1n))).toMatchObject({ name: "BetTooSmall" });
+    expect(await revertOf(seller, playCall(d, d.owner, 5_000, parseEther("0.1")))).toMatchObject({ name: "UnsupportedCollection" });
+
+    // --- win
+    const wager = parseEther("0.1");
+    await send(seller, playCall(d, collection, 5_000, wager));
+    const placedAt = await readChainTime(client);
+    let bets = await readUserBets(client, d, seller, games.refundTimeout);
+    expect(bets).toHaveLength(1);
+    const first = bets[0].requestId;
+    expect(bets[0]).toMatchObject({ wager, chanceBps: 5_000, status: "pending", refundableAt: placedAt + DAY });
+    expect(bets[0].collection.toLowerCase()).toBe(collection.toLowerCase());
+    expect((await readGames(client, d, collection)).bankroll).toBe(50n * ETH - parseEther("0.098"));
+    expect(await readUserBets(client, d, buyer, games.refundTimeout)).toEqual([]); // filtered by player
+
+    const early = await revertOf(buyer, refundBetCall(d, first));
+    expect(early.name).toBe("TooEarly");
+    expect(early.args).toEqual([BigInt(placedAt + DAY)]);
+
+    const budget = (await readFloorBid(client, d, collection)).budget;
+    let balance = await client.getBalance({ address: seller });
+    // Same call as the "Local only" button; anyone may send it. Roll 4999 < 5000 wins.
+    await send(buyer, mockFulfillCall(d, first, 10_000n * 123n + 4_999n));
+    expect((await client.getBalance({ address: seller })) - balance).toBe(parseEther("0.196"));
+    bets = await readUserBets(client, d, seller, games.refundTimeout);
+    expect(bets[0]).toEqual({
+      requestId: first,
+      collection: bets[0].collection,
+      wager,
+      chanceBps: 5_000,
+      status: "won",
+      roll: 4_999,
+      payout: parseEther("0.196"),
+      fee: parseEther("0.002"),
+    });
+    // 20% of the 0.002 ETH fee accrues to the project, the rest to the buyback budget.
+    expect((await readFloorBid(client, d, collection)).budget).toBe(budget + parseEther("0.0016"));
+    overview = await readOverview(client, d, collection, buyer);
+    expect(overview.userProjectShareOwed).toBe(parseEther("0.0004"));
+    // A settled bet cannot be settled again; the error comes from Games through the mock provider.
+    expect(await revertOf(buyer, mockFulfillCall(d, first, 0n))).toMatchObject({ name: "UnknownBet" });
+    expect(await revertOf(buyer, refundBetCall(d, first))).toMatchObject({ name: "UnknownBet" });
+
+    // --- loss
+    await send(seller, playCall(d, collection, 5_000, wager));
+    bets = await readUserBets(client, d, seller, games.refundTimeout);
+    expect(bets.map((b) => b.status)).toEqual(["pending", "won"]);
+    const second = bets[0].requestId;
+    balance = await client.getBalance({ address: seller });
+    await send(buyer, mockFulfillCall(d, second, 5_000n)); // roll 5000: not below 5000
+    expect(await client.getBalance({ address: seller })).toBe(balance);
+    bets = await readUserBets(client, d, seller, games.refundTimeout);
+    expect(bets[0]).toMatchObject({ status: "lost", roll: 5_000, payout: 0n, fee: parseEther("0.002") });
+    // First bet: the house paid 0.098. Second: it kept the 0.098 stake.
+    games = await readGames(client, d, collection, seller);
+    expect(games.bankroll).toBe(50n * ETH);
+    expect(games.userOwed).toBe(0n);
+    expect(await revertOf(seller, withdrawGamesCall(d))).toMatchObject({ name: "NothingOwed" });
+
+    // --- project share claim (the Overview Claim button)
+    balance = await client.getBalance({ address: buyer });
+    const receipt = await send(buyer, claimProjectShareCall(d));
+    const claimed = (await client.getBalance({ address: buyer })) - balance + receipt.gasUsed * receipt.effectiveGasPrice;
+    expect(claimed).toBe(parseEther("0.0008"));
+    expect((await readOverview(client, d, collection, buyer)).userProjectShareOwed).toBe(0n);
+    expect(await revertOf(buyer, claimProjectShareCall(d))).toMatchObject({
+      name: "NothingOwed",
+      message: "There is nothing owed to this account.",
+    });
+
+    // --- refund: the largest wager the UI allows is accepted; its randomness never arrives
+    await send(seller, playCall(d, collection, 5_000, maxGameWager(games, 5_000)!));
+    bets = await readUserBets(client, d, seller, games.refundTimeout);
+    const third = bets[0];
+    expect(third.status).toBe("pending");
+    await client.setNextBlockTimestamp({ timestamp: BigInt(third.refundableAt!) });
+    await client.mine({ blocks: 1 });
+    expect(await readChainTime(client)).toBe(third.refundableAt); // the UI now shows "Refundable"
+    balance = await client.getBalance({ address: seller });
+    await send(buyer, refundBetCall(d, third.requestId));
+    expect((await client.getBalance({ address: seller })) - balance).toBe(third.wager);
+    bets = await readUserBets(client, d, seller, games.refundTimeout);
+    expect(bets.map((b) => b.status)).toEqual(["refunded", "lost", "won"]);
+    expect(bets[0].refundableAt).toBeUndefined();
+    expect((await readGames(client, d, collection)).bankroll).toBe(50n * ETH);
   });
 });
