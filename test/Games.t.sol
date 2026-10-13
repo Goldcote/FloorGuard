@@ -120,27 +120,102 @@ contract GamesTest is Base {
         games.withdraw();
     }
 
-    function test_bankroll_canOnlyLeaveToTheTreasury() public {
-        vm.prank(alice);
-        vm.expectRevert();
-        games.withdrawBankrollToTreasury(1 ether);
+    function test_house_depositMintsSharesAndRedeemPaysThemBack() public {
+        // the test contract funded 1,000 ETH in setUp and holds every share
+        uint256 shares = games.sharesOf(address(this));
+        assertEq(shares, games.totalShares());
+        assertEq(games.previewRedeem(shares), 1_000 ether);
 
-        vm.prank(gov);
-        vm.expectRevert(Games.InsufficientBankroll.selector);
-        games.withdrawBankrollToTreasury(1_001 ether);
+        vm.prank(bob);
+        uint256 bobShares = games.deposit{value: 100 ether}(0);
+        assertApproxEqAbs(games.previewRedeem(bobShares), 100 ether, 1e6);
 
-        vm.prank(gov);
-        games.withdrawBankrollToTreasury(400 ether);
-        assertEq(games.bankroll(), 600 ether);
-        assertEq(treasury.unallocated(), 400 ether);
+        uint256 before = bob.balance;
+        vm.prank(bob);
+        games.redeem(bobShares, 99.99 ether, payable(bob));
+        assertApproxEqAbs(bob.balance - before, 100 ether, 1e6);
+        assertEq(games.sharesOf(bob), 0);
+        _assertAccounted(0, 0);
     }
 
-    function test_openBetsCannotBeDrainedByBankrollWithdrawal() public {
+    function test_house_sharesGainWhenPlayersLoseAndFallWhenTheyWin() public {
+        uint256 shares = games.sharesOf(address(this));
+        uint256 id = _play(alice, 1 ether, 5_000);
+        randomness.fulfill(id, 9_999); // alice loses: her 0.98 ETH stake joins the bankroll
+        assertApproxEqAbs(games.previewRedeem(shares), 1_000.98 ether, 1e6);
+
+        id = _play(alice, 1 ether, 5_000);
+        randomness.fulfill(id, 0); // alice wins 0.98 ETH from the house
+        assertApproxEqAbs(games.previewRedeem(shares), 1_000 ether, 1e6);
+    }
+
+    /// A deposit is priced as if the house wins every open bet, and a redemption as if it loses them
+    /// all, so neither can be timed around a result seen in advance.
+    function test_house_cannotBeTimedAroundAKnownResult() public {
+        uint256 id = _play(alice, 10 ether, 5_000); // 9.8 ETH stake, 9.8 ETH of house money at risk
+
+        // bob sees that alice is about to lose and deposits first
+        vm.prank(bob);
+        uint256 bobShares = games.deposit{value: 100 ether}(0);
+        randomness.fulfill(id, 9_999);
+        assertLe(games.previewRedeem(bobShares), 100 ether); // he bought in at the post-win price
+
+        // carol holds shares and sees that alice is about to win; redeeming first gains her nothing
+        vm.prank(carol);
+        uint256 carolShares = games.deposit{value: 100 ether}(0);
+        id = _play(alice, 10 ether, 5_000);
+        uint256 beforeLoss = games.previewRedeem(carolShares);
+        randomness.fulfill(id, 0);
+        assertLe(beforeLoss, games.previewRedeem(carolShares) + 1e6); // she would have got no more by leaving early
+    }
+
+    function test_house_redeemValidationAndSlippage() public {
+        vm.prank(bob);
+        uint256 bobShares = games.deposit{value: 10 ether}(0);
+        vm.startPrank(bob);
+        vm.expectRevert(Games.InsufficientShares.selector);
+        games.redeem(bobShares + 1, 0, payable(bob));
+        vm.expectRevert(Games.SlippageExceeded.selector);
+        games.redeem(bobShares, 11 ether, payable(bob));
+        vm.expectRevert(Games.SlippageExceeded.selector);
+        games.deposit{value: 1 ether}(type(uint256).max);
+        vm.stopPrank();
+    }
+
+    function test_house_openBetsStayFundedWhenEveryoneRedeems() public {
         _play(alice, 1 ether, 5_000);
-        uint256 free = games.bankroll();
-        vm.prank(gov);
-        games.withdrawBankrollToTreasury(free);
+        games.redeem(games.sharesOf(address(this)), 0, payable(bob));
         assertEq(address(games).balance, 1.98 ether); // the 1.96 ETH a win would pay plus the 0.02 ETH fee
+        assertEq(games.reserved(), 0.98 ether);
+    }
+
+    /// Whatever depositors, redeemers and players do, the first depositor cannot be robbed by share
+    /// price games and the contract always holds what it owes.
+    function testFuzz_house_sharesNeverPayOutMoreThanTheBankroll(
+        uint64 dep,
+        uint64 wager,
+        uint256 word,
+        bool bobFirst
+    ) public {
+        uint256 d = bound(dep, 1e9, 500 ether);
+        uint256 w = bound(wager, 0.001 ether, 5 ether);
+        vm.prank(bob);
+        uint256 bobShares = games.deposit{value: d}(0);
+        uint256 id = _play(alice, w, 5_000);
+        if (bobFirst) {
+            vm.prank(bob);
+            games.redeem(bobShares, 0, payable(bob));
+        }
+        randomness.fulfill(id, word);
+        if (!bobFirst) {
+            vm.prank(bob);
+            games.redeem(bobShares, 0, payable(bob));
+        }
+        games.redeem(games.sharesOf(address(this)), 0, payable(address(0xBEEF)));
+        assertEq(games.reserved(), 0);
+        assertEq(games.openWagers(), 0);
+        assertEq(address(games).balance, games.bankroll());
+        assertLt(games.bankroll(), 1e9); // only rounding dust is left for the virtual shares
     }
 
     function test_setParams_caps() public {

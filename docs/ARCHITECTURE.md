@@ -79,7 +79,7 @@ and one collection cannot spend another's fees. ETH sent without a collection si
 | Collection budget (`budgetOf`) | Fees on that collection, vault auction proceeds, donations | Holders who sell into the floor bid | Nobody per payment; the owner sets the bid curve |
 | Project share (`owedTo`) | The owner-set share of a collection's fees, at most 50% | The project's recipient address, when it claims | The owner sets recipient and share |
 | Unallocated | Plain ETH transfers, fees from unsupported collections, withdrawn games bankroll | A collection budget | The owner, with `allocate` |
-| Games bankroll | Anyone, with `fundBankroll`; losing stakes | Winning players, or the Treasury's unallocated pool | The owner can only move it to the Treasury |
+| Games bankroll | Depositors, who receive shares; losing stakes; half of each edge | Winning players, and share holders who redeem | Share holders. The owner cannot withdraw it |
 | Marketplace escrow | Open offers | The seller on acceptance, or back to the offerer | The offerer and the seller |
 | Prediction pools | Bets | Winners, or refunds when void | The oracle price |
 | Ticket raffle revenue | Ticket sales | The raffle's creator, 5% to the Treasury, or refunds | The raffle outcome |
@@ -230,18 +230,37 @@ keeps a share of the edge (`bankrollShareBps`, half by default) to pay for the
 risk it carries; the other half goes to the Treasury as buyback budget. With
 the share set to zero the whole edge funds buybacks, but the bankroll then
 earns nothing, and its typical path is downward even though its average is
-flat. Whoever funds the bankroll cannot withdraw it: it can only leave to
-winners or to the Treasury.
+flat.
+
+### The house
+
+Anyone can fund the bankroll with `deposit` and receives shares in it; the
+holders of shares are the house. Shares gain value from the bankroll's half of
+the edge and from players' losses, and lose value when players win. `redeem`
+burns shares for their part of the free bankroll. The owner has no way to
+withdraw the bankroll.
+
+Share prices are set so that a result seen in advance cannot be traded on:
+
+- a deposit is priced as if the house wins every open bet, so depositing just
+  before a player loses buys in at the price after the loss;
+- a redemption is priced as if the house loses every open bet, so leaving just
+  before a player wins gains nothing.
+
+The cost of that rule falls on whoever redeems while bets are open: their share
+of the funds set aside for those bets stays with the remaining holders. Bets
+settle within seconds when randomness is healthy, so the amount is normally
+small, but it can be up to a fifth of the house's funds when open bets are at
+their limit.
 
 The house's side of each bet is set aside when the bet is placed, so every
 outcome can always be paid. One wager can be at most 1% of the free bankroll, one bet can risk at most 1% of
 it, and
 all open bets together at most 20% of the house's funds. Both limits are checked
-when a bet is placed; a later win or bankroll withdrawal can leave open bets
+when a bet is placed; a later win or redemption can leave open bets
 above 20% of what remains, but their payouts stay fully set aside. A bet whose randomness
 has not arrived within a day is refunded, and randomness that arrives later than
-that is ignored, so nobody can choose between a late result and a refund. The bankroll can only
-leave to winning players or to the Treasury.
+that is ignored, so nobody can choose between a late result and a refund.
 
 Each bet costs the operator one randomness request, which on Ethereum mainnet is
 likely to exceed the fee on a small wager. Set `minBet` accordingly.

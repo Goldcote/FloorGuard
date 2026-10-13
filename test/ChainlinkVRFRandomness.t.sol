@@ -84,17 +84,17 @@ contract ChainlinkVRFRandomnessTest is Base {
     function test_setConfig_ownerOnlyAndUsedByTheNextRequest() public {
         vm.prank(alice);
         vm.expectRevert();
-        adapter.setConfig(KEY_HASH, 7, 10, 300_000, true);
+        adapter.setConfig(KEY_HASH, 7, 10, 450_000, true);
 
         vm.prank(gov);
-        adapter.setConfig(KEY_HASH, 7, 10, 300_000, true);
+        adapter.setConfig(KEY_HASH, 7, 10, 450_000, true);
         vm.prank(alice);
         games.play{value: 1 ether}(address(nft), 5_000);
         (, uint256 subId, uint16 confirmations, uint32 gasLimit,, bytes memory extraArgs) =
             coordinator.lastRequest();
         assertEq(subId, 7);
         assertEq(confirmations, 10);
-        assertEq(gasLimit, 300_000);
+        assertEq(gasLimit, 450_000);
         assertEq(extraArgs, abi.encodeWithSelector(bytes4(keccak256("VRF ExtraArgsV1")), true));
     }
 }

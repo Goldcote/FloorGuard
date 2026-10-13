@@ -258,7 +258,10 @@ contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         }
         if (block.timestamp < readyAt) revert TooEarly(readyAt);
 
-        delete raffleOfRequest[currentRequest[raffleId]];
+        // clear the request only if it is this one's: an id of zero may belong to someone else
+        if (raffleOfRequest[currentRequest[raffleId]] == raffleId) {
+            delete raffleOfRequest[currentRequest[raffleId]];
+        }
         delete currentRequest[raffleId];
         r.status = Status.Refunding;
         r.winner = address(0);
@@ -307,7 +310,10 @@ contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         uint256 readyAt = r.requestedAt + DRAW_TIMEOUT;
         if (block.timestamp < readyAt) revert TooEarly(readyAt);
         r.status = Status.Open;
-        delete raffleOfRequest[currentRequest[raffleId]];
+        // clear the request only if it is this one's: an id of zero may belong to someone else
+        if (raffleOfRequest[currentRequest[raffleId]] == raffleId) {
+            delete raffleOfRequest[currentRequest[raffleId]];
+        }
         delete currentRequest[raffleId];
         emit DrawReset(raffleId);
     }

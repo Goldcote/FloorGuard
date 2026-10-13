@@ -32,6 +32,6 @@ contract GamesReserved3 is Base {
         assertEq(games.reserved(), exposures, "reserved drifted");
         assertEq(address(games).balance, games.bankroll() + games.reserved() + wagers + owed);
         // Note: reserved <= 20% of house funds is NOT an invariant. The cap is only checked in `play`;
-        // `withdrawBankrollToTreasury` and player wins shrink the bankroll afterwards. Solvency is unaffected.
+        // redemptions and player wins shrink the bankroll afterwards. Solvency is unaffected.
     }
 }

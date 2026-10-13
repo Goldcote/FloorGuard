@@ -44,7 +44,8 @@ and describes the code as it was then. Since then:
 | 8. Bankroll keeps part of the edge | Done: `bankrollShareBps` is half by default |
 | 9. Guardian that can only lower or pause | Done |
 | 10. Curve rises only while funded | Done, through a Treasury notice to the engine |
-| 11–13 | Not done |
+| 12. Redeemable bankroll shares | Done: `deposit` and `redeem` on `Games`; the owner's withdrawal was removed |
+| 11, 13 | Not done |
 
 The Foundry tests that demonstrated findings 1 to 3 were removed when the fixes
 made them fail; the Python models in `test/econ/` are kept. None of the changes

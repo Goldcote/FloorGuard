@@ -173,9 +173,10 @@ contract SpinHandler is Test {
     }
 
     function toTreasury(uint96 amount) external {
-        uint256 a = bound(amount, 0, games.bankroll());
-        vm.prank(gov);
-        games.withdrawBankrollToTreasury(a);
+        // house shares replaced the owner's withdrawal: redeem some of this handler's own shares
+        uint256 shares = bound(amount, 0, games.sharesOf(address(this)));
+        if (shares == 0) return;
+        games.redeem(shares, 0, payable(address(treasury)));
     }
 
     function warp(uint32 s) external {

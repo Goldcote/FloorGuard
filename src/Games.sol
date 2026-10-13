@@ -10,8 +10,11 @@ import {ITreasury, IPoints, IRandomnessProvider, IRandomnessConsumer} from "./in
 ///         1% and 95%; a coinflip is a 50% roll. Slots pay a fixed table of multiples from one roll. An edge is taken from every wager and paid to the Treasury as
 ///         a fee for the collection the player chose to back, less the share the bankroll keeps (half by
 ///         default) to pay for the risk it carries. The rest of the wager is played at fair odds.
+///         Anyone can fund the bankroll for shares in it and redeem them later: holders of shares are
+///         the house.
 /// @dev The house's side of every open bet is set aside when the bet is placed, so the contract can
-///      always pay every outcome. Operating games of chance is regulated or prohibited in many places.
+///      always pay every outcome. Operating games of chance, and offering a share in their bankroll, is
+///      regulated or prohibited in many places.
 contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     struct Bet {
         address player;
@@ -53,8 +56,17 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     uint256 public bankrollShareBps = 5_000;
     mapping(address collection => bool) public isSupported;
 
+    /// @dev Virtual shares make the first deposit safe against share-price manipulation.
+    uint256 private constant VIRTUAL_SHARES = 1e6;
+
     /// @notice House funds not set aside for open bets.
     uint256 public bankroll;
+    /// @notice The wagers of all open bets.
+    uint256 public openWagers;
+    /// @notice Shares in the house bankroll. They rise in value with the bankroll's share of the edge and
+    ///         with players' losses, and fall with players' wins.
+    uint256 public totalShares;
+    mapping(address => uint256) public sharesOf;
     /// @notice House funds set aside to pay the open bets if they win.
     uint256 public reserved;
     /// @notice Winnings that could not be delivered and wait to be withdrawn.
@@ -72,8 +84,8 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         uint256 indexed requestId, address indexed player, bool won, uint256 roll, uint256 payout, uint256 fee
     );
     event BetRefunded(uint256 indexed requestId, address indexed player, uint256 wager);
-    event BankrollFunded(address indexed from, uint256 amount);
-    event BankrollWithdrawnToTreasury(uint256 amount);
+    event BankrollFunded(address indexed from, uint256 amount, uint256 shares);
+    event BankrollRedeemed(address indexed from, address indexed to, uint256 shares, uint256 amount);
     event Withdrawn(address indexed player, uint256 amount);
     event ParamsSet(uint256 edgeBps, uint256 minBet, uint256 maxExposureBps);
     event RiskParamsSet(uint256 maxWagerBps, uint256 bankrollShareBps);
@@ -94,7 +106,8 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     error TooEarly(uint256 readyAt);
     error NothingOwed();
     error InvalidParams();
-    error InsufficientBankroll();
+    error InsufficientShares();
+    error SlippageExceeded();
     error TransferFailed();
 
     constructor(address owner_, ITreasury treasury_, IRandomnessProvider randomness_) Ownable(owner_) {
@@ -158,6 +171,7 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         if (reserved + exposure > totalLimit) revert TotalExposureTooHigh(reserved + exposure, totalLimit);
         bankroll -= exposure;
         reserved += exposure;
+        openWagers += msg.value;
 
         requestId = randomness.requestRandomness();
         // a replacement provider must never reuse the id of a bet that is still open
@@ -181,6 +195,7 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         if (bet.player == address(0)) revert UnknownBet();
         delete bets[requestId];
         reserved -= bet.exposure;
+        openWagers -= bet.wager;
 
         // Randomness that arrives after the refund window is not used. Otherwise whoever saw the result
         // first could choose between letting it settle and refunding the bet.
@@ -224,6 +239,7 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         if (block.timestamp < readyAt) revert TooEarly(readyAt);
         delete bets[requestId];
         reserved -= bet.exposure;
+        openWagers -= bet.wager;
         _refund(requestId, bet);
     }
 
@@ -244,22 +260,54 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         if (!ok) revert TransferFailed();
     }
 
-    // ------------------------------------------------------------------ bankroll
+    // ------------------------------------------------------------------ the house
 
-    /// @notice Add to the house bankroll. Anyone may fund it; funds can only ever leave to players or to
-    ///         the Treasury.
-    function fundBankroll() external payable {
+    /// @notice Fund the house bankroll and receive shares in it. Shares are priced as if the house wins
+    ///         every open bet, so nobody gains by depositing just before a result they have seen.
+    /// @param minShares Reverts if fewer shares would be issued.
+    function deposit(uint256 minShares) public payable nonReentrant returns (uint256 shares) {
+        if (msg.value == 0) revert InvalidParams();
+        shares = msg.value * (totalShares + VIRTUAL_SHARES) / (bankroll + reserved + openWagers + 1);
+        if (shares == 0 || shares < minShares) revert SlippageExceeded();
+        totalShares += shares;
+        sharesOf[msg.sender] += shares;
         bankroll += msg.value;
-        emit BankrollFunded(msg.sender, msg.value);
+        emit BankrollFunded(msg.sender, msg.value, shares);
     }
 
-    /// @notice Move free bankroll to the Treasury's unallocated pool. There is no other way out.
-    function withdrawBankrollToTreasury(uint256 amount) external onlyOwner nonReentrant {
-        if (amount > bankroll) revert InsufficientBankroll();
-        bankroll -= amount;
-        emit BankrollWithdrawnToTreasury(amount);
-        (bool ok,) = address(treasury).call{value: amount}("");
+    /// @notice `deposit` without a minimum.
+    function fundBankroll() external payable returns (uint256 shares) {
+        return deposit(0);
+    }
+
+    /// @notice Burn shares for their part of the free bankroll. Shares are redeemed as if the house loses
+    ///         every open bet: funds set aside for open bets stay with the remaining holders. Redeeming
+    ///         while few bets are open therefore gives up least.
+    /// @param minAssets Reverts if less ETH would be paid.
+    function redeem(uint256 shares, uint256 minAssets, address payable to)
+        external
+        nonReentrant
+        returns (uint256 assets)
+    {
+        if (shares == 0 || shares > sharesOf[msg.sender]) revert InsufficientShares();
+        assets = previewRedeem(shares);
+        if (assets < minAssets) revert SlippageExceeded();
+        sharesOf[msg.sender] -= shares;
+        totalShares -= shares;
+        bankroll -= assets;
+        emit BankrollRedeemed(msg.sender, to, shares, assets);
+        (bool ok,) = to.call{value: assets}("");
         if (!ok) revert TransferFailed();
+    }
+
+    /// @notice What `shares` would pay if redeemed now.
+    function previewRedeem(uint256 shares) public view returns (uint256) {
+        return shares * (bankroll + 1) / (totalShares + VIRTUAL_SHARES);
+    }
+
+    /// @notice How many shares a deposit of `assets` would receive now.
+    function previewDeposit(uint256 assets) external view returns (uint256) {
+        return assets * (totalShares + VIRTUAL_SHARES) / (bankroll + reserved + openWagers + 1);
     }
 
     // ------------------------------------------------------------------ admin

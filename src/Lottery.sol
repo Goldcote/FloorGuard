@@ -295,7 +295,10 @@ contract Lottery is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     }
 
     function _clearRequest(uint256 roundId) private {
-        delete roundOfRequest[currentRequest[roundId]];
+        // clear the request only if it is this one's: an id of zero may belong to someone else
+        if (roundOfRequest[currentRequest[roundId]] == roundId) {
+            delete roundOfRequest[currentRequest[roundId]];
+        }
         delete currentRequest[roundId];
     }
 

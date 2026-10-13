@@ -645,7 +645,7 @@ contract RegressionsTest is Base {
             new ChainlinkVRFRandomness(gov, IVRFCoordinatorV2Plus(address(1)), games, bytes32(0), 1);
         vm.prank(gov);
         vm.expectRevert(ChainlinkVRFRandomness.CallbackGasTooLow.selector);
-        adapter.setConfig(bytes32(0), 1, 3, 299_999, false);
+        adapter.setConfig(bytes32(0), 1, 3, 399_999, false);
     }
 
     /// A prediction market's fee and a raffle's minimum pot are fixed when they are created.
@@ -742,6 +742,32 @@ contract RegressionsTest is Base {
         assertEq(treasury.budgetOf(address(nft)), 0.01 ether);
         assertEq(points.pendingOf(alice), 0.01 ether * POINTS_RATE / 1 ether);
         assertEq(address(games).balance, games.bankroll());
+    }
+
+    // ------------------------------------------------------------------ seventh review
+
+    /// Aborting a round that has no randomness request must not disturb another round's live request,
+    /// even with a provider that hands out the id zero.
+    function test_abortOfARoundWithoutARequestLeavesOthersAlone() public {
+        ZeroBasedRandomness zero = new ZeroBasedRandomness();
+        vm.startPrank(gov);
+        lottery.setRandomness(IRandomnessProvider(address(zero)));
+        lottery.setConfig(address(nft), 0.01 ether, 1 days, true);
+        address other = makeAddr("otherCollection");
+        lottery.setConfig(other, 0.01 ether, 1 days, true);
+        vm.stopPrank();
+
+        vm.prank(carol);
+        uint256 stale = lottery.buy{value: 0.01 ether}(other, 1); // never drawn
+        skip(7 days);
+        vm.prank(alice);
+        uint256 live = lottery.buy{value: 0.1 ether}(address(nft), 10);
+        skip(1 days);
+        lottery.draw(live); // request 0
+
+        lottery.abort(stale);
+        zero.fulfill(0, 3); // still accepted
+        assertEq(lottery.owedTo(alice), 0.095 ether);
     }
 }
 

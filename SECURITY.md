@@ -63,10 +63,17 @@ professional audit.
   fees, and to `PredictionMarket`, which takes bets on a price reported by a
   party the operator appoints. The
   bankroll carries variance: a run of player wins can shrink it. It keeps
-  half of the edge by default to pay for that risk, but whoever funds it cannot
-  take it back, and a long run of player wins can still exhaust it. On Ethereum mainnet a randomness request can cost
+  half of the edge by default to pay for that risk, and a long run of player wins can still exhaust it. On Ethereum mainnet a randomness request can cost
   many times the fee on a small wager: set `minBet` so the fee covers it. The fairness of
   every bet rests on the randomness provider.
+- **House shares.** Anyone can fund the games bankroll for shares and redeem them
+  later. Share holders can lose part or all of what they put in when players
+  win; nothing is guaranteed, and the half of the edge the bankroll keeps only
+  tilts the average. Redeeming while bets are open gives up the holder's part
+  of the funds set aside for them. Offering a share in a gambling bankroll may
+  be a regulated activity of its own (in some places a security or a gambling
+  licence matter), separate from operating the games. The share mechanism is
+  new and has not been independently reviewed.
 - **Shared randomness subscription.** The deploy script puts all four randomness
   consumers (vault raffle, games, ticket raffle and lottery) on one Chainlink
   VRF subscription. Many minimum-size bets can drain it and stall every draw

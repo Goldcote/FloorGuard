@@ -15,6 +15,7 @@ contest, is required before the contracts hold real funds.
 | Review 3 | TicketRaffle, IPLicenseManager, deploy scripts, fixes from review 2 | 1 High, 5 Medium, 7 Low |
 | Review 5 | Fixes from review 3 and the full-system audit; fresh look at everything | 2 Medium, 8 Low |
 | Review 6 | Slots, Lottery, fixes from review 5, deploy scripts | 1 Medium, 4 Low |
+| Review 7 | Fixes from review 6; one randomised campaign across every contract at once (150,000 calls plus 32,000 in guided walks) | 2 Low; every invariant held |
 | Full-system audit | Core contracts and how all modules interact | 1 High, 3 Medium, 6 Low |
 | Economics review | Whether the mechanism does what it claims, with models | 5 main findings; see [ECONOMICS-REVIEW.md](ECONOMICS-REVIEW.md) |
 | Static analysis | Slither 0.11.6 on `src/` | No actionable medium or high finding |
@@ -24,7 +25,7 @@ Each reviewer worked independently from the code, proved its High findings with
 tests, and reported what it had not verified. No Critical finding was reported
 in any pass.
 
-Test suite at the time of writing: 205 tests (unit, fuzz, stateful invariant and
+Test suite at the time of writing: 222 tests (unit, fuzz, stateful invariant and
 end-to-end). Line coverage of `src/` was 94% when last measured, before the
 slots, lottery and later changes.
 
@@ -86,7 +87,8 @@ The owner cannot reach:
 - project shares that have already accrued;
 - raffle prizes that already have a winner;
 - stakes in a void prediction market;
-- games funds reserved for open bets, other than through the randomness provider.
+- games funds reserved for open bets, other than through the randomness provider;
+- the games bankroll itself, which belongs to its share holders.
 
 This is why the owner must be a multisig behind a timelock before real use, and
 why the deploying key must hand over ownership before anything is funded.
@@ -122,4 +124,4 @@ and check after every step that:
   another independent pass.
 - The changes made after the economics review (the budget-limited bid, the
   Treasury notice to the engine, the guardian, the points and prediction market
-  rules, the games limits) have tests but no independent review.
+  rules, the games limits, house shares) have tests but no independent review.
