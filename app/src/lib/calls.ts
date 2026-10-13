@@ -5,10 +5,12 @@ import {
   buybackEngineAbi,
   erc721Abi,
   gamesAbi,
+  ipLicenseManagerAbi,
   marketplaceAbi,
   mockRandomnessAbi,
   pointsAbi,
   predictionMarketAbi,
+  ticketRaffleAbi,
   treasuryAbi,
   vaultAbi,
   vaultRaffleAbi,
@@ -223,4 +225,50 @@ export const mockFulfillCall = (provider: Address, requestId: bigint, randomWord
   abi: mockRandomnessAbi,
   functionName: "fulfill",
   args: [requestId, randomWord],
+});
+
+// ---------------------------------------------------------------- ticket raffles
+
+const ticketRaffleCall = (d: Deployment, functionName: string, args: readonly unknown[], value?: bigint): Call => ({
+  address: d.ticketRaffle,
+  abi: ticketRaffleAbi,
+  functionName,
+  args,
+  value,
+});
+
+/** Raffle a token. The caller must own it and have approved the TicketRaffle contract. */
+export const createTicketRaffleCall = (
+  d: Deployment,
+  collection: Address,
+  tokenId: bigint,
+  ticketPrice: bigint,
+  minTickets: number,
+  maxTickets: number,
+  durationSeconds: bigint,
+): Call => ticketRaffleCall(d, "create", [collection, tokenId, ticketPrice, minTickets, maxTickets, durationSeconds]);
+
+/** The contract requires exactly `count * ticketPrice`. */
+export const buyTicketsCall = (d: Deployment, raffleId: bigint, count: number, ticketPrice: bigint): Call =>
+  ticketRaffleCall(d, "buy", [raffleId, count], ticketPrice * BigInt(count));
+
+export const cancelTicketRaffleCall = (d: Deployment, raffleId: bigint): Call => ticketRaffleCall(d, "cancel", [raffleId]);
+export const closeTicketRaffleCall = (d: Deployment, raffleId: bigint): Call => ticketRaffleCall(d, "close", [raffleId]);
+export const settleTicketRaffleCall = (d: Deployment, raffleId: bigint): Call => ticketRaffleCall(d, "settle", [raffleId]);
+export const refundTicketsCall = (d: Deployment, raffleId: bigint): Call => ticketRaffleCall(d, "refund", [raffleId]);
+export const reclaimTicketRaffleCall = (d: Deployment, raffleId: bigint): Call => ticketRaffleCall(d, "reclaim", [raffleId]);
+export const abortTicketRaffleCall = (d: Deployment, raffleId: bigint): Call => ticketRaffleCall(d, "abort", [raffleId]);
+export const resetTicketDrawCall = (d: Deployment, raffleId: bigint): Call => ticketRaffleCall(d, "resetDraw", [raffleId]);
+/** Withdraw raffle revenue owed to the caller as a creator. */
+export const withdrawTicketRaffleCall = (d: Deployment): Call => ticketRaffleCall(d, "withdraw", []);
+
+// ---------------------------------------------------------------- licences
+
+/** Buy a licence on a locked vault holding. The contract requires exactly the tier price. */
+export const requestLicenseCall = (d: Deployment, vaultId: bigint, tier: number, usageScope: string, price: bigint): Call => ({
+  address: d.ipLicenseManager,
+  abi: ipLicenseManagerAbi,
+  functionName: "requestLicense",
+  args: [vaultId, tier, usageScope],
+  value: price,
 });

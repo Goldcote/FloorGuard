@@ -1,8 +1,8 @@
 import { useState } from "react";
 import type { Address } from "viem";
 import { approveCall, sellCall } from "../lib/calls";
-import { useProtocol, useRead } from "../hooks";
-import { bps, eth } from "../lib/format";
+import { useChainTime, useProtocol, useRead } from "../hooks";
+import { bps, dateTime, duration, eth } from "../lib/format";
 import { parsePercentBps, parseUint } from "../lib/parse";
 import { readFloorBid, readTokenState, withSlippage } from "../lib/reads";
 import { useTx } from "../tx";
@@ -11,6 +11,7 @@ import { ActionButton, Badge, Card, Field, QueryView, Stat } from "../ui";
 export function FloorBid({ collection }: { collection: Address }) {
   const { client, deployment: d, user } = useProtocol();
   const { run } = useTx();
+  const now = useChainTime();
   const query = useRead(["floorBid", collection], (c, dep) => readFloorBid(c, dep, collection));
   const [tokenText, setTokenText] = useState("");
   const [slippageText, setSlippageText] = useState("1");
@@ -50,8 +51,20 @@ export function FloorBid({ collection }: { collection: Address }) {
               <Stat label="Buyback budget" value={`${eth(bid.budget)} ETH`} />
               <Stat
                 label="Fillable"
-                value={bid.isFillable ? <Badge tone="good">Yes</Badge> : <Badge tone="bad">No</Badge>}
+                value={bid.isFillable && now >= bid.nextFillAt ? <Badge tone="good">Yes</Badge> : <Badge tone="bad">No</Badge>}
+                hint={now < bid.nextFillAt ? `Pausing between fills until ${dateTime(bid.nextFillAt)}` : undefined}
               />
+              {bid.fillCooldown > 0 && (
+                <Stat
+                  label="Pause between fills"
+                  value={duration(bid.fillCooldown)}
+                  hint={
+                    now < bid.nextFillAt
+                      ? `Next sale possible from ${dateTime(bid.nextFillAt)}`
+                      : "After each sale the bid accepts no other for this long"
+                  }
+                />
+              )}
               <Stat
                 label="Your minimum price"
                 value={slippageBps !== undefined && bid.active ? `${eth(withSlippage(bid.currentBid, slippageBps))} ETH` : "–"}
@@ -72,7 +85,9 @@ export function FloorBid({ collection }: { collection: Address }) {
               <ActionButton
                 onClick={sell}
                 blocked={
-                  !bid.active
+                  now < bid.nextFillAt
+                    ? `The bid pauses between fills; next sale possible from ${dateTime(bid.nextFillAt)}`
+                    : !bid.active
                     ? "There is no active bid for this collection"
                     : !bid.isFillable
                       ? "The buyback budget does not cover the bid"

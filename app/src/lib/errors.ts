@@ -25,6 +25,7 @@ const MESSAGES: Record<string, (args: Args) => string> = {
     `The collection's buyback budget (${wei(budget)}) does not cover ${wei(wanted)}.`,
   InactiveCollection: () => "There is no active floor bid for this collection.",
   InvalidConfig: () => "Invalid bid configuration.",
+  FillCooldown: ([readyAt]) => `The floor bid is pausing between fills; the next sale is possible from ${when(readyAt)}.`,
   BidBelowMinimum: ([bid, min]) => `The floor bid is now ${wei(bid)}, below your minimum of ${wei(min)}.`,
   // Vault
   NotEngine: () => "Only the buyback engine can register vault deposits.",
@@ -71,6 +72,23 @@ const MESSAGES: Record<string, (args: Args) => string> = {
   NothingOwed: () => "There is nothing owed to this account.",
   InsufficientBankroll: () => "The bankroll is smaller than the requested amount.",
   InvalidShare: () => "Invalid project share.",
+  // TicketRaffle
+  NotTokenOwner: () => "You do not own this token.",
+  AlreadyReclaimed: () => "The NFT has already been taken back.",
+  NotCreator: () => "Only the raffle's creator can do this.",
+  TicketsAlreadySold: () => "Tickets have been sold, so the raffle can no longer be cancelled.",
+  SalesClosed: () => "Ticket sales for this raffle have ended.",
+  SoldOut: ([remaining]) =>
+    remaining === 0n ? "This raffle is sold out." : `Only ${String(remaining)} ticket(s) are left (and at least one must be bought).`,
+  WrongPayment: ([expected]) => `The payment must be exactly ${wei(expected)}.`,
+  StillOpen: () => "The raffle is still running: it can be closed once its time is up or it has sold out.",
+  // IPLicenseManager
+  NotInVault: () => "Only holdings locked in the vault can be licensed.",
+  TierInactive: () => "This licence tier is not available for the collection.",
+  ScopeTooLong: () => "The usage scope is too long (280 bytes at most).",
+  UnknownLicense: () => "This licence does not exist.",
+  InvalidTier: () => "Invalid licence tier settings.",
+  Banned: () => "A licence of yours on this holding was revoked; you cannot license it again unless the owner lifts the ban.",
   // Oracles
   NotReporter: () => "The caller is not an authorised price reporter.",
   InsufficientData: ([usable, required]) =>

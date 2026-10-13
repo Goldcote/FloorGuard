@@ -64,7 +64,7 @@ Things to know on a local chain:
 - Unlocking vault holdings by governance, sending them to a raffle, pushing an oracle floor and
   setting a collection's project share are owner actions with no button in the app. Use `cast send`
   with `--unlocked --from <account #0>`.
-- A raffle draw needs a randomness answer. On chain 31337 only, a raffle in the Drawing state shows a
+- A vault raffle draw needs a randomness answer. On chain 31337 only, a raffle in the Drawing state shows a
   dashed "Local only: draw with mock randomness" button that calls `MockRandomness.fulfill`.
 - To walk through everything: a holding unlocks 180 days after purchase and only if the sales floor
   (three recent collection-offer or floor-bid sales) is at least 130% of its purchase price; a raffle
@@ -91,6 +91,36 @@ It calls `MockRandomness.fulfill` with a 256-bit word from `crypto.getRandomValu
 `fulfill` chooses the word, so this is not a fair game; it exists to exercise the flow locally. A bet
 left unsettled for a day shows a Refund button (`cast rpc evm_increaseTime 86400` to get there), and
 winnings that could not be delivered show a Withdraw button.
+
+## Ticket raffles tab
+
+Paid-ticket raffles of an NFT (`TicketRaffle.sol`). The tab lists every raffle with its prize, ticket
+price, tickets sold against the minimum and maximum, time left, status and your tickets, and it has a
+form to raffle a token of the selected collection (the raffle contract is approved for the token
+first). Buttons appear only when they apply: Buy, Cancel (creator, no tickets sold), Close (after the
+end or a sell-out; it says whether it will request the draw or open refunds), Settle, Refund, Reclaim
+(creator, after refunds opened), Reset the draw (no randomness for a day), Abort (anyone, a raffle stuck
+for a week) and Withdraw (creator revenue).
+
+> Paid raffles are regulated or prohibited in many places. Check the law that applies to you before
+> buying tickets, creating a raffle, deploying or operating this.
+
+Your odds are shown against the tickets sold so far and against the maximum. They can fall until the
+raffle closes, because anyone, the creator included, can buy the unsold tickets late. On chain 31337
+only, a raffle waiting for its draw has a dashed "Local only: draw with mock randomness" button; the
+ticket raffle has its own `MockRandomness` instance (`ticketRaffleRandomness`).
+
+## Artwork licences (Vault tab)
+
+Below the holdings, the Vault tab lists every holding a licence can be in force on, the licence tiers
+of its collection (`IPLicenseManager.sol`), your licence in force (tier and end date), and a request
+form with the intended-use field (280 bytes at most, stored publicly on-chain). Requesting sends
+exactly the tier price. Only locked holdings can be licensed.
+
+A licence here records that you paid for a tier for a limited time. Whether the vault may license a
+collection's artwork at all, and on what terms, depends on that collection's own terms; the licence
+text lives off-chain. Tiers are a free-form number per collection with no on-chain list, so the app
+probes tier numbers 0 to 7 and shows the active ones.
 
 ## Project fee share
 
@@ -158,6 +188,7 @@ src/lib/errors.ts            custom error -> readable message
 src/hooks.ts                 react-query wrappers around lib/reads.ts (5 s polling)
 src/tx.tsx                   transaction runner: simulate, sign, wait, with pending/success/error panel
 src/localWallet.ts           local-only connector for anvil's unlocked accounts
-src/tabs/                    Overview, Marketplace, Floor bid, Predictions, Games, Vault, Raffles
+src/tabs/                    Overview, Marketplace, Floor bid, Predictions, Games, Ticket raffles,
+                             Vault (with Licences), Vault raffles
 test/anvil.test.ts           integration test against anvil
 ```

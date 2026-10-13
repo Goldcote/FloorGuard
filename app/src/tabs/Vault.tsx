@@ -1,7 +1,7 @@
 import { vaultAbi } from "../generated/abis";
 import { buyCall, startAuctionCall, unlockCall } from "../lib/calls";
 import { useChainTime, useProtocol, useRead } from "../hooks";
-import { dateTime, eth, relative } from "../lib/format";
+import { dateTime, duration, eth, relative } from "../lib/format";
 import { HOLDING_STATUS_NAMES, HoldingStatus, MAX_ITEMS, readHoldings, type Holding } from "../lib/reads";
 import { useTx } from "../tx";
 import { ActionButton, Addr, Badge, Card, QueryView } from "../ui";
@@ -37,16 +37,17 @@ export function Vault() {
   return (
     <Card title="Vault holdings">
       <QueryView query={query}>
-        {({ holdings, holdingCount, owner, governanceWindow, auctionDuration }) => {
+        {({ holdings, holdingCount, owner, governanceWindow, auctionDuration, auctionStartMultiple, auctionHalfLife }) => {
           const isOwner = !!user && user.toLowerCase() === owner.toLowerCase();
           return (
             <>
               <p className="muted">
                 Tokens bought by the floor bid. A holding unlocks once its lock has ended and the sales-oracle floor is
                 at least 130% of the purchase price. After unlocking, the owner can auction or raffle it; anyone can
-                start the auction once the governance window has passed. An auction falls from 150% of its reserve to
-                the reserve, which is the floor or 130% of the purchase price, whichever is higher. Proceeds return
-                to the buyback budget.
+                start the auction once the governance window has passed. An auction starts at {auctionStartMultiple} times its reserve
+                and halves every {duration(auctionHalfLife)} until it reaches the reserve, which is the floor or 130%
+                of the purchase price, whichever is higher. Auctions start far above the market price on purpose and
+                fall until someone buys, so the first buyer sets the price. Proceeds return to the buyback budget.
                 {holdingCount > BigInt(holdings.length) && ` Showing the latest ${MAX_ITEMS} of ${holdingCount}.`}
               </p>
               {holdings.length === 0 ? (

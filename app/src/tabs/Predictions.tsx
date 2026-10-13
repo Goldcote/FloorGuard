@@ -106,8 +106,12 @@ export function Predictions({ collection }: { collection: Address }) {
                   </div>
                   <div className="stats">
                     <Stat label="Start price" value={`${eth(m.startPrice)} ETH`} />
-                    <Stat label="Betting closes" value={relative(m.closeTime, now)} hint={dateTime(m.closeTime)} />
-                    <Stat label="Resolves" value={relative(m.resolveTime, now)} hint={dateTime(m.resolveTime)} />
+                    <Stat label={now < m.closeTime ? "Betting closes" : "Betting closed"} value={relative(m.closeTime, now)} hint={dateTime(m.closeTime)} />
+                    <Stat
+                      label={now < m.resolveTime ? "Resolvable" : pending ? "Resolvable since" : "Resolve time"}
+                      value={relative(m.resolveTime, now)}
+                      hint={dateTime(m.resolveTime)}
+                    />
                     <Stat
                       label="Higher pool"
                       value={`${eth(m.higherPool)} ETH`}

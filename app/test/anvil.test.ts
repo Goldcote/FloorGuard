@@ -26,8 +26,19 @@ import { erc721Abi, errorsAbi, vaultAbi } from "../src/generated/abis";
 import { deployments } from "../src/generated/addresses";
 import {
   acceptOfferCall,
+  abortTicketRaffleCall,
   approveCall,
   buyCall,
+  buyTicketsCall,
+  cancelTicketRaffleCall,
+  closeTicketRaffleCall,
+  createTicketRaffleCall,
+  reclaimTicketRaffleCall,
+  refundTicketsCall,
+  requestLicenseCall,
+  resetTicketDrawCall,
+  settleTicketRaffleCall,
+  withdrawTicketRaffleCall,
   cancelOfferCall,
   claimMarketCall,
   claimProjectShareCall,
@@ -65,12 +76,16 @@ import {
   readGames,
   readHoldings,
   readIsDeployed,
+  readLicensing,
   readMarkets,
   readOpenOffers,
   readOverview,
   readRaffles,
+  readTicketRaffles,
   readTokenState,
   readUserBets,
+  TicketRaffleStatus,
+  ticketRaffleWouldRefund,
   withSlippage,
 } from "../src/lib/reads";
 
@@ -107,6 +122,7 @@ const setupAbi = parseAbi([
   "function pushFloor(address collection, uint256 price)",
   "function fulfill(uint256 requestId, uint256 randomWord)",
   "function setProjectShare(address collection, address recipient, uint16 bps)",
+  "function setFillCooldown(address collection, uint256 cooldown)",
 ]);
 
 describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
@@ -142,8 +158,10 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
 
   /** Vault.auctionPrice recomputed for the latest block, i.e. what a buy mined in it paid. */
   async function auctionPriceAtLatestBlock(startPrice: bigint, endPrice: bigint, startTime: number) {
-    const elapsed = BigInt((await readChainTime(client)) - startTime);
-    return startPrice - ((startPrice - endPrice) * elapsed) / BigInt(3 * DAY);
+    const elapsed = (await readChainTime(client)) - startTime;
+    let price = startPrice >> BigInt(Math.floor(elapsed / DAY));
+    price -= ((price / 2n) * BigInt(elapsed % DAY)) / BigInt(DAY);
+    return price > endPrice ? price : endPrice;
   }
 
   const ownerOf = (tokenId: bigint) =>
@@ -169,6 +187,7 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
     expect(overview.floorBid.maxPrice).toBe(parseEther("1.5"));
     expect(overview.floorBid.growthBpsPerDay).toBe(1_000);
     expect(overview.floorBid.stepDownBps).toBe(500);
+    expect(overview.floorBid).toMatchObject({ fillCooldown: 0, nextFillAt: 0 });
     expect(overview.floorBid.currentBid).toBeGreaterThanOrEqual(parseEther("0.9"));
     expect(overview.floorBid.currentBid).toBeLessThan(parseEther("0.91"));
     // No floor-type sales yet: the sales oracle reverts and the UI shows the decoded reason.
@@ -240,7 +259,7 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
     expect((await readMarkets(client, d)).markets[0].stake).toBeUndefined();
 
     const vault = await readHoldings(client, d);
-    expect(vault).toMatchObject({ holdings: [], holdingCount: 0n, governanceWindow: 30 * DAY, auctionDuration: 3 * DAY });
+    expect(vault).toMatchObject({ holdings: [], holdingCount: 0n, governanceWindow: 30 * DAY, auctionDuration: 4 * DAY, auctionStartMultiple: 16, auctionHalfLife: DAY });
     expect(vault.owner).toBe(owner);
 
     expect(await readRaffles(client, d)).toEqual({ raffles: [], raffleCount: 0n, totalPoints: 0n, nextDrawAt: 0 });
@@ -357,6 +376,201 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
     });
     expect(holdings[0].lockedUntil - holdings[0].acquiredAt).toBe(180 * DAY);
     expect(await revertOf(seller, unlockCall(d, 1n))).toMatchObject({ name: "UnlockConditionsNotMet" });
+
+    // The owner can make the engine pause between fills; the tab shows it and blocks the Sell button.
+    expect(after).toMatchObject({ fillCooldown: 0, nextFillAt: holdings[0].acquiredAt });
+    await setup(owner, d.buybackEngine, "setFillCooldown", [collection, 3_600n]);
+    const cooling = await readFloorBid(client, d, collection);
+    expect(cooling).toMatchObject({ fillCooldown: 3_600, nextFillAt: holdings[0].acquiredAt + 3_600 });
+    const paused = await revertOf(seller, sellCall(d, collection, 4n, 0n));
+    expect(paused.name).toBe("FillCooldown");
+    expect(paused.args).toEqual([BigInt(cooling.nextFillAt)]);
+    expect(paused.message).toMatch(/^The floor bid is pausing between fills; the next sale is possible from /);
+  });
+
+  it("licences: tiers, request with exact payment, licence in force", async () => {
+    // Holding 1 (token 3) is locked in the vault after the floor-bid sale.
+    let licensing = await readLicensing(client, d, seller);
+    expect(licensing.maxScopeLength).toBe(280);
+    expect(licensing.holdings).toHaveLength(1);
+    expect(licensing.holdings[0]).toMatchObject({
+      holding: { id: 1n, tokenId: 3n, status: HoldingStatus.Locked },
+      tiers: [
+        { tier: 0, price: 0n, duration: 30 * DAY },
+        { tier: 1, price: parseEther("0.1"), duration: 90 * DAY },
+        { tier: 2, price: parseEther("0.5"), duration: 365 * DAY },
+      ],
+      license: undefined,
+      banned: false,
+    });
+    const anonymous = await readLicensing(client, d);
+    expect(anonymous.holdings[0].license).toBeUndefined();
+    expect(anonymous.holdings[0].banned).toBeUndefined();
+
+    const tier1 = licensing.holdings[0].tiers[1];
+    expect(await revertOf(seller, requestLicenseCall(d, 1n, 1, "prints", parseEther("0.05")))).toMatchObject({
+      name: "WrongPayment",
+      message: "The payment must be exactly 0.1 ETH.",
+    });
+    expect(await revertOf(seller, requestLicenseCall(d, 1n, 5, "prints", 0n))).toMatchObject({ name: "TierInactive" });
+    expect(await revertOf(seller, requestLicenseCall(d, 99n, 1, "prints", tier1.price))).toMatchObject({ name: "NotInVault" });
+    expect(await revertOf(seller, requestLicenseCall(d, 1n, 1, "x".repeat(281), tier1.price))).toMatchObject({ name: "ScopeTooLong" });
+
+    // Same call as the request form: the tier's price as the value, the scope as typed.
+    const budget = (await readFloorBid(client, d, collection)).budget;
+    await send(seller, requestLicenseCall(d, 1n, tier1.tier, "x".repeat(280), tier1.price));
+    const issued = await readChainTime(client);
+    licensing = await readLicensing(client, d, seller);
+    expect(licensing.holdings[0].license).toEqual({ tier: 1, end: issued + 90 * DAY });
+    // The fee went to the collection's buyback budget (no project share is set).
+    expect((await readFloorBid(client, d, collection)).budget).toBe(budget + parseEther("0.1"));
+
+    // A shorter free licence bought afterwards does not hide the longer one still in force.
+    await send(seller, requestLicenseCall(d, 1n, 0, "", 0n));
+    expect((await readLicensing(client, d, seller)).holdings[0].license).toEqual({ tier: 1, end: issued + 90 * DAY });
+    // Licences are per licensee.
+    expect((await readLicensing(client, d, buyer)).holdings[0].license).toBeUndefined();
+    await send(buyer, requestLicenseCall(d, 1n, 0, "personal use", 0n));
+    expect((await readLicensing(client, d, buyer)).holdings[0].license).toMatchObject({ tier: 0 });
+  });
+
+  it("ticket raffles: buy, sell-out draw and settle; refund and reclaim; cancel", async () => {
+    // --- the seeded raffle: token 10, 0.05 ETH a ticket, 5 to 40 tickets, the owner holds 2
+    let state = await readTicketRaffles(client, d, owner, collection);
+    expect(state).toMatchObject({
+      raffleCount: 1n,
+      minPot: parseEther("0.05"),
+      feeBps: 500n,
+      minDuration: 3_600,
+      maxDuration: 30 * DAY,
+      drawTimeout: DAY,
+      abortDelay: 7 * DAY,
+      collectionSupported: true,
+      userOwed: 0n,
+    });
+    expect(state.raffles).toHaveLength(1);
+    expect(state.raffles[0]).toMatchObject({
+      id: 1n,
+      creator: owner,
+      tokenId: 10n,
+      ticketPrice: parseEther("0.05"),
+      minTickets: 5,
+      maxTickets: 40,
+      ticketsSold: 2,
+      status: TicketRaffleStatus.Open,
+      feeBps: 500n,
+      nftReturned: false,
+      requestId: undefined,
+      userPaid: parseEther("0.1"),
+      userTickets: 2,
+    });
+    expect(await ownerOf(10n)).toBe(d.ticketRaffle);
+    expect(ticketRaffleWouldRefund(state.raffles[0], state.minPot)).toBe(true); // 2 sold, 5 needed
+    const anonymous = await readTicketRaffles(client, d);
+    expect(anonymous.raffles[0].userTickets).toBeUndefined();
+    expect(anonymous.collectionSupported).toBeUndefined();
+    expect((await readTicketRaffles(client, d, buyer, d.owner)).collectionSupported).toBe(false);
+
+    const price = state.raffles[0].ticketPrice;
+    expect(await revertOf(buyer, closeTicketRaffleCall(d, 1n))).toMatchObject({ name: "StillOpen" });
+    expect(await revertOf(buyer, cancelTicketRaffleCall(d, 1n))).toMatchObject({ name: "NotCreator" });
+    expect(await revertOf(owner, cancelTicketRaffleCall(d, 1n))).toMatchObject({ name: "TicketsAlreadySold" });
+    expect(await revertOf(buyer, buyTicketsCall(d, 1n, 39, price))).toMatchObject({
+      name: "SoldOut",
+      message: "Only 38 ticket(s) are left (and at least one must be bought).",
+    });
+    expect(await revertOf(buyer, settleTicketRaffleCall(d, 1n))).toMatchObject({ name: "WrongStatus" });
+    expect(await revertOf(buyer, refundTicketsCall(d, 1n))).toMatchObject({ name: "WrongStatus" });
+    const tooEarly = await revertOf(buyer, abortTicketRaffleCall(d, 1n));
+    expect(tooEarly.name).toBe("TooEarly");
+    expect(tooEarly.args).toEqual([BigInt(state.raffles[0].endTime + 7 * DAY)]);
+
+    await send(buyer, buyTicketsCall(d, 1n, 3, price));
+    state = await readTicketRaffles(client, d, buyer, collection);
+    expect(state.raffles[0]).toMatchObject({ ticketsSold: 5, userPaid: parseEther("0.15"), userTickets: 3 });
+    expect(ticketRaffleWouldRefund(state.raffles[0], state.minPot)).toBe(false);
+
+    // --- a raffle that ends below its minimum: refunds, and the creator reclaims the NFT
+    for (const tokenId of [8n, 9n]) await setup(owner, collection, "transferFrom", [owner, seller, tokenId]);
+    // Same steps as the Create raffle form.
+    const token = await readTokenState(client, collection, 8n, d.ticketRaffle);
+    expect(token).toEqual({ owner: seller, approved: false });
+    expect(await revertOf(seller, createTicketRaffleCall(d, collection, 8n, parseEther("0.01"), 3, 5, 60n))).toMatchObject({ name: "InvalidParams" });
+    expect(await revertOf(buyer, createTicketRaffleCall(d, collection, 8n, parseEther("0.01"), 3, 5, 3_600n))).toMatchObject({ name: "NotTokenOwner" });
+    await send(seller, approveCall(collection, d.ticketRaffle, 8n));
+    await send(seller, createTicketRaffleCall(d, collection, 8n, parseEther("0.01"), 3, 5, 3_600n));
+    const created = await readChainTime(client);
+    state = await readTicketRaffles(client, d, seller, collection);
+    expect(state.raffleCount).toBe(2n);
+    expect(state.raffles[0]).toMatchObject({
+      id: 2n,
+      creator: seller,
+      tokenId: 8n,
+      ticketPrice: parseEther("0.01"),
+      minTickets: 3,
+      maxTickets: 5,
+      ticketsSold: 0,
+      endTime: created + 3_600,
+      status: TicketRaffleStatus.Open,
+      userTickets: 0,
+    });
+    expect(await ownerOf(8n)).toBe(d.ticketRaffle);
+    await send(buyer, buyTicketsCall(d, 2n, 1, parseEther("0.01")));
+
+    // --- cancel: only while no ticket is sold
+    await send(seller, approveCall(collection, d.ticketRaffle, 9n));
+    await send(seller, createTicketRaffleCall(d, collection, 9n, ETH, 1, 2, 3_600n));
+    await send(seller, cancelTicketRaffleCall(d, 3n));
+    state = await readTicketRaffles(client, d, seller, collection);
+    expect(state.raffles[0]).toMatchObject({ id: 3n, status: TicketRaffleStatus.Cancelled, nftReturned: true });
+    expect(await ownerOf(9n)).toBe(seller);
+
+    // Raffle 2 runs out with 1 of 3 tickets sold.
+    await client.setNextBlockTimestamp({ timestamp: BigInt(created + 3_600) });
+    await client.mine({ blocks: 1 });
+    expect(await revertOf(buyer, buyTicketsCall(d, 2n, 1, parseEther("0.01")))).toMatchObject({ name: "SalesClosed" });
+    await send(buyer, closeTicketRaffleCall(d, 2n)); // anyone may close
+    state = await readTicketRaffles(client, d, buyer, collection);
+    const refunding = state.raffles.find((r) => r.id === 2n)!;
+    expect(refunding).toMatchObject({ status: TicketRaffleStatus.Refunding, nftReturned: false, userPaid: parseEther("0.01"), userTickets: 1 });
+    let balance = await client.getBalance({ address: buyer });
+    let receipt = await send(buyer, refundTicketsCall(d, 2n));
+    expect((await client.getBalance({ address: buyer })) - balance + receipt.gasUsed * receipt.effectiveGasPrice).toBe(parseEther("0.01"));
+    expect(await revertOf(buyer, refundTicketsCall(d, 2n))).toMatchObject({ name: "NothingOwed" });
+    expect(await revertOf(buyer, reclaimTicketRaffleCall(d, 2n))).toMatchObject({ name: "NotCreator" });
+    await send(seller, reclaimTicketRaffleCall(d, 2n));
+    expect(await ownerOf(8n)).toBe(seller);
+    expect(await revertOf(seller, reclaimTicketRaffleCall(d, 2n))).toMatchObject({ name: "AlreadyReclaimed" });
+    state = await readTicketRaffles(client, d, buyer, collection);
+    expect(state.raffles.find((r) => r.id === 2n)).toMatchObject({ nftReturned: true, userPaid: 0n, userTickets: 0 });
+
+    // --- raffle 1 sells out, which allows closing before its end time: draw, settle, withdraw
+    await send(buyer, buyTicketsCall(d, 1n, 35, price));
+    await send(seller, closeTicketRaffleCall(d, 1n));
+    state = await readTicketRaffles(client, d, buyer, collection);
+    let drawn = state.raffles.find((r) => r.id === 1n)!;
+    expect(drawn).toMatchObject({ status: TicketRaffleStatus.Drawing, ticketsSold: 40, userTickets: 38 });
+    expect(drawn.requestId).toBe(1n); // the ticket raffle has its own mock provider on anvil
+    expect(await revertOf(buyer, resetTicketDrawCall(d, 1n))).toMatchObject({ name: "TooEarly" });
+    // Same call as the "Local only: draw with mock randomness" button. Tickets 0-1 are the owner's,
+    // 2-39 the buyer's; ticket 7 wins.
+    await send(seller, mockFulfillCall(d.ticketRaffleRandomness, drawn.requestId!, 40n * 1_000n + 7n));
+    drawn = (await readTicketRaffles(client, d, buyer, collection)).raffles.find((r) => r.id === 1n)!;
+    expect(drawn).toMatchObject({ status: TicketRaffleStatus.Won, winner: buyer, requestId: undefined });
+
+    const budget = (await readFloorBid(client, d, collection)).budget;
+    await send(seller, settleTicketRaffleCall(d, 1n)); // anyone may settle
+    expect(await ownerOf(10n)).toBe(buyer);
+    // The 2 ETH pot: 5% to the buyback budget, the rest to the creator.
+    expect((await readFloorBid(client, d, collection)).budget).toBe(budget + parseEther("0.1"));
+    state = await readTicketRaffles(client, d, owner, collection);
+    expect(state.raffles.find((r) => r.id === 1n)).toMatchObject({ status: TicketRaffleStatus.Settled, winner: buyer });
+    expect(state.userOwed).toBe(parseEther("1.9"));
+    balance = await client.getBalance({ address: owner });
+    receipt = await send(owner, withdrawTicketRaffleCall(d));
+    expect((await client.getBalance({ address: owner })) - balance + receipt.gasUsed * receipt.effectiveGasPrice).toBe(parseEther("1.9"));
+    expect((await readTicketRaffles(client, d, owner)).userOwed).toBe(0n);
+    expect(await revertOf(owner, withdrawTicketRaffleCall(d))).toMatchObject({ name: "NothingOwed" });
   });
 
   it("predictions: bet, resolve, claim", async () => {
@@ -415,6 +629,10 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
 
   it("vault: unlock, auction, buy", async () => {
     await setup(owner, d.vault, "governanceUnlock", [1n]);
+    // An unlocked holding keeps its licences in force but accepts no new ones.
+    const unlocked = (await readLicensing(client, d, seller)).holdings[0];
+    expect(unlocked).toMatchObject({ holding: { id: 1n, status: HoldingStatus.Unlocked }, license: { tier: 1 } });
+    expect(await revertOf(seller, requestLicenseCall(d, 1n, 0, "", 0n))).toMatchObject({ name: "NotInVault" });
     let vault = await readHoldings(client, d);
     expect(vault.holdings[0]).toMatchObject({ status: HoldingStatus.Unlocked, canUnlock: false });
     const now = await readChainTime(client);
@@ -433,12 +651,14 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
     // The reserve is the higher of the 1 ETH sales floor and 130% of the purchase price (~1.17 ETH).
     const reserve = (holding.purchasePrice * 13_000n) / 10_000n;
     expect(reserve).toBeGreaterThan(ETH);
-    const startPrice = (reserve * 15_000n) / 10_000n;
+    const startPrice = reserve * 16n; // and it halves every day until it reaches the reserve
     expect(holding.auction).toMatchObject({ startPrice, endPrice: reserve, currentPrice: startPrice });
     expect(await revertOf(owner, startAuctionCall(d, 1n))).toMatchObject({ name: "AuctionRunning" });
+    // A licence lapses once its holding goes to auction, and the holding is no longer listed.
+    expect((await readLicensing(client, d, seller)).holdings).toEqual([]);
     expect(await revertOf(buyer, buyCall(d, 1n, ETH))).toMatchObject({
       name: "PriceNotMet",
-      message: expect.stringMatching(/^The auction price is 1\.75\d* ETH but only 1 ETH was sent\.$/),
+      message: expect.stringMatching(/^The auction price is 18\.7\d* ETH but only 1 ETH was sent\.$/),
     });
 
     // Same steps as the Buy button: read the price, then buy. Time passes in between, so the price

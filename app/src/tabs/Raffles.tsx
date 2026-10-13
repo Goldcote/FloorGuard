@@ -26,7 +26,7 @@ export function Raffles() {
     void run(`Claim raffle #${r.id} prize`, (send) => send("Claim prize", claimRaffleCall(d!, r.id)));
 
   return (
-    <Card title="Raffles">
+    <Card title="Vault raffles (for points holders)">
       <QueryView query={query}>
         {({ raffles, totalPoints, nextDrawAt }) => (
           <>

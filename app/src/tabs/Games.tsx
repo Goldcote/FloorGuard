@@ -177,13 +177,15 @@ export function Games({ collection }: { collection: Address }) {
                             <td>{bet.requestId.toString()}</td>
                             <td><Addr address={bet.collection} /></td>
                             <td>{eth(bet.wager)} ETH</td>
-                            <td>{bps(bet.chanceBps)}</td>
+                            {/* A chance of 0 marks a slots spin, which this tab cannot place but may have to list. */}
+                            <td>{bet.chanceBps === 0 ? "Slots" : bps(bet.chanceBps)}</td>
                             <td>
                               {refundable ? <Badge tone="warn">Refundable</Badge> : <Badge tone={STATUS[bet.status].tone}>{STATUS[bet.status].label}</Badge>}
                             </td>
                             <td className="wrap">
                               {bet.status === "won" && `Rolled ${bet.roll}, paid ${eth(bet.payout ?? 0n)} ETH`}
-                              {bet.status === "lost" && `Rolled ${bet.roll}, needed below ${bet.chanceBps}`}
+                              {bet.status === "lost" &&
+                                (bet.chanceBps === 0 ? `Rolled ${bet.roll}, no payout` : `Rolled ${bet.roll}, needed below ${bet.chanceBps}`)}
                               {bet.status === "refunded" && "Wager returned"}
                               {bet.status === "pending" &&
                                 (refundable

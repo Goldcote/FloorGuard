@@ -27,6 +27,8 @@ const CONTRACTS = {
   pointsAbi: "Points",
   vaultRaffleAbi: "VaultRaffle",
   gamesAbi: "Games",
+  ticketRaffleAbi: "TicketRaffle",
+  ipLicenseManagerAbi: "IPLicenseManager",
   salesFloorOracleAbi: "SalesFloorOracle",
   pushFloorOracleAbi: "PushFloorOracle",
   erc721Abi: "ERC721",
@@ -43,10 +45,13 @@ const REQUIRED_KEYS = [
   "points",
   "vaultRaffle",
   "games",
+  "ticketRaffle",
+  "ipLicenseManager",
   "salesFloorOracle",
   "pushFloorOracle",
   "randomness",
   "gamesRandomness",
+  "ticketRaffleRandomness",
   "owner",
 ];
 const OPTIONAL_KEYS = ["demoCollection"];

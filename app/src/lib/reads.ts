@@ -7,11 +7,13 @@ import {
   buybackEngineAbi,
   erc721Abi,
   gamesAbi,
+  ipLicenseManagerAbi,
   marketplaceAbi,
   pointsAbi,
   predictionMarketAbi,
   pushFloorOracleAbi,
   salesFloorOracleAbi,
+  ticketRaffleAbi,
   treasuryAbi,
   vaultAbi,
   vaultRaffleAbi,
@@ -88,18 +90,25 @@ export type FloorBid = {
   lastReset: number;
   growthBpsPerDay: number;
   stepDownBps: number;
+  /** Seconds the engine pauses between fills for this collection (0: no pause). */
+  fillCooldown: number;
+  /** Earliest time of the next fill given that pause (0 before the first fill). */
+  nextFillAt: number;
 };
 
 export async function readFloorBid(client: Client, d: Deployment, collection: Address): Promise<FloorBid> {
   const engine = { address: d.buybackEngine, abi: buybackEngineAbi } as const;
-  const [budget, currentBid, isFillable, bid] = await Promise.all([
+  const [budget, currentBid, isFillable, bid, cooldown, lastFillAt] = await Promise.all([
     readContract(client, { address: d.treasury, abi: treasuryAbi, functionName: "budgetOf", args: [collection] }),
     readContract(client, { ...engine, functionName: "currentBid", args: [collection] }),
     readContract(client, { ...engine, functionName: "isFillable", args: [collection] }),
     readContract(client, { ...engine, functionName: "bids", args: [collection] }),
+    readContract(client, { ...engine, functionName: "fillCooldownOf", args: [collection] }),
+    readContract(client, { ...engine, functionName: "lastFillAt", args: [collection] }),
   ]);
+  const nextFillAt = lastFillAt === 0n ? 0 : Number(lastFillAt + cooldown);
   const [basePrice, maxPrice, lastReset, growthBpsPerDay, stepDownBps, active] = bid;
-  return { budget, currentBid, isFillable, active, basePrice, maxPrice, lastReset, growthBpsPerDay, stepDownBps };
+  return { budget, currentBid, isFillable, active, basePrice, maxPrice, lastReset, growthBpsPerDay, stepDownBps, fillCooldown: Number(cooldown), nextFillAt };
 }
 
 // ---------------------------------------------------------------- overview
@@ -408,16 +417,23 @@ export type VaultState = {
   owner: Address;
   /** Seconds after unlocking during which only the owner may start an auction. */
   governanceWindow: number;
+  /** Seconds after which an unsold auction can be restarted. */
   auctionDuration: number;
+  /** An auction starts at this multiple of its reserve... */
+  auctionStartMultiple: number;
+  /** ...and its price halves every this many seconds until it reaches the reserve. */
+  auctionHalfLife: number;
 };
 
 export async function readHoldings(client: Client, d: Deployment): Promise<VaultState> {
   const vault = { address: d.vault, abi: vaultAbi } as const;
-  const [holdingCount, owner, governanceWindow, auctionDuration] = await Promise.all([
+  const [holdingCount, owner, governanceWindow, auctionDuration, auctionStartMultiple, auctionHalfLife] = await Promise.all([
     readContract(client, { ...vault, functionName: "holdingCount" }),
     readContract(client, { ...vault, functionName: "owner" }),
     readContract(client, { ...vault, functionName: "GOVERNANCE_WINDOW" }),
     readContract(client, { ...vault, functionName: "AUCTION_DURATION" }),
+    readContract(client, { ...vault, functionName: "AUCTION_START_MULTIPLE" }),
+    readContract(client, { ...vault, functionName: "AUCTION_HALF_LIFE" }),
   ]);
   const holdings = await Promise.all(
     recentIds(holdingCount).map(async (id): Promise<Holding> => {
@@ -444,6 +460,8 @@ export async function readHoldings(client: Client, d: Deployment): Promise<Vault
     owner,
     governanceWindow: Number(governanceWindow),
     auctionDuration: Number(auctionDuration),
+    auctionStartMultiple: Number(auctionStartMultiple),
+    auctionHalfLife: Number(auctionHalfLife),
   };
 }
 
@@ -605,6 +623,7 @@ export type GameBet = {
   requestId: bigint;
   collection: Address;
   wager: bigint;
+  /** Chance of winning in basis points; 0 marks a slots spin (placed outside this app). */
   chanceBps: number;
   status: "pending" | "won" | "lost" | "refunded";
   /** Settled bets: the roll (0..9999; below `chanceBps` wins), the payout and the fee. */
@@ -660,4 +679,202 @@ export async function readUserBets(
       }),
   );
   return bets;
+}
+
+// ---------------------------------------------------------------- ticket raffles
+
+export const TicketRaffleStatus = { None: 0, Open: 1, Drawing: 2, Won: 3, Settled: 4, Refunding: 5, Cancelled: 6 } as const;
+export const TICKET_RAFFLE_STATUS_NAMES = ["None", "Open", "Drawing", "Won", "Settled", "Refunding", "Cancelled"] as const;
+
+export type TicketRaffle = {
+  id: bigint;
+  creator: Address;
+  collection: Address;
+  tokenId: bigint;
+  ticketPrice: bigint;
+  minTickets: number;
+  maxTickets: number;
+  ticketsSold: number;
+  endTime: number;
+  /** When the draw was requested (0 before). */
+  requestedAt: number;
+  status: number;
+  winner: Address;
+  /** The platform fee of this raffle, fixed when it was created. */
+  feeBps: bigint;
+  /** Whether the creator has taken the NFT back (cancelled or refunded raffles). */
+  nftReturned: boolean;
+  /** While Drawing: the randomness request in flight. */
+  requestId?: bigint;
+  /** What the user paid in and has not been refunded. */
+  userPaid?: bigint;
+  /** The user's tickets: `userPaid / ticketPrice`. */
+  userTickets?: number;
+};
+
+export type TicketRaffles = {
+  raffles: TicketRaffle[];
+  raffleCount: bigint;
+  /** A raffle whose ticket revenue is below this is refunded instead of drawn. */
+  minPot: bigint;
+  /** The fee new raffles get. */
+  feeBps: bigint;
+  minDuration: number;
+  maxDuration: number;
+  /** Seconds after which a draw without randomness can be reset. */
+  drawTimeout: number;
+  /** Seconds after its end (or after its winner was drawn) at which a stuck raffle can be aborted. */
+  abortDelay: number;
+  /** Whether the given collection may be raffled. */
+  collectionSupported?: boolean;
+  /** Raffle revenue waiting for the user (as a creator) to withdraw. */
+  userOwed?: bigint;
+};
+
+export async function readTicketRaffles(
+  client: Client,
+  d: Deployment,
+  user?: Address,
+  collection?: Address,
+): Promise<TicketRaffles> {
+  const tr = { address: d.ticketRaffle, abi: ticketRaffleAbi } as const;
+  const [raffleCount, minPot, feeBps, minDuration, maxDuration, drawTimeout, abortDelay, collectionSupported, userOwed] =
+    await Promise.all([
+      readContract(client, { ...tr, functionName: "raffleCount" }),
+      readContract(client, { ...tr, functionName: "minPot" }),
+      readContract(client, { ...tr, functionName: "feeBps" }),
+      readContract(client, { ...tr, functionName: "MIN_DURATION" }),
+      readContract(client, { ...tr, functionName: "MAX_DURATION" }),
+      readContract(client, { ...tr, functionName: "DRAW_TIMEOUT" }),
+      readContract(client, { ...tr, functionName: "ABORT_DELAY" }),
+      collection ? readContract(client, { ...tr, functionName: "isSupported", args: [collection] }) : undefined,
+      user ? readContract(client, { ...tr, functionName: "owedTo", args: [user] }) : undefined,
+    ]);
+  const raffles = await Promise.all(
+    recentIds(raffleCount).map(async (id): Promise<TicketRaffle> => {
+      const [raffle, raffleFeeBps, nftReturned, userPaid] = await Promise.all([
+        readContract(client, { ...tr, functionName: "raffles", args: [id] }),
+        readContract(client, { ...tr, functionName: "feeBpsOf", args: [id] }),
+        readContract(client, { ...tr, functionName: "nftReturned", args: [id] }),
+        user ? readContract(client, { ...tr, functionName: "paidBy", args: [id, user] }) : undefined,
+      ]);
+      const [creator, collection_, tokenId, ticketPrice, minTickets, maxTickets, ticketsSold, endTime, requestedAt, status, winner] =
+        raffle;
+      const requestId =
+        status === TicketRaffleStatus.Drawing
+          ? await readContract(client, { ...tr, functionName: "currentRequest", args: [id] })
+          : undefined;
+      return {
+        id,
+        creator,
+        collection: collection_,
+        tokenId,
+        ticketPrice,
+        minTickets,
+        maxTickets,
+        ticketsSold,
+        endTime,
+        requestedAt,
+        status,
+        winner,
+        feeBps: raffleFeeBps,
+        nftReturned,
+        requestId,
+        userPaid,
+        userTickets: userPaid !== undefined && ticketPrice > 0n ? Number(userPaid / ticketPrice) : undefined,
+      };
+    }),
+  );
+  return {
+    raffles,
+    raffleCount,
+    minPot,
+    feeBps,
+    minDuration: Number(minDuration),
+    maxDuration: Number(maxDuration),
+    drawTimeout: Number(drawTimeout),
+    abortDelay: Number(abortDelay),
+    collectionSupported,
+    userOwed,
+  };
+}
+
+/**
+ * What `TicketRaffle.close` would do with the raffle as it stands: request a draw, or open refunds
+ * because too few tickets sold or the pot is below the minimum. Mirrors the contract.
+ */
+export function ticketRaffleWouldRefund(raffle: Pick<TicketRaffle, "ticketsSold" | "minTickets" | "ticketPrice">, minPot: bigint): boolean {
+  return (
+    raffle.ticketsSold === 0 ||
+    raffle.ticketsSold < raffle.minTickets ||
+    raffle.ticketPrice * BigInt(raffle.ticketsSold) < minPot
+  );
+}
+
+// ---------------------------------------------------------------- licences
+
+/** Tier numbers probed per collection. Tiers are a free-form uint8 mapping with no on-chain list. */
+export const LICENSE_TIER_PROBE = 8;
+
+export type LicenseTier = { tier: number; price: bigint; duration: number };
+
+export type HoldingLicense = {
+  holding: Holding;
+  /** Active tiers of the holding's collection (among tier numbers 0..LICENSE_TIER_PROBE-1). */
+  tiers: LicenseTier[];
+  /** The user's licence in force on this holding, if any. */
+  license?: { tier: number; end: number };
+  /** The owner revoked a licence of the user on this holding; they cannot buy another. */
+  banned?: boolean;
+};
+
+export type Licensing = {
+  /** Holdings still in the vault under lock or unlocked: those a licence can be in force on. */
+  holdings: HoldingLicense[];
+  /** Longest usage scope the contract accepts, in bytes. */
+  maxScopeLength: number;
+};
+
+export async function readLicensing(client: Client, d: Deployment, user?: Address): Promise<Licensing> {
+  const lm = { address: d.ipLicenseManager, abi: ipLicenseManagerAbi } as const;
+  const [vault, maxScopeLength] = await Promise.all([
+    readHoldings(client, d),
+    readContract(client, { ...lm, functionName: "MAX_SCOPE_LENGTH" }),
+  ]);
+  const relevant = vault.holdings.filter(
+    (h) => h.status === HoldingStatus.Locked || h.status === HoldingStatus.Unlocked,
+  );
+
+  const tiersByCollection = new Map<string, Promise<LicenseTier[]>>();
+  const tiersOf = (collection: Address) => {
+    const key = collection.toLowerCase();
+    let tiers = tiersByCollection.get(key);
+    if (!tiers) {
+      tiers = Promise.all(
+        Array.from({ length: LICENSE_TIER_PROBE }, async (_, tier) => {
+          const [price, duration, active] = await readContract(client, { ...lm, functionName: "tiers", args: [collection, tier] });
+          return active ? { tier, price, duration } : undefined;
+        }),
+      ).then((list) => list.filter((t): t is LicenseTier => t !== undefined));
+      tiersByCollection.set(key, tiers);
+    }
+    return tiers;
+  };
+
+  const holdings = await Promise.all(
+    relevant.map(async (holding): Promise<HoldingLicense> => {
+      const [tiers, valid, banned] = await Promise.all([
+        tiersOf(holding.collection),
+        user ? readContract(client, { ...lm, functionName: "validLicenseOf", args: [user, holding.id] }) : undefined,
+        user ? readContract(client, { ...lm, functionName: "isBanned", args: [user, holding.id] }) : undefined,
+      ]);
+      return {
+        holding,
+        tiers,
+        license: valid && valid[0] ? { tier: valid[1], end: valid[2] } : undefined,
+        banned,
+      };
+    }),
+  );
+  return { holdings, maxScopeLength: Number(maxScopeLength) };
 }

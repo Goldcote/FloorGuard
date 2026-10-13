@@ -509,3 +509,42 @@ td.wrap {
   white-space: normal;
   min-width: 180px;
 }
+
+table.facts {
+  width: auto;
+  margin-bottom: 4px;
+}
+
+table.facts th,
+table.facts td {
+  border-bottom: none;
+  padding: 3px 16px 3px 0;
+  white-space: normal;
+}
+
+h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.licence-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 16px;
+  max-width: 720px;
+}
+
+textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  resize: vertical;
+}
+
+.owed {
+  margin-bottom: 12px;
+}
