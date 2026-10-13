@@ -16,15 +16,33 @@ contract Treasury is ITreasury, Ownable2Step {
     mapping(address collection => uint256) public budgetOf;
     uint256 public unallocated;
 
+    struct ProjectShare {
+        address recipient;
+        uint16 bps;
+    }
+
+    uint256 public constant BPS = 10_000;
+    uint256 public constant MAX_PROJECT_SHARE_BPS = 5_000;
+    /// @notice The share of a collection's fees that goes to the NFT project itself, like a royalty.
+    mapping(address collection => ProjectShare) public projectShareOf;
+    /// @notice Project shares waiting to be claimed.
+    mapping(address recipient => uint256) public owedTo;
+    uint256 public totalOwed;
+
     event Deposited(address indexed collection, address indexed from, uint256 amount);
     event UnallocatedReceived(address indexed from, uint256 amount);
     event Allocated(address indexed collection, uint256 amount);
     event Spent(address indexed collection, address indexed to, uint256 amount);
     event SpenderSet(address indexed spender);
+    event ProjectShareSet(address indexed collection, address indexed recipient, uint256 bps);
+    event ProjectShareAccrued(address indexed collection, address indexed recipient, uint256 amount);
+    event ProjectShareClaimed(address indexed recipient, uint256 amount);
 
     error NotSpender();
     error InsufficientBudget(uint256 available, uint256 requested);
     error TransferFailed();
+    error InvalidShare();
+    error NothingOwed();
 
     constructor(address owner_) Ownable(owner_) {}
 
@@ -37,6 +55,37 @@ contract Treasury is ITreasury, Ownable2Step {
     function deposit(address collection) external payable {
         budgetOf[collection] += msg.value;
         emit Deposited(collection, msg.sender, msg.value);
+    }
+
+    /// @inheritdoc ITreasury
+    function depositFee(address collection) external payable {
+        ProjectShare memory share = projectShareOf[collection];
+        uint256 toProject = msg.value * share.bps / BPS;
+        if (toProject != 0) {
+            owedTo[share.recipient] += toProject;
+            totalOwed += toProject;
+            emit ProjectShareAccrued(collection, share.recipient, toProject);
+        }
+        budgetOf[collection] += msg.value - toProject;
+        emit Deposited(collection, msg.sender, msg.value - toProject);
+    }
+
+    /// @notice Withdraw the project shares accrued to the caller.
+    function claimProjectShare() external {
+        uint256 amount = owedTo[msg.sender];
+        if (amount == 0) revert NothingOwed();
+        owedTo[msg.sender] = 0;
+        totalOwed -= amount;
+        emit ProjectShareClaimed(msg.sender, amount);
+        (bool ok,) = msg.sender.call{value: amount}("");
+        if (!ok) revert TransferFailed();
+    }
+
+    /// @notice Set the share of a collection's future fees paid to its project. Zero bps turns it off.
+    function setProjectShare(address collection, address recipient, uint16 bps) external onlyOwner {
+        if (bps > MAX_PROJECT_SHARE_BPS || (bps != 0 && recipient == address(0))) revert InvalidShare();
+        projectShareOf[collection] = ProjectShare(recipient, bps);
+        emit ProjectShareSet(collection, recipient, bps);
     }
 
     /// @notice Assign unallocated ETH to a collection's buyback budget.

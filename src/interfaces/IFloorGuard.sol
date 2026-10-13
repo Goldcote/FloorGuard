@@ -13,8 +13,11 @@ interface ISaleRecorder {
 }
 
 interface ITreasury {
-    /// @notice Deposit ETH earmarked for buybacks of `collection`.
+    /// @notice Deposit ETH earmarked for buybacks of `collection`. For recycled capital, not fees.
     function deposit(address collection) external payable;
+    /// @notice Deposit a protocol fee earned on `collection`. The collection's project share, if one is
+    ///         set, is put aside for the project; the rest becomes buyback budget.
+    function depositFee(address collection) external payable;
     function spend(address collection, uint256 amount, address payable to) external;
     function budgetOf(address collection) external view returns (uint256);
 }

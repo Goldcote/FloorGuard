@@ -174,7 +174,7 @@ contract Marketplace is Ownable2Step, ReentrancyGuard {
         }
         bool supported = isSupported[offer.collection];
         if (fee != 0) {
-            if (supported) treasury.deposit{value: fee}(offer.collection);
+            if (supported) treasury.depositFee{value: fee}(offer.collection);
             else _send(address(treasury), fee);
         }
         _send(msg.sender, proceeds);

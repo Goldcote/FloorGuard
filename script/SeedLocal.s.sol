@@ -7,6 +7,7 @@ import {Treasury} from "../src/Treasury.sol";
 import {Marketplace} from "../src/Marketplace.sol";
 import {BuybackEngine} from "../src/BuybackEngine.sol";
 import {PredictionMarket} from "../src/PredictionMarket.sol";
+import {Games} from "../src/Games.sol";
 import {PushFloorOracle} from "../src/oracles/PushFloorOracle.sol";
 import {MockNFT} from "../test/mocks/MockNFT.sol";
 
@@ -50,6 +51,9 @@ contract SeedLocal is Script {
         uint256 marketId = prediction.createMarket(address(nft), 6 hours, 1 days);
         prediction.placeBet{value: 0.5 ether}(marketId, true);
         prediction.placeBet{value: 0.3 ether}(marketId, false);
+        Games games = Games(json.readAddress(".games"));
+        games.setCollectionSupport(address(nft), true);
+        games.fundBankroll{value: 50 ether}();
         vm.stopBroadcast();
 
         vm.writeJson(vm.toString(address(nft)), path, ".demoCollection");
