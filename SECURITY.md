@@ -4,9 +4,11 @@
 
 FloorGuard has had no professional audit, no formal verification and no testnet
 soak. The test suite covers the behaviour described in `docs/ARCHITECTURE.md`,
-which is not the same as being safe. Six automated review passes have been run
-and their findings fixed; [docs/AUDIT.md](docs/AUDIT.md) records them. That is
-not a professional audit.
+which is not the same as being safe. Six automated code review passes and one
+economics review have been run and their findings acted on;
+[docs/AUDIT.md](docs/AUDIT.md) and
+[docs/ECONOMICS-REVIEW.md](docs/ECONOMICS-REVIEW.md) record them. That is not a
+professional audit.
 
 ## Known limitations
 
@@ -37,23 +39,33 @@ not a professional audit.
 - **Points need activating.** Pending points do not count in a raffle. Someone
   has to call `flushMany` for holders before each draw, or holders must activate
   their own.
-- **Buyback overpayment.** The rising bid is capped only by the owner-set
-  `maxPrice`. If a collection's budget is empty for a long time and is then
-  refilled, sellers may be paid more than the market floor. The bid only steps
-  down by `stepDownBps` per fill, so several sellers in a row can benefit until
-  the bid falls back to the floor or the budget runs out.
-- **Raffle farming.** Points cost fees, so a raffle is safe only while the prize
-  is worth less than the fees behind all outstanding points. If the Treasury is
-  funded from outside (donations, owner allocations) rather than from fees, a
-  self-dealer can buy a large share of the points just before a draw for less
-  than the prize is worth. Points are not time-weighted.
+- **Buyback overpayment.** The bid is limited by the collection's budget and
+  only rises while the budget covers it, which removes the drift to `maxPrice`
+  that an economics review found in the first design. What remains: the owner's
+  `maxPrice` is the only upper limit, a holder who dominates a collection's
+  supply can wait for the bid to reach it, and these rules are new and have not
+  been independently reviewed. Keep `maxPrice` close to the market.
+- **Raffle farming.** Points cost fees (one point per unit of fee, and a farmer
+  who also sells into the bid gets part of the fee back), only activated points
+  count, and whoever calls `draw` closes activation for everyone else. A raffle
+  is safe only while the prize is worth much less than the fees behind the
+  activated points: as a rule of thumb, at most a quarter. Set
+  `minPointsToDraw` accordingly, run `flushMany` for holders before each draw,
+  and prefer an auction, which always returns more to the budget. Points are
+  not time-weighted and are shared across collections.
 - **Late information in prediction markets.** Betting closes at most halfway
   through a market and settlement needs a price published after the settlement
   time, but later bettors still see more recent prices than earlier ones.
 - **Games and paid raffles.** Operating games of chance and paid raffles is
   regulated or prohibited in many jurisdictions; deploying `Games`, `Lottery`
-  or `TicketRaffle` is the operator's legal responsibility. The
-  bankroll carries variance: a run of player wins can shrink it. The fairness of
+  or `TicketRaffle` is the operator's legal responsibility. The same question
+  applies to `VaultRaffle`, where the chance of a prize is earned by paying
+  fees, and to `PredictionMarket`, which takes bets on a price reported by a
+  party the operator appoints. The
+  bankroll carries variance: a run of player wins can shrink it. By default it
+  earns nothing for that risk, whoever funds it cannot take it back, and its
+  typical path is downward. On Ethereum mainnet a randomness request can cost
+  many times the fee on a small wager: set `minBet` so the fee covers it. The fairness of
   every bet rests on the randomness provider.
 - **Shared randomness subscription.** The deploy script puts all four randomness
   consumers (vault raffle, games, ticket raffle and lottery) on one Chainlink

@@ -68,8 +68,8 @@ the oracle. This stops someone deploying a throwaway collection to farm points.
 ## Treasury and budgets
 
 Fees are not pooled. `deposit(collection)` credits that collection's budget, so
-trading a collection funds the defence of that collection's floor and one
-collection cannot spend another's fees. ETH sent without a collection sits in
+the fees from trading a collection are spent on buying that collection's tokens
+and one collection cannot spend another's fees. ETH sent without a collection sits in
 `unallocated` until the owner assigns it with `allocate`.
 
 ### Where the money sits
@@ -113,32 +113,55 @@ minimum auction reserve, and enable predictions, games, ticket raffles and a
 lottery. `script/AddCollection.s.sol` does all of that in one run; licence tiers
 are set separately. The script has to be broadcast by the owner, so run it
 before handing ownership to a multisig or timelock, or have that owner submit
-the same calls. After that, buybacks need no operator or bot: holders sell into the bid
-themselves.
+the same calls. After that, no bot is needed to execute buybacks: holders sell into the bid
+themselves. The owner still has to keep each collection's maximum price in line
+with the market.
 
 ## BuybackEngine: the rising bid
 
-The engine needs to buy at the floor without being told what the floor is. For
-each collection the owner configures a curve:
+The engine needs to buy at the lowest price a holder will accept without being
+told what that price is. For each collection the owner configures a curve:
 
 ```
-bid(t) = min(maxPrice, basePrice * (1 + growthBpsPerDay * elapsed / 1 day))
+curve(t) = min(maxPrice, basePrice * (1 + growthBpsPerDay * elapsed / 1 day))
+bid(t)   = min(curve(t), the collection's budget)
 ```
 
 Any holder can call `sell(collection, tokenId, minPrice)` and is paid the current
-bid from the collection's budget. After a fill the base price becomes the fill
-price less `stepDownBps`, and the bid starts rising again.
+bid from the collection's budget. After a sale the base price becomes the sale
+price less `stepDownBps`, and the curve starts rising again.
 
-The bid starts below the market. Holders compete to be the first to accept once
-it reaches the lowest price any of them will take, which is the floor. No oracle
-is involved, and a manipulated oracle cannot make the engine overpay. Anyone can
-also buy the cheapest listing on another venue and sell it into the bid, which is
-how the bid supports floors elsewhere.
+Three rules keep the bid from running ahead of the market:
 
-The owner's `maxPrice` is the main guard against overpaying; see
-[SECURITY.md](../SECURITY.md). The owner can also set a cooldown between two
-buybacks of a collection (`setFillCooldown`), which limits how fast anyone with
-a cheap supply of tokens can sell into the bid.
+- **The bid is never more than the budget can pay.** With a thin budget the bid
+  is the budget itself, rising as fees arrive, and a sale happens when it
+  reaches the cheapest seller's price. A sale below the base lowers the base by
+  one step only, so one cheap sale cannot collapse the curve.
+- **The curve only rises while the budget covers it.** Whenever a budget grows,
+  the Treasury tells the engine; if the budget could not cover the curve until
+  then, the curve restarts from its base. Money that arrives late or in a lump,
+  such as auction proceeds, is therefore not spent at an inflated bid.
+- **The cooldown, if set, must be short.** After a sale the curve needs
+  `stepDown / ((1 − stepDown) × growth)` days to regrow to its last price (12.6
+  hours at 5% and 10% a day). `setFillCooldown` rejects anything longer, since a
+  longer pause would let every sale happen above the one before.
+
+Holders compete to be the first to accept once the bid reaches the lowest price
+any of them will take. No oracle is involved. The owner's `maxPrice` is the
+upper limit on what the engine pays. A `guardian` address, if set, can lower a
+collection's base and maximum price or pause it, and nothing else: a fast key
+for a falling market while the owner sits behind a timelock.
+
+Buying the cheapest listing on another venue and selling it into the bid pays
+only when the bid exceeds that listing by the buyer's costs, roughly 1 to 6%
+plus gas. A bid that has settled at the lowest price holders accept is below
+that, so it takes tokens off the market without lifting listings elsewhere.
+
+These rules were added after an economics review found that the earlier design
+drifted to `maxPrice` whenever fees arrived slowly; see
+[ECONOMICS-REVIEW.md](ECONOMICS-REVIEW.md). They have tests but have not been
+through an independent review, and a single holder who dominates a collection's
+supply can still wait for the bid to reach `maxPrice`.
 
 The bid only finds the true floor for a collection with a fixed supply. If
 tokens can still be minted, the cheapest seller is the minter and the bid finds
@@ -161,7 +184,8 @@ Each buyback creates a holding with its purchase price and time.
 - The auction opens at 16 times its reserve, or 16 times the floor recorded when
   the holding unlocked if that is higher. The price halves every day and holds
   at the reserve. The opening price is deliberately far above the market, so the
-  sale price is found by buyers competing on the way down. This matters because
+  sale price is found by buyers competing on the way down. With a single
+  interested buyer the sale price is the reserve. This matters because
   the sales oracle can be pushed down for free: a low reading lowers the reserve
   towards the unlock price but cannot make the auction open below market, unless
   the market is more than 16 times that opening basis. Whoever calls `unlock`
@@ -178,15 +202,20 @@ Each buyback creates a holding with its purchase price and time.
 ## PredictionMarket
 
 Anyone can open a market on a supported collection. The floor is snapshotted at
-creation, betting is open for `bettingPeriod` (at most half of `duration`), and
+creation, betting is open for `bettingPeriod` (at most a tenth of `duration`), and
 the market settles on a floor price published at or after `duration`. A price
 from before the settlement time is never accepted, so nobody can bet on the
-price the market will settle on.
+price the market will settle on. A market can only be created on a price at
+most an hour old. Later bettors still know more than earlier ones, which is why
+the betting period is kept short.
 
 - Winners split the losing pool in proportion to their stake. The fee is taken
   from their winnings, not their stake.
-- A market is void, with full refunds, if one side has no bets, the price is
-  unchanged, or the oracle has no fresh price for three days after settlement.
+- A market is void, with full refunds, if one side has no bets, the price moved
+  by less than the dead band (2% of the start price by default), or the oracle
+  has no fresh price for three days after settlement.
+- A market settles on the oracle price at the moment `resolve` is called, so
+  someone has to call it promptly; see [SECURITY.md](../SECURITY.md).
 
 ## Games
 
@@ -195,11 +224,16 @@ winning from 1% to 95%, and a coinflip is a 50% roll. Slots pay a fixed table
 from one roll: 50x at 0.2%, 10x at 1%, 5x at 4%, 2x at 15% and 1x at 30%, which
 averages exactly 1x the stake. The edge (default 2%) is taken from the wager and
 paid to the Treasury as a fee for the collection the player chose to back. The
-rest is played at fair odds against the house bankroll, so the bankroll has no
-expected gain or loss and the whole house take funds buybacks.
+rest is played at fair odds against the house bankroll, so the bankroll has no expected gain or loss and, by default, the whole house
+take funds buybacks. The bankroll therefore earns nothing for the risk it
+carries, cannot be withdrawn by whoever funded it, and its typical path is
+downward even though its average is flat. The owner can let the bankroll keep a
+share of the edge (`bankrollShareBps`) to pay for that risk, at the cost of the
+same share of the games' contribution to buybacks.
 
 The house's side of each bet is set aside when the bet is placed, so every
-outcome can always be paid. One bet can risk at most 1% of the free bankroll and
+outcome can always be paid. One wager can be at most 1% of the free bankroll, one bet can risk at most 1% of
+it, and
 all open bets together at most 20% of the house's funds. Both limits are checked
 when a bet is placed; a later win or bankroll withdrawal can leave open bets
 above 20% of what remains, but their payouts stay fully set aside. A bet whose randomness
@@ -272,15 +306,22 @@ terms, and the licence text has to exist off-chain.
 Points are credited per ETH of **fees that reach the buyback budget**, not per
 ETH of volume, at a rate set per module. A project's share of a fee earns no
 points. Three modules credit points: the Marketplace, the PredictionMarket and
-Games. Ticket raffle, lottery and licence fees fund buybacks but earn none. On the Marketplace both buyer and seller are credited for
-the sale's fee, and in Games the player is credited for the edge on each wager. On the PredictionMarket winners are credited for the fee they
-pay, and losers for the fee their stake funded. Because points follow fees,
-farming them always pays into buyback budgets.
+Games. Ticket raffle, lottery and licence fees fund buybacks but earn none. Each fee is credited once. On the Marketplace it is split equally between buyer
+and seller, in Games the player is credited for the edge on each wager, and on
+the PredictionMarket half goes to the winners who pay the fee and half to the
+losers whose stakes funded it. Points follow fees, so farming them pays into
+buyback budgets, but a farmer who also sells into the bid takes part of that
+back.
 
 Earning points is a single storage write to `pendingOf`, which keeps trades
 cheap enough for Ethereum mainnet. Pending points do not count in raffles until
 they are activated with `flush(user)`, which anyone can call for anyone. The
-seven-day announce period before each draw is the time to do it.
+seven-day announce period before each draw is the time to do it. Activation
+stops for everyone the moment anyone calls `draw`, which can be the first block
+after the announce period, so someone should run `flushMany` for holders before
+then. The owner can require a minimum of activated points before any draw
+(`minPointsToDraw`); a raffle is only a fair distribution when the fees behind
+the activated points are large against the prize.
 
 Activated balances are the leaves of a 16-ary sum tree, six levels deep (about
 16.7 million holders). Activating writes seven slots. Picking the holder of a

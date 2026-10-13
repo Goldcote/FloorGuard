@@ -21,7 +21,7 @@ import {Lottery} from "../src/Lottery.sol";
 ///   BID_BASE             starting floor bid in wei; set it below the current floor
 ///   BID_MAX              hard cap on the floor bid in wei
 ///   BID_GROWTH_BPS_DAY   daily rise of the bid in basis points (default 1000 = 10%)
-///   BID_STEP_DOWN_BPS    drop after each fill in basis points (default 500 = 5%)
+///   BID_STEP_DOWN_BPS    drop after each fill in basis points (default 1500 = 15%)
 ///   PROJECT_RECIPIENT    optional: address that receives the project's share of fees
 ///   PROJECT_SHARE_BPS    optional: that share in basis points, at most 5000
 ///   ENABLE_PREDICTIONS   optional (default false). Only enable with a trustworthy oracle price.
@@ -46,7 +46,7 @@ contract AddCollection is Script {
                 uint128(vm.envUint("BID_BASE")),
                 uint128(vm.envUint("BID_MAX")),
                 uint16(vm.envOr("BID_GROWTH_BPS_DAY", uint256(1_000))),
-                uint16(vm.envOr("BID_STEP_DOWN_BPS", uint256(500))),
+                uint16(vm.envOr("BID_STEP_DOWN_BPS", uint256(1_500))),
                 true
             );
         if (projectRecipient != address(0)) {

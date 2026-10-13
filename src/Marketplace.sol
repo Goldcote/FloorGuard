@@ -188,9 +188,11 @@ contract Marketplace is Ownable2Step, ReentrancyGuard {
             }
             if (address(points) != address(0) && toBudget != 0) {
                 // Points follow what reached the buyback budget, not the project's share of the fee.
+                // Each fee is credited once, half to each side, so trading with oneself earns no more
+                // than one point per unit of fee.
                 // They are a bonus; a failure there must never block a trade.
-                try points.creditFee(msg.sender, toBudget) {} catch {}
-                try points.creditFee(offer.offerer, toBudget) {} catch {}
+                try points.creditFee(msg.sender, toBudget / 2) {} catch {}
+                try points.creditFee(offer.offerer, toBudget - toBudget / 2) {} catch {}
             }
         }
         emit OfferAccepted(offerId, msg.sender, offer.collection, tokenId, price, fee, royalty);

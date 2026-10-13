@@ -10,8 +10,9 @@ import {ITreasury, IVault, ISaleRecorder} from "./interfaces/IFloorGuard.sol";
 /// @notice The protocol's standing floor bid. For each supported collection the engine quotes a bid that
 ///         any holder can sell any token into. The bid rises linearly over time until someone sells, then
 ///         steps down and starts rising again, so it finds the price the cheapest seller will take
-///         without needing a price oracle. Purchases are paid from the collection's Treasury budget and
-///         the NFT is locked in the Vault.
+///         without needing a price oracle. The bid is never more than the collection's budget can pay,
+///         and its rise only counts while the budget covers it. Purchases are paid from the
+///         collection's Treasury budget and the NFT is locked in the Vault.
 contract BuybackEngine is Ownable2Step, ReentrancyGuard {
     struct Bid {
         uint128 basePrice; // bid at `lastReset`
@@ -34,6 +35,9 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
     ///         below the market price, such as a minter of a collection that is still minting.
     mapping(address collection => uint256) public fillCooldownOf;
     mapping(address collection => uint256) public lastFillAt;
+    /// @notice May lower a collection's prices or pause it, and nothing else. Meant for a fast key that
+    ///         can react to a falling market while the owner sits behind a timelock.
+    address public guardian;
 
     event BidConfigured(
         address indexed collection,
@@ -52,33 +56,47 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
     );
     event SaleRecorderSet(address saleRecorder);
     event FillCooldownSet(address indexed collection, uint256 cooldown);
+    event CurveRestarted(address indexed collection);
+    event GuardianSet(address guardian);
+    event BidLowered(address indexed collection, uint256 basePrice, uint256 maxPrice, bool active);
 
     error InactiveCollection();
     error InvalidConfig();
     error NotAContract();
     error BidBelowMinimum(uint256 bid, uint256 minPrice);
-    error InsufficientBudget(uint256 budget, uint256 bid);
+    error NothingToBid();
     error FillCooldown(uint256 readyAt);
+    error CooldownTooLong(uint256 maxCooldown);
+    error NotTreasury();
+    error NotGuardian();
 
     constructor(address owner_, ITreasury treasury_, IVault vault_) Ownable(owner_) {
         treasury = treasury_;
         vault = vault_;
     }
 
-    /// @notice The price the engine pays right now for any token of `collection`.
+    /// @notice The price the engine pays right now for any token of `collection`: the curve, limited by
+    ///         the owner's cap and by what the collection's budget can pay.
     function currentBid(address collection) public view returns (uint256) {
         Bid memory bid = bids[collection];
         if (!bid.active) return 0;
-        uint256 elapsed = block.timestamp - bid.lastReset;
-        uint256 price =
-            bid.basePrice + uint256(bid.basePrice) * bid.growthBpsPerDay * elapsed / (BPS * 1 days);
-        return price > bid.maxPrice ? bid.maxPrice : price;
+        uint256 price = _curve(bid);
+        uint256 budget = treasury.budgetOf(collection);
+        return price < budget ? price : budget;
     }
 
-    /// @notice Whether the collection's budget covers the current bid.
+    /// @notice Where the bid curve stands, whatever the budget: the base price plus linear growth since
+    ///         the last restart, capped at `maxPrice`.
+    function curvePrice(address collection) external view returns (uint256) {
+        return _curve(bids[collection]);
+    }
+
+    /// @notice Whether a sale into the bid would go through right now.
     function isFillable(address collection) external view returns (bool) {
-        uint256 bid = currentBid(collection);
-        return bid != 0 && treasury.budgetOf(collection) >= bid;
+        if (currentBid(collection) == 0) return false;
+        return
+            lastFillAt[collection] == 0
+                || block.timestamp >= lastFillAt[collection] + fillCooldownOf[collection];
     }
 
     /// @notice Sell `tokenId` to the protocol at the current bid. The caller must own the token and have
@@ -96,11 +114,14 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
         lastFillAt[collection] = block.timestamp;
 
         uint256 price = currentBid(collection);
+        if (price == 0) revert NothingToBid();
         if (price < minPrice) revert BidBelowMinimum(price, minPrice);
-        uint256 budget = treasury.budgetOf(collection);
-        if (budget < price) revert InsufficientBudget(budget, price);
 
-        bid.basePrice = uint128(price * (BPS - bid.stepDownBps) / BPS);
+        // The next round starts one step below this sale. A sale limited by a thin budget may be far
+        // below the previous base; it lowers the base by one step only, so a single cheap sale cannot
+        // collapse the curve.
+        uint256 anchor = price > bid.basePrice ? price : bid.basePrice;
+        bid.basePrice = uint128(anchor * (BPS - bid.stepDownBps) / BPS);
         bid.lastReset = uint40(block.timestamp);
 
         IERC721(collection).transferFrom(msg.sender, address(vault), tokenId);
@@ -112,6 +133,19 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
             try saleRecorder.recordSale(collection, price) {} catch {}
         }
         emit Buyback(collection, tokenId, msg.sender, price, vaultId);
+    }
+
+    /// @notice Called by the Treasury whenever a collection's budget grows. If the budget could not
+    ///         cover the curve until now, the curve restarts from its base: the rise that built up
+    ///         while nobody could have been paid is discarded, so money that arrives late or in a lump
+    ///         is not spent at an inflated bid.
+    function onBudgetIncrease(address collection, uint256 budgetBefore) external {
+        if (msg.sender != address(treasury)) revert NotTreasury();
+        Bid storage bid = bids[collection];
+        if (bid.active && budgetBefore < _curve(bid)) {
+            bid.lastReset = uint40(block.timestamp);
+            emit CurveRestarted(collection);
+        }
     }
 
     /// @notice Set or update a collection's bid curve. Restarts the curve at `basePrice`.
@@ -134,12 +168,37 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
             stepDownBps: stepDownBps,
             active: active
         });
+        _checkCooldown(collection, fillCooldownOf[collection]);
         emit BidConfigured(collection, basePrice, maxPrice, growthBpsPerDay, stepDownBps, active);
     }
 
+    /// @notice Set the minimum time between two buybacks of a collection. It must be short enough that
+    ///         the bid cannot grow back past its last price before the next sale is allowed.
     function setFillCooldown(address collection, uint256 cooldown) external onlyOwner {
+        _checkCooldown(collection, cooldown);
         fillCooldownOf[collection] = cooldown;
         emit FillCooldownSet(collection, cooldown);
+    }
+
+    /// @notice Guardian or owner: lower a collection's base and maximum price, or pause it. Prices can
+    ///         only go down and a paused collection can only be reactivated by the owner.
+    function lowerBid(address collection, uint128 basePrice, uint128 maxPrice, bool active) external {
+        if (msg.sender != guardian && msg.sender != owner()) revert NotGuardian();
+        Bid storage bid = bids[collection];
+        if (
+            basePrice == 0 || basePrice > maxPrice || basePrice > bid.basePrice || maxPrice > bid.maxPrice
+                || (active && !bid.active)
+        ) revert InvalidConfig();
+        bid.basePrice = basePrice;
+        bid.maxPrice = maxPrice;
+        bid.active = active;
+        bid.lastReset = uint40(block.timestamp);
+        emit BidLowered(collection, basePrice, maxPrice, active);
+    }
+
+    function setGuardian(address guardian_) external onlyOwner {
+        guardian = guardian_;
+        emit GuardianSet(guardian_);
     }
 
     function setSaleRecorder(ISaleRecorder saleRecorder_) external onlyOwner {
@@ -148,5 +207,23 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
         }
         saleRecorder = saleRecorder_;
         emit SaleRecorderSet(address(saleRecorder_));
+    }
+
+    function _curve(Bid memory bid) private view returns (uint256) {
+        uint256 elapsed = block.timestamp - bid.lastReset;
+        uint256 price =
+            bid.basePrice + uint256(bid.basePrice) * bid.growthBpsPerDay * elapsed / (BPS * 1 days);
+        return price > bid.maxPrice ? bid.maxPrice : price;
+    }
+
+    /// @dev After a fill the base drops by `stepDown` and regrows at `growth` a day, so it is back at
+    ///      the fill price after `stepDown / ((1 - stepDown) * growth)` days. A longer cooldown would
+    ///      let every sale happen above the previous one.
+    function _checkCooldown(address collection, uint256 cooldown) private view {
+        Bid memory bid = bids[collection];
+        if (cooldown == 0 || bid.growthBpsPerDay == 0) return;
+        uint256 maxCooldown =
+            uint256(bid.stepDownBps) * BPS * 1 days / (uint256(BPS - bid.stepDownBps) * bid.growthBpsPerDay);
+        if (cooldown > maxCooldown) revert CooldownTooLong(maxCooldown);
     }
 }

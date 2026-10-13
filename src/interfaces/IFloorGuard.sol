@@ -24,6 +24,11 @@ interface ITreasury {
     function projectShareOf(address collection) external view returns (address recipient, uint16 bps);
 }
 
+/// @notice Told by the Treasury when a collection's budget grows.
+interface IBudgetListener {
+    function onBudgetIncrease(address collection, uint256 budgetBefore) external;
+}
+
 interface IVault {
     function registerDeposit(address collection, uint256 tokenId, uint256 price)
         external

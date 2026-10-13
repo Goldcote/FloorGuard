@@ -86,7 +86,7 @@ contract RegressionsTest is Base {
     /// A market cannot settle on a price published before its settlement time.
     function test_predictionNeedsPricePublishedAfterSettlementTime() public {
         _pushFloor(10 ether);
-        uint256 marketId = prediction.createMarket(address(nft), 6 hours, 12 hours);
+        uint256 marketId = prediction.createMarket(address(nft), 1 hours, 12 hours);
         vm.prank(alice);
         prediction.placeBet{value: 1 ether}(marketId, true);
         vm.prank(bob);
@@ -107,7 +107,7 @@ contract RegressionsTest is Base {
     function test_predictionBettingWindowIsAtMostHalfTheDuration() public {
         _pushFloor(10 ether);
         vm.expectRevert(PredictionMarket.InvalidDuration.selector);
-        prediction.createMarket(address(nft), 1 days - 1, 1 days);
+        prediction.createMarket(address(nft), 2 hours + 24 minutes + 1, 1 days); // more than a tenth
     }
 
     /// Trading an unsupported contract earns no points, feeds no oracle and strands no fee.
@@ -276,10 +276,10 @@ contract RegressionsTest is Base {
         vm.prank(alice);
         marketplace.acceptOffer(id, 1, 0);
 
-        // 1 ETH fee, half to the project: each side earns points on 0.5 ETH
+        // 1 ETH fee, half to the project: the 0.5 ETH that funds buybacks is credited once, split in two
         assertEq(treasury.budgetOf(address(nft)), 0.5 ether);
-        assertEq(points.pendingOf(alice), 0.5 ether * POINTS_RATE / 1 ether);
-        assertEq(points.pendingOf(bob), 0.5 ether * POINTS_RATE / 1 ether);
+        assertEq(points.pendingOf(alice), 0.25 ether * POINTS_RATE / 1 ether);
+        assertEq(points.pendingOf(bob), 0.25 ether * POINTS_RATE / 1 ether);
     }
 
     function test_projectShareCanBeClaimedToAnotherAddress() public {
@@ -395,7 +395,7 @@ contract RegressionsTest is Base {
         vm.prank(bob);
         prediction.claim(marketId);
         assertEq(points.pendingOf(bob), points.pendingOf(alice));
-        assertEq(points.pendingOf(bob), 0.015 ether * POINTS_RATE / 1 ether);
+        assertEq(points.pendingOf(bob), 0.0075 ether * POINTS_RATE / 1 ether);
     }
 
     // ------------------------------------------------------------------ fifth review
@@ -691,6 +691,56 @@ contract RegressionsTest is Base {
         vm.expectRevert(Marketplace.NotAContract.selector);
         marketplace.setSaleRecorder(ISaleRecorder(address(0xdead)));
         vm.stopPrank();
+    }
+
+    // ------------------------------------------------------------------ economics review
+
+    /// Trading with oneself earns one point per unit of fee, not two.
+    function test_selfTradeEarnsOnePointPerUnitOfFee() public {
+        _mintApproved(alice, 1, address(marketplace));
+        vm.startPrank(alice);
+        uint256 id = marketplace.makeOffer{value: 10 ether}(address(nft), 1, block.timestamp + 1 days);
+        marketplace.acceptOffer(id, 1, 0);
+        vm.stopPrank();
+        assertEq(points.pendingOf(alice), 0.2 ether * POINTS_RATE / 1 ether);
+    }
+
+    /// A draw needs a minimum of activated points, so a raffle cannot be taken by one freshly activated
+    /// account while everyone else's points are still pending.
+    function test_drawNeedsAMinimumOfActivatedPoints() public {
+        uint256 raffleId = _openRaffle();
+        vm.prank(gov);
+        raffle.setMinPointsToDraw(5_000e18);
+        _earn(bob, 1 ether); // 1,000 points activated
+        skip(7 days);
+        vm.expectRevert(abi.encodeWithSelector(VaultRaffle.BelowMinPoints.selector, 1_000e18, 5_000e18));
+        raffle.draw(raffleId);
+
+        _earn(carol, 4 ether);
+        raffle.draw(raffleId);
+    }
+
+    /// One wager can be at most 1% of the bankroll, however small the house's exposure on it.
+    function test_wagerIsCappedAgainstTheBankroll() public {
+        games.fundBankroll{value: 100 ether}();
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Games.WagerTooHigh.selector, 5 ether, 1 ether));
+        games.play{value: 5 ether}(address(nft), 9_500); // exposure would be only 0.16 ETH
+    }
+
+    /// The owner can let the bankroll keep part of the edge to pay for the risk it carries.
+    function test_bankrollCanKeepAShareOfTheEdge() public {
+        games.fundBankroll{value: 100 ether}();
+        vm.prank(gov);
+        games.setRiskParams(100, 5_000);
+        vm.prank(alice);
+        uint256 id = games.play{value: 1 ether}(address(nft), 5_000);
+        randomness.fulfill(id, 9_999); // loss
+        // 0.02 ETH edge: half to the bankroll with the 0.98 ETH stake, half to buybacks
+        assertEq(games.bankroll(), 100 ether + 0.98 ether + 0.01 ether);
+        assertEq(treasury.budgetOf(address(nft)), 0.01 ether);
+        assertEq(points.pendingOf(alice), 0.01 ether * POINTS_RATE / 1 ether);
+        assertEq(address(games).balance, games.bankroll());
     }
 }
 

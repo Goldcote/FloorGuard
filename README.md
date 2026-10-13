@@ -1,14 +1,17 @@
 # FloorGuard
 
-An NFT marketplace protocol that turns its own fees into floor price support.
+An NFT marketplace protocol that spends its own fees on buying the cheapest
+tokens of the collections it trades.
 
 > **Unaudited and experimental. Do not deploy with real funds.**
 > See [SECURITY.md](SECURITY.md).
 
-Zero-royalty marketplaces reward sellers for undercutting each other, and
-collection floors bleed as a result. FloorGuard reverses the incentive: every
-fee the protocol earns on a collection becomes a budget for buying that
-collection's floor.
+Zero-royalty marketplaces reward sellers for undercutting each other.
+FloorGuard has no listings to undercut, and the part of each fee that is not
+paid to the NFT project (a project can be given up to half) becomes a budget
+for buying the cheapest tokens of that collection. How much difference that
+makes is modest: about one token bought for every fifty traded. See
+[docs/ECONOMICS-REVIEW.md](docs/ECONOMICS-REVIEW.md).
 
 The idea started as a
 [2024 white paper](https://x.com/captainPURU/status/1825613065502462081) and
@@ -31,11 +34,15 @@ flowchart LR
    Treasury, and ERC-2981 royalties are paid up to a cap. A project can also be
    given a share of the fees its collection generates.
 2. **Buyback.** The protocol quotes a standing bid for each collection. It rises
-   over time until a holder sells into it, then steps down and rises again, so it
-   finds the floor without an oracle.
+   over time until a holder sells into it, then steps down and rises again, so
+   it finds the lowest price a holder will accept without an oracle. The bid is
+   never more than the collection's budget can pay, and it only rises while the
+   budget covers it. The owner sets a maximum price.
 3. **Vault.** Bought NFTs are locked for at least 180 days and until the floor is
    30% above the purchase price. They are then auctioned, with proceeds returning
-   to the budget, or raffled.
+   to the budget, or raffled. If the floor never gets there they stay locked
+   unless the owner releases them. Selling one returns about enough to buy one
+   back, so auctions do not increase the number of tokens held.
 4. **Prediction markets.** Anyone can bet on a collection's floor going up or
    down. 3% of winnings funds buybacks.
 5. **Games.** Dice, coinflip and slots against a house bankroll, and a pooled
@@ -46,7 +53,9 @@ flowchart LR
 7. **IP licensing.** Licences to use the artwork of NFTs held in the Vault, with
    the fees funding buybacks.
 8. **Points and raffles.** Users earn points for the fees they generate. Points
-   are their odds of winning NFTs raffled from the Vault.
+   that have been activated before a draw are a user's weight in raffles of
+   Vault NFTs. Points can be bought by trading with oneself; see
+   [SECURITY.md](SECURITY.md).
 
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains each contract and lists
 where the code departs from the concept document. [docs/FAIRNESS.md](docs/FAIRNESS.md)

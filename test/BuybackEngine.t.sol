@@ -62,16 +62,91 @@ contract BuybackEngineTest is Base {
         engine.sell(address(nft), 1, 11 ether);
     }
 
-    function test_sell_revertsWhenBudgetShort() public {
+    /// The bid is never more than the budget can pay: a thin budget lowers the bid instead of
+    /// leaving an unpayable one standing.
+    function test_bid_isLimitedByTheBudget() public {
         vm.prank(gov);
-        engine.configureBid(address(nft), 150 ether, 200 ether, 0, 0, true);
-        assertFalse(engine.isFillable(address(nft)));
+        engine.configureBid(address(nft), 150 ether, 200 ether, 0, 1_000, true);
+        assertEq(engine.curvePrice(address(nft)), 150 ether);
+        assertEq(engine.currentBid(address(nft)), 100 ether);
+
         _mintApproved(alice, 1, address(engine));
         vm.prank(alice);
-        vm.expectRevert(
-            abi.encodeWithSelector(BuybackEngine.InsufficientBudget.selector, 100 ether, 150 ether)
-        );
-        engine.sell(address(nft), 1, 0);
+        vm.expectRevert(abi.encodeWithSelector(BuybackEngine.BidBelowMinimum.selector, 100 ether, 150 ether));
+        engine.sell(address(nft), 1, 150 ether);
+
+        uint256 before = alice.balance;
+        vm.prank(alice);
+        engine.sell(address(nft), 1, 100 ether);
+        assertEq(alice.balance - before, 100 ether);
+        assertEq(treasury.budgetOf(address(nft)), 0);
+        // a budget-limited sale lowers the base by one step only, not to the sale price
+        assertEq(engine.curvePrice(address(nft)), 135 ether);
+
+        _mintApproved(alice, 2, address(engine));
+        vm.prank(alice);
+        vm.expectRevert(BuybackEngine.NothingToBid.selector);
+        engine.sell(address(nft), 2, 0);
+        assertFalse(engine.isFillable(address(nft)));
+    }
+
+    /// While the budget cannot cover the curve, the curve's rise does not count: money that arrives
+    /// late or in a lump is spent from the base, not from an inflated bid.
+    function test_curveRestartsWhenLateMoneyArrives() public {
+        vm.prank(gov);
+        engine.configureBid(address(nft), 150 ether, 300 ether, 1_000, 500, true);
+        skip(5 days); // unfunded: the curve has drifted to 225 ETH while the budget is 100
+        assertEq(engine.curvePrice(address(nft)), 225 ether);
+
+        treasury.deposit{value: 400 ether}(address(nft)); // a lump arrives
+        assertEq(engine.curvePrice(address(nft)), 150 ether);
+        assertEq(engine.currentBid(address(nft)), 150 ether);
+
+        skip(1 days); // funded now: the rise counts
+        assertEq(engine.currentBid(address(nft)), 165 ether);
+        treasury.deposit{value: 1 ether}(address(nft));
+        assertEq(engine.currentBid(address(nft)), 165 ether);
+    }
+
+    function test_onBudgetIncrease_onlyTreasury() public {
+        vm.prank(alice);
+        vm.expectRevert(BuybackEngine.NotTreasury.selector);
+        engine.onBudgetIncrease(address(nft), 0);
+    }
+
+    function test_cooldownMustBeShorterThanTheRegrowTime() public {
+        // 5% step and 10% a day: the bid is back at its last price after about 12.6 hours
+        vm.startPrank(gov);
+        vm.expectRevert(abi.encodeWithSelector(BuybackEngine.CooldownTooLong.selector, 45_473));
+        engine.setFillCooldown(address(nft), 13 hours);
+        engine.setFillCooldown(address(nft), 12 hours);
+        // a faster curve would break the limit for the cooldown already set
+        vm.expectRevert(abi.encodeWithSelector(BuybackEngine.CooldownTooLong.selector, 22_736));
+        engine.configureBid(address(nft), 10 ether, 15 ether, 2_000, 500, true);
+        vm.stopPrank();
+    }
+
+    function test_guardianCanOnlyLowerOrPause() public {
+        address guardian = makeAddr("guardian");
+        vm.prank(gov);
+        engine.setGuardian(guardian);
+
+        vm.startPrank(guardian);
+        vm.expectRevert(BuybackEngine.InvalidConfig.selector);
+        engine.lowerBid(address(nft), 11 ether, 15 ether, true); // base up
+        vm.expectRevert(BuybackEngine.InvalidConfig.selector);
+        engine.lowerBid(address(nft), 10 ether, 16 ether, true); // cap up
+        engine.lowerBid(address(nft), 6 ether, 8 ether, true);
+        assertEq(engine.currentBid(address(nft)), 6 ether);
+        engine.lowerBid(address(nft), 6 ether, 8 ether, false); // pause
+        assertEq(engine.currentBid(address(nft)), 0);
+        vm.expectRevert(BuybackEngine.InvalidConfig.selector);
+        engine.lowerBid(address(nft), 6 ether, 8 ether, true); // cannot reactivate
+        vm.stopPrank();
+
+        vm.prank(alice);
+        vm.expectRevert(BuybackEngine.NotGuardian.selector);
+        engine.lowerBid(address(nft), 1 ether, 1 ether, false);
     }
 
     function test_sell_revertsForInactiveCollection() public {
@@ -89,12 +164,12 @@ contract BuybackEngineTest is Base {
         treasury.deposit{value: 5 ether}(other);
         vm.prank(gov);
         engine.configureBid(address(nft), 101 ether, 200 ether, 0, 0, true);
+        // the other collection's 5 ETH does not raise this collection's bid
+        assertEq(engine.currentBid(address(nft)), 100 ether);
         _mintApproved(alice, 1, address(engine));
         vm.prank(alice);
-        vm.expectRevert(
-            abi.encodeWithSelector(BuybackEngine.InsufficientBudget.selector, 100 ether, 101 ether)
-        );
         engine.sell(address(nft), 1, 0);
+        assertEq(treasury.budgetOf(other), 5 ether);
     }
 
     function test_configure_validationAndAccess() public {
@@ -141,6 +216,8 @@ contract BuybackEngineTest is Base {
         cap = uint128(bound(cap, base, 2_000 ether));
         vm.prank(gov);
         engine.configureBid(address(nft), base, cap, growth, 500, true);
+        vm.deal(address(this), 3_000 ether);
+        treasury.deposit{value: 3_000 ether}(address(nft)); // ample, so the curve is what is measured
 
         skip(t1);
         uint256 first = engine.currentBid(address(nft));

@@ -45,6 +45,12 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     uint256 public minBet = 0.001 ether;
     /// @notice The most the house may stand to lose on one bet, as a share of the free bankroll.
     uint256 public maxExposureBps = 100;
+    /// @notice The largest wager, as a share of the free bankroll. Without it a near-certain dice bet
+    ///         could stake a large part of the bankroll for a small exposure.
+    uint256 public maxWagerBps = 100;
+    /// @notice The share of each edge the bankroll keeps, to pay for the risk it carries. The rest goes
+    ///         to the Treasury. Zero by default: the whole edge funds buybacks.
+    uint256 public bankrollShareBps;
     mapping(address collection => bool) public isSupported;
 
     /// @notice House funds not set aside for open bets.
@@ -70,6 +76,7 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     event BankrollWithdrawnToTreasury(uint256 amount);
     event Withdrawn(address indexed player, uint256 amount);
     event ParamsSet(uint256 edgeBps, uint256 minBet, uint256 maxExposureBps);
+    event RiskParamsSet(uint256 maxWagerBps, uint256 bankrollShareBps);
     event CollectionSupportSet(address indexed collection, bool supported);
     event RandomnessSet(address randomness);
     event PointsSet(address points);
@@ -78,6 +85,7 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     error InvalidChance();
     error BetTooSmall();
     error ExposureTooHigh(uint256 exposure, uint256 limit);
+    error WagerTooHigh(uint256 wager, uint256 limit);
     error TotalExposureTooHigh(uint256 total, uint256 limit);
     error RequestIdInUse();
     error NotAContract();
@@ -141,6 +149,8 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     {
         if (!isSupported[collection]) revert UnsupportedCollection();
         if (msg.value < minBet) revert BetTooSmall();
+        uint256 maxWager = bankroll * maxWagerBps / BPS;
+        if (msg.value > maxWager) revert WagerTooHigh(msg.value, maxWager);
 
         uint256 limit = bankroll * maxExposureBps / BPS;
         if (exposure > limit) revert ExposureTooHigh(exposure, limit);
@@ -193,9 +203,12 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
             if (!ok) owedTo[bet.player] += payout;
         }
 
-        if (fee != 0) {
+        // the bankroll's share of the edge, if any, stays here; the rest goes to the Treasury
+        uint256 kept = fee * bankrollShareBps / BPS;
+        bankroll += kept;
+        if (fee - kept != 0) {
             // points follow what reached the buyback budget, not the project's share of the fee
-            uint256 toBudget = treasury.depositFee{value: fee}(bet.collection);
+            uint256 toBudget = treasury.depositFee{value: fee - kept}(bet.collection);
             if (address(points) != address(0) && toBudget != 0) {
                 try points.creditFee(bet.player, toBudget) {} catch {}
             }
@@ -257,6 +270,13 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         minBet = minBet_;
         maxExposureBps = maxExposureBps_;
         emit ParamsSet(edgeBps_, minBet_, maxExposureBps_);
+    }
+
+    function setRiskParams(uint256 maxWagerBps_, uint256 bankrollShareBps_) external onlyOwner {
+        if (maxWagerBps_ > BPS || bankrollShareBps_ > BPS) revert InvalidParams();
+        maxWagerBps = maxWagerBps_;
+        bankrollShareBps = bankrollShareBps_;
+        emit RiskParamsSet(maxWagerBps_, bankrollShareBps_);
     }
 
     function setCollectionSupport(address collection, bool supported) external onlyOwner {

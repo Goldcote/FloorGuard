@@ -39,6 +39,10 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     IRandomnessProvider public randomness;
     /// @notice Time between a raffle opening and its earliest draw, so holders can see it coming.
     uint256 public announcePeriod = 7 days;
+    /// @notice No draw while fewer points than this are activated. A raffle is only a fair distribution
+    ///         when the fees behind the activated points are large against the prize; the owner should
+    ///         set this to several times the points one prize's worth of fees would earn.
+    uint256 public minPointsToDraw;
 
     /// @notice After any draw is reset, no draw can be requested before this time. Together with the
     ///         rule of one draw at a time, this leaves a window in which points can be activated.
@@ -59,6 +63,7 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     event PrizeClaimed(uint256 indexed raffleId, address indexed winner);
     event RandomnessSet(address randomness);
     event AnnouncePeriodSet(uint256 announcePeriod);
+    event MinPointsToDrawSet(uint256 minPointsToDraw);
 
     error NotVault();
     error NotRandomness();
@@ -67,6 +72,7 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     error NoPoints();
     error StaleRequest();
     error DrawInFlight();
+    error BelowMinPoints(uint256 activated, uint256 required);
 
     constructor(address owner_, IPoints points_, address vault_, IRandomnessProvider randomness_)
         Ownable(owner_)
@@ -100,7 +106,9 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
         if (block.timestamp < nextDrawAt) revert TooEarly(nextDrawAt);
         // one draw at a time: overlapping draws could keep point weights frozen without a break
         if (points.freezeCount() != 0) revert DrawInFlight();
-        if (points.totalPoints() == 0) revert NoPoints();
+        uint256 total = points.totalPoints();
+        if (total == 0) revert NoPoints();
+        if (total < minPointsToDraw) revert BelowMinPoints(total, minPointsToDraw);
 
         r.status = Status.Drawing;
         r.requestedAt = uint40(block.timestamp);
@@ -165,6 +173,11 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     function setRandomness(IRandomnessProvider randomness_) external onlyOwner {
         randomness = randomness_;
         emit RandomnessSet(address(randomness_));
+    }
+
+    function setMinPointsToDraw(uint256 minPointsToDraw_) external onlyOwner {
+        minPointsToDraw = minPointsToDraw_;
+        emit MinPointsToDrawSet(minPointsToDraw_);
     }
 
     function setAnnouncePeriod(uint256 announcePeriod_) external onlyOwner {
