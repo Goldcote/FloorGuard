@@ -41,6 +41,8 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
     mapping(address collection => uint256) public minBidBpsOf;
     mapping(address collection => bool) private _minBidSet;
     uint256 public constant DEFAULT_MIN_BID_BPS = 1_000;
+    /// @notice The smallest base an owner or guardian may set. Below a few wei the curve cannot grow.
+    uint256 public constant MIN_BASE_PRICE = 1 gwei;
     /// @notice May lower a collection's prices or pause it. Each call also restarts the curve, so the
     ///         guardian can hold a bid down, never raise it. Meant for a fast key that can react to a
     ///         falling market while the owner sits behind a timelock.
@@ -175,7 +177,7 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
         uint16 stepDownBps,
         bool active
     ) external onlyOwner {
-        if (basePrice == 0 || basePrice > maxPrice || stepDownBps >= BPS) {
+        if (basePrice < MIN_BASE_PRICE || basePrice > maxPrice || stepDownBps >= BPS) {
             revert InvalidConfig();
         }
         bids[collection] = Bid({
@@ -205,8 +207,8 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
         if (msg.sender != guardian && msg.sender != owner()) revert NotGuardian();
         Bid storage bid = bids[collection];
         if (
-            basePrice == 0 || basePrice > maxPrice || basePrice > bid.basePrice || maxPrice > bid.maxPrice
-                || (active && !bid.active)
+            basePrice < MIN_BASE_PRICE || basePrice > maxPrice || basePrice > bid.basePrice
+                || maxPrice > bid.maxPrice || (active && !bid.active)
         ) revert InvalidConfig();
         bid.basePrice = basePrice;
         bid.maxPrice = maxPrice;

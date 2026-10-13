@@ -43,11 +43,11 @@ it before delivering it, and so does anyone who sees the oracle's transaction
 before it is included in a block.
 
 What an oracle can still do is withhold a number. A bet without an answer after
-a day is refunded, an unanswered draw can be reset and requested again, and an
+six hours is refunded, an unanswered draw can be reset and requested again, and an
 answer that arrives after its deadline is ignored, so nobody can choose between
 a late result and a refund.
 
-That does not cover a party able to hold a result back for the whole day after
+That does not cover a party able to hold a result back for the whole refund period (six hours for a bet, a day for a draw) after
 seeing it: the oracle operator, or on a rollup the sequencer, can turn a result
 it dislikes into a refund or a redraw. The fairness claim rests on neither of
 them colluding with a player.

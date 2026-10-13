@@ -46,7 +46,8 @@ contract Vault is IVault, Ownable2Step, ReentrancyGuard {
     ///         by buyers competing on the way down, not by where the auction starts.
     uint256 public constant AUCTION_START_MULTIPLE = 16;
     uint256 public constant AUCTION_HALF_LIFE = 1 days;
-    /// @notice How long an unsold auction rests at its end price before it can be restarted.
+    /// @notice An unsold auction rests at its end price for at least this long, and up to twice as long,
+    ///         before it can be restarted.
     uint256 public constant AUCTION_RESTART_DWELL = 1 days;
     /// @notice Time for a price opening at 16 times its reserve to fall to the reserve. An auction that
     ///         opens higher, because of the floor recorded at unlock, takes longer.
@@ -290,7 +291,7 @@ contract Vault is IVault, Ownable2Step, ReentrancyGuard {
         }
     }
 
-    /// @dev The time at which an auction's price first equals its end price.
+    /// @dev The end of the half-life in which an auction's price reaches its end price.
     function _reachesEndAt(Auction memory a) private pure returns (uint256) {
         uint256 halvings;
         uint256 price = a.startPrice;

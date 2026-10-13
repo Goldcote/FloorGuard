@@ -284,7 +284,7 @@ contract BuybackEngineTest is Base {
     function testFuzz_bid_boundedAndMonotonic(uint128 base, uint128 cap, uint16 growth, uint32 t1, uint32 t2)
         public
     {
-        base = uint128(bound(base, 1, 1_000 ether));
+        base = uint128(bound(base, 1 gwei, 1_000 ether));
         cap = uint128(bound(cap, base, 2_000 ether));
         vm.prank(gov);
         engine.configureBid(address(nft), base, cap, growth, 500, true);

@@ -23,8 +23,9 @@ interface IVRFCoordinatorV2Plus {
 /// @dev Written against the published v2.5 coordinator interface. Not yet tested against a live
 ///      coordinator.
 contract ChainlinkVRFRandomness is IRandomnessProvider, Ownable2Step {
-    /// @notice Lower bound on the callback gas. The costliest callback, a vault raffle picking a winner
-    ///         deep in a full points tree, was measured at about 312,000 gas.
+    /// @notice Lower bound on the callback gas. The costliest callbacks measured were a games win paid to
+    ///         a gas-burning contract (about 331,000 gas) and a vault raffle picking a winner deep in a
+    ///         full points tree (about 312,000).
     uint32 public constant MIN_CALLBACK_GAS = 400_000;
     bytes4 private constant EXTRA_ARGS_V1_TAG = bytes4(keccak256("VRF ExtraArgsV1"));
 

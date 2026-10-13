@@ -91,7 +91,7 @@ contract GamesTest is Base {
 
     function test_refund_afterTimeoutReturnsWagerAndFreesExposure() public {
         uint256 id = _play(alice, 1 ether, 5_000);
-        vm.expectRevert(abi.encodeWithSelector(Games.TooEarly.selector, block.timestamp + 1 days));
+        vm.expectRevert(abi.encodeWithSelector(Games.TooEarly.selector, block.timestamp + 6 hours));
         games.refund(id);
 
         skip(1 days);
@@ -133,7 +133,7 @@ contract GamesTest is Base {
 
         uint256 before = bob.balance;
         vm.prank(bob);
-        uint256 paid = games.redeem(bobShares, 99.99 ether, payable(bob));
+        uint256 paid = games.redeem(bobShares, 10, payable(bob)); // at most 0.1% under fair value
         assertApproxEqAbs(paid, 100 ether, 1e6);
         assertEq(bob.balance - before, paid);
         assertEq(games.sharesOf(bob), 0);
@@ -255,6 +255,70 @@ contract GamesTest is Base {
         assertGt(games.deposit{value: 10 ether}(0), 0);
     }
 
+    /// The spread a requester tolerates is checked on chain against fair value at that moment.
+    function test_house_spreadToleranceIsEnforcedOnChain() public {
+        vm.prank(carol);
+        uint256 carolShares = games.deposit{value: 1_000 ether}(0);
+        uint256 first = _play(alice, 1 ether, 5_000);
+        vm.prank(carol);
+        assertEq(games.redeem(carolShares, 100, payable(carol)), 0); // waits for the open bet
+        randomness.fulfill(first, 9_999);
+
+        // someone locks up funds with long shots in front of her
+        for (uint256 i; i < 5; ++i) {
+            _play(alice, 0.1 ether, 100);
+        }
+        vm.startPrank(carol);
+        vm.expectRevert(Games.SlippageExceeded.selector);
+        games.executeRedeem(100, payable(carol)); // more than 1% would be given up: refused
+        uint256 fair = games.shareValue(carolShares);
+        uint256 paid = games.executeRedeem(500, payable(carol)); // she accepts up to 5%
+        vm.stopPrank();
+        assertGe(paid, fair * 95 / 100);
+        assertLt(paid, fair);
+    }
+
+    /// Open wagers are capped against the house's funds, which bounds what a deposit carried out with
+    /// bets open can give up.
+    function test_openWagersAreCapped() public {
+        uint256 placed;
+        vm.startPrank(alice);
+        while (true) {
+            (bool ok,) =
+                address(games).call{value: 9 ether}(abi.encodeCall(Games.play, (address(nft), 9_500)));
+            if (!ok) break;
+            ++placed;
+        }
+        vm.stopPrank();
+        assertGt(placed, 15);
+        assertLe(games.openWagers(), (games.bankroll() + games.reserved()) / 5);
+        // a deposit carried out now gives up at most a sixth
+        assertGe(games.previewDeposit(60 ether) * 6, games.totalShares() * 60 ether * 5 / 1_000 ether - 1e12);
+    }
+
+    /// After a refund no bet is accepted for ten minutes, so a table kept full with free bets while
+    /// randomness is down has to empty.
+    function test_betsPauseAfterARefund() public {
+        uint256 id = _play(alice, 1 ether, 5_000);
+        skip(6 hours);
+        games.refund(id);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Games.BetsPaused.selector, block.timestamp + 10 minutes));
+        games.play{value: 1 ether}(address(nft), 5_000);
+        assertEq(games.reserved(), 0); // a moment with nothing open: requests go through at fair value
+        skip(10 minutes);
+        _play(alice, 1 ether, 5_000);
+    }
+
+    /// A holding too small to be redeemed on its own is taken along with the rest.
+    function test_house_dustRemainderIsRedeemedWithTheRest() public {
+        vm.startPrank(bob);
+        uint256 shares = games.deposit{value: 10 ether}(0);
+        games.redeem(shares - 2, 0, payable(bob));
+        vm.stopPrank();
+        assertEq(games.sharesOf(bob), 0);
+    }
+
     function test_refundMany_skipsBetsThatAreNotRefundable() public {
         uint256 a = _play(alice, 1 ether, 5_000);
         uint256 b = _play(alice, 1 ether, 5_000);
@@ -290,8 +354,8 @@ contract GamesTest is Base {
         randomness.fulfill(id, 0);
 
         vm.prank(bob);
-        vm.expectRevert(Games.SlippageExceeded.selector);
-        games.deposit{value: 1 ether}(type(uint256).max);
+        vm.expectRevert(Games.InvalidParams.selector);
+        games.deposit{value: 1 ether}(10_001); // more than 100% is not a spread
     }
 
     function test_house_openBetsStayFundedWhenHoldersLeave() public {
@@ -315,8 +379,12 @@ contract GamesTest is Base {
         vm.expectRevert(Games.BetsStillOpen.selector);
         games.executeDeposit(0);
         randomness.fulfill(first, 9_999);
+        // the later bet is still open: at zero tolerance the deposit waits, with some it goes through
         vm.prank(bob);
-        assertGt(games.executeDeposit(0), 0);
+        vm.expectRevert(Games.SlippageExceeded.selector);
+        games.executeDeposit(0);
+        vm.prank(bob);
+        assertGt(games.executeDeposit(100), 0);
         randomness.fulfill(third, 9_999);
     }
 

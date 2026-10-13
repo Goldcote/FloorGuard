@@ -262,48 +262,63 @@ Deposits and redemptions are requests, and two rules price them:
 
 1. **A request waits for the bets open when it was made.** `deposit` and
    `redeem` record the request; it can be carried out, by the account that made
-   it, once every one of those bets has been settled or refunded. Whoever asks
-   therefore cannot know the result of any bet that was open when they
-   committed.
+   it, once every one of those bets has been settled or refunded. The request is
+   therefore always priced after those results are in, and a bet opened in front
+   of the request itself only makes it wait.
 2. **Bets open when a request is carried out count against whoever carries it
    out.** A deposit is then priced as if the house wins every open bet, and a
    redemption as if it loses them all (it pays the shares' part of the free
-   bankroll only). A request left standing therefore cannot be used as a free
-   option on the results of later bets.
+   bankroll only). With full knowledge of every open bet's result, carrying out
+   a request never leaves the requester better off than waiting, so a request
+   left standing is not a free option.
 
 With no bet open both rules do nothing: the request is carried out at once, at
 the house's funds per share. `shareValue` gives that fair value at any time;
 `previewRedeem` and `previewDeposit` give what would be paid or issued right
 now.
 
+Every request names the most it will give up against fair value
+(`maxSpreadBps`). The contract checks that against the fair value at the moment
+of execution; if carrying it out would cost more, a `deposit` or `redeem` stays
+pending and an `executeDeposit` or `executeRedeem` reverts. Zero means "only at
+fair value". This is the protection against another holder opening bets in
+front of an execution: whatever spread a requester tolerates, someone else can
+make them pay, so tolerate little and wait for a quiet moment.
+
+What carrying out a request with bets open can cost is bounded:
+
+- on the way out, the shares' part of what is set aside for open bets, which is
+  at most a fifth of the house's funds when the bets are placed;
+- on the way in, the open wagers against the house's funds, which are capped at
+  a fifth when bets are placed, so at most a sixth.
+
+How often a quiet moment comes depends on how busy the table is. In a review's
+model with eight-second randomness, a holder asking for at most 1% waits
+seconds with one bet open on average, about a minute and a half with ten, over
+an hour with twenty, and with fifty the moment did not come in the simulation
+at all. A busy house is expensive to leave.
+
 A pending deposit is held apart from the bankroll and can be cancelled. Shares
 with a pending redemption stay at risk until it is carried out. The last holder
-cannot redeem while bets are open, so nothing set aside for a bet is ever left
-without an owner.
+cannot redeem everything while bets are open; a holder who leaves while only
+dust holdings remain still leaves what is set aside to nobody.
 
-Both rules are needed, and each came from a review breaking a design that had
-only one. Pricing immediately at conservative values let an existing holder
-manufacture a bad price in front of someone else's transaction. Pricing at fair
-value after a wait let a holder keep a request standing and use it only when a
-later result, seen in advance, favoured them; that drained a passive holder
-completely in a test.
+If randomness stops arriving, bets are refundable after six hours
+(`REFUND_TIMEOUT`); `refundMany` refunds several at once. After any refund no
+new bet is accepted for ten minutes, so a table that someone keeps full with
+free, refundable bets during an outage has to empty, and requests can then be
+carried out at fair value.
 
-What it costs: someone who carries out a request while other bets are open gives
-up part of the value to the holders who stay, up to the share of the house's
-funds set aside for open bets (at most a fifth when bets are placed) on the way
-out. Another holder can make that moment more expensive by opening bets, but
-pays the edge on every bet to do it, and the requester can simply wait for a
-quiet moment and name the least they will accept. If randomness stops arriving,
-requests wait until the open bets are refunded, which anyone can do a day after
-each bet (`refundMany` does several at once).
+Both pricing rules came from reviews breaking a design that had only one of
+them; [AUDIT.md](AUDIT.md) has the history.
 
 The house's side of each bet is set aside when the bet is placed, so every
 outcome can always be paid. One wager can be at most 1% of the free bankroll, one bet can risk at most 1% of
 it, and
-all open bets together at most 20% of the house's funds. Both limits are checked
+all open bets together at most 20% of the house's funds, with their wagers capped at 20% as well. Both limits are checked
 when a bet is placed; a later win or redemption can leave open bets
 above 20% of what remains, but their payouts stay fully set aside. A bet whose randomness
-has not arrived within a day is refunded, and randomness that arrives later than
+has not arrived within six hours is refunded, and randomness that arrives later than
 that is ignored, so nobody can choose between a late result and a refund.
 
 Each bet costs the operator one randomness request, which on Ethereum mainnet is

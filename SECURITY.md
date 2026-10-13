@@ -84,20 +84,21 @@ professional audit.
 - **House shares.** Anyone can fund the games bankroll for shares and redeem them
   later. Share holders can lose part or all of what they put in when players
   win; nothing is guaranteed, and the half of the edge the bankroll keeps only
-  tilts the average. Two reviews each broke an earlier pricing design; the
-  current one makes a request wait for the bets open when it was made, and
-  prices bets open when it is carried out against whoever carries it out.
-  Carrying out a request while other bets are open therefore costs the
-  requester up to a fifth of its value, and another holder can raise that cost
-  by opening bets, paying the edge on each: wait for a quiet moment and set a
-  minimum. A stall in randomness delays requests by up to a day, and each bet
-  open at the request then needs a refund call. The account that funds the
-  bankroll owns the shares, and shares cannot be transferred: do not fund it
-  from a deployment hot key. Offering a share in a gambling bankroll may be a
-  regulated activity of its own (in some places a security or a gambling
-  licence matter), separate from operating the games. The current design
-  combines a reviewer's tested fix with the waiting rule; the combination has
-  passed a randomised campaign but has not had its own independent review.
+  tilts the average. Three reviews in a row broke or bent the pricing design.
+  What stands now: a request waits for the bets open when it was made, and bets
+  open when it is carried out are priced against whoever carries it out, up to
+  a spread the requester names and the contract enforces. Whatever spread a
+  requester tolerates another holder can make them pay by opening bets, so
+  tolerate little. On a busy table a fair-value exit can take hours or never
+  come. While randomness is down, bets are free (they are refunded in full), so
+  someone can keep funds set aside until the six-hour refund and the ten-minute
+  pause after it. The account that funds the bankroll owns the shares, and
+  shares cannot be transferred: do not fund it from a deployment hot key.
+  Offering a share in a gambling bankroll may be a regulated activity of its
+  own (in some places a security or a gambling licence matter), separate from
+  operating the games. The latest hardening has tests but no independent
+  review, and the randomised campaigns written for earlier versions no longer
+  apply and were removed.
 - **Shared randomness subscription.** The deploy script puts all four randomness
   consumers (vault raffle, games, ticket raffle and lottery) on one Chainlink
   VRF subscription. Many minimum-size bets can drain it and stall every draw
