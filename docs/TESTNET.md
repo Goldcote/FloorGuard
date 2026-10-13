@@ -1,7 +1,8 @@
 # Deploying to a testnet
 
 These steps deploy FloorGuard to Base Sepolia. The deployment has been simulated
-against Base Sepolia (about 16.7 million gas in total) but has not been
+against Base Sepolia (about 16.7 million gas at the time, before the newest
+contracts were added) but has not been
 broadcast: no testnet deployment exists yet.
 
 The Chainlink values below were read from Chainlink's
@@ -66,16 +67,21 @@ Addresses are written to `deployments/84532.json`. Commit that file.
    `lotteryRandomness` addresses from the deployment file as consumers of the
    VRF subscription. Raffles and
    games cannot settle until this is done.
-2. Until this step is done the deployer account still owns every contract. If
-   `OWNER` was set, that account finishes the handover with
-   `script/AcceptOwnership.s.sol`. With a timelock, run it once with
-   `STEP=schedule` and again after the delay with `STEP=execute`. A multisig
-   submits the same calls itself.
-3. Onboard a collection (see `script/AddCollection.s.sol` for all options):
+2. Onboard a collection while the deployer still owns the contracts (see
+   `script/AddCollection.s.sol` for all options). After the handover the same
+   calls have to come from the new owner.
 
    ```bash
    COLLECTION=<address> BID_BASE=<wei> BID_MAX=<wei> forge script script/AddCollection.s.sol --rpc-url base_sepolia --account floorguard-deployer --broadcast
    ```
 
-4. Fund the games bankroll with `Games.fundBankroll()` if games are enabled.
-5. In `app/`, run `npm run sync` so the app picks up the new addresses.
+3. For prediction markets, give a price reporter the right to push floors with
+   `PushFloorOracle.setReporter`; no market can be created without a price.
+4. Hand over ownership. Until this is done the deployer account owns every
+   contract. If `OWNER` was set, that account finishes the handover with
+   `script/AcceptOwnership.s.sol`. With a timelock, run it once with
+   `STEP=schedule` and again after the delay with `STEP=execute`. A multisig
+   submits the same calls itself. The randomness adapters are owned by the final
+   owner from the start, so check `OWNER` for typos before deploying.
+5. Fund the games bankroll with `Games.fundBankroll()` if games are enabled.
+6. In `app/`, run `npm run sync` so the app picks up the new addresses.

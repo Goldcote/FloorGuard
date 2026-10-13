@@ -218,9 +218,10 @@ contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         // a raffle that sold out early has ended now; the abort clock runs from here
         if (block.timestamp < r.endTime) r.endTime = uint40(block.timestamp);
 
+        // Past the abort time no new draw is requested: retrying a draw must not keep pushing refunds out.
         if (
             r.ticketsSold < r.minTickets || uint256(r.ticketPrice) * r.ticketsSold < minPotOf[raffleId]
-                || r.ticketsSold == 0
+                || r.ticketsSold == 0 || block.timestamp >= r.endTime + ABORT_DELAY
         ) {
             r.status = Status.Refunding;
             emit RaffleRefunding(raffleId);
@@ -257,11 +258,8 @@ contract TicketRaffle is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         }
         if (block.timestamp < readyAt) revert TooEarly(readyAt);
 
-        uint256 requestId = currentRequest[raffleId];
-        if (requestId != 0) {
-            delete raffleOfRequest[requestId];
-            delete currentRequest[raffleId];
-        }
+        delete raffleOfRequest[currentRequest[raffleId]];
+        delete currentRequest[raffleId];
         r.status = Status.Refunding;
         r.winner = address(0);
         emit RaffleAborted(raffleId);

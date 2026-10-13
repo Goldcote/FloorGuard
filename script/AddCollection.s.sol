@@ -8,10 +8,13 @@ import {Marketplace} from "../src/Marketplace.sol";
 import {BuybackEngine} from "../src/BuybackEngine.sol";
 import {PredictionMarket} from "../src/PredictionMarket.sol";
 import {Games} from "../src/Games.sol";
+import {Vault} from "../src/Vault.sol";
 import {TicketRaffle} from "../src/TicketRaffle.sol";
 import {Lottery} from "../src/Lottery.sol";
 
-/// @notice Onboards an NFT collection in one run. Must be broadcast by the protocol owner.
+/// @notice Onboards an NFT collection in one run. Must be broadcast by the protocol owner, so run it
+///         before ownership is handed to a multisig or timelock, or have that owner submit the same
+///         calls. Licence tiers are set separately with `IPLicenseManager.setTier`.
 ///
 /// Environment:
 ///   COLLECTION           the ERC-721 contract
@@ -22,6 +25,8 @@ import {Lottery} from "../src/Lottery.sol";
 ///   PROJECT_RECIPIENT    optional: address that receives the project's share of fees
 ///   PROJECT_SHARE_BPS    optional: that share in basis points, at most 5000
 ///   ENABLE_PREDICTIONS   optional (default false). Only enable with a trustworthy oracle price.
+///   MIN_AUCTION_RESERVE  optional, in wei: the lowest reserve for vault auctions of this collection.
+///                        Recommended: it is the protection against a manipulated oracle.
 ///   ENABLE_GAMES         optional (default false)
 ///   LOTTERY_TICKET_PRICE optional, in wei: starts a weekly lottery for the collection at this price
 ///   ENABLE_TICKET_RAFFLES optional (default false): lets holders raffle tokens of this collection
@@ -48,6 +53,8 @@ contract AddCollection is Script {
             Treasury(payable(json.readAddress(".treasury")))
                 .setProjectShare(collection, projectRecipient, uint16(vm.envUint("PROJECT_SHARE_BPS")));
         }
+        uint256 minReserve = vm.envOr("MIN_AUCTION_RESERVE", uint256(0));
+        if (minReserve != 0) Vault(json.readAddress(".vault")).setMinReserve(collection, minReserve);
         if (vm.envOr("ENABLE_PREDICTIONS", false)) {
             PredictionMarket(json.readAddress(".predictionMarket")).setCollectionSupport(collection, true);
         }

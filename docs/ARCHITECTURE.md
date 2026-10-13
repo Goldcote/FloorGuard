@@ -108,9 +108,12 @@ Ownership transfers are two-step. `script/AcceptOwnership.s.sol` completes the
 handover in either setup.
 
 Adding a collection is an owner action: mark it supported on the Marketplace,
-set its bid curve on the BuybackEngine, and optionally set a project share and
-enable predictions and games. `script/AddCollection.s.sol` does all of it in one
-run. After that, buybacks need no operator or bot: holders sell into the bid
+set its bid curve on the BuybackEngine, and optionally set a project share, a
+minimum auction reserve, and enable predictions, games, ticket raffles and a
+lottery. `script/AddCollection.s.sol` does all of that in one run; licence tiers
+are set separately. The script has to be broadcast by the owner, so run it
+before handing ownership to a multisig or timelock, or have that owner submit
+the same calls. After that, buybacks need no operator or bot: holders sell into the bid
 themselves.
 
 ## BuybackEngine: the rising bid
@@ -149,9 +152,9 @@ Each buyback creates a holding with its purchase price and time.
 - `unlock` is permissionless and succeeds when the lock time has passed **and**
   the oracle floor is fresh and at least 130% of the purchase price.
 - The owner can `governanceUnlock` early, or `relock` to extend.
-- Once unlocked, the owner can `sendToRaffle`, `relock` or `startAuction`. From
-  30 days after the unlock, anyone can start the auction, whatever the owner did
-  in the meantime.
+- While a holding is unlocked, the owner can `sendToRaffle`, `relock` or
+  `startAuction`. If it is still unlocked 30 days after it unlocked (or after an
+  auction on it was cancelled), anyone can start the auction.
 - The reserve of an oracle-priced auction is the highest of the oracle floor, the
   unlock price (130% of the purchase price) and an owner-set minimum for the
   collection (`minReserveOf`).
@@ -161,7 +164,9 @@ Each buyback creates a holding with its purchase price and time.
   sale price is found by buyers competing on the way down. This matters because
   the sales oracle can be pushed down for free: a low reading lowers the reserve
   towards the unlock price but cannot make the auction open below market, unless
-  the market is more than 16 times that opening basis.
+  the market is more than 16 times that opening basis. Whoever calls `unlock`
+  can influence the oracle at that moment, so the recorded floor is a help, not
+  a guarantee: the owner-set `minReserveOf` is the protection to rely on.
 - An oracle-priced auction whose price has fallen to its reserve without a buyer
   can be restarted by anyone, at fresh oracle prices. Proceeds go to the
   collection's budget.
@@ -195,7 +200,9 @@ expected gain or loss and the whole house take funds buybacks.
 
 The house's side of each bet is set aside when the bet is placed, so every
 outcome can always be paid. One bet can risk at most 1% of the free bankroll and
-all open bets together at most 20% of the house's funds. A bet whose randomness
+all open bets together at most 20% of the house's funds. Both limits are checked
+when a bet is placed; a later win or bankroll withdrawal can leave open bets
+above 20% of what remains, but their payouts stay fully set aside. A bet whose randomness
 has not arrived within a day is refunded, and randomness that arrives later than
 that is ignored, so nobody can choose between a late result and a refund. The bankroll can only
 leave to winning players or to the Treasury.
@@ -212,7 +219,8 @@ can `draw` it: one random ticket wins the pot, 5% of which goes to the
 collection's buyback budget. A round whose pot is below `minPot` is refunded
 instead of drawn, and a round still undrawn a week after its end can be aborted
 into refunds by anyone, though never while an answer to a pending draw would
-still be accepted. Ticket price, fee and minimum pot are fixed for a round when
+still be accepted. From that time on, `draw` itself opens refunds instead of
+requesting randomness again. Ticket price, fee and minimum pot are fixed for a round when
 it opens.
 
 ## Ticket raffles
@@ -236,7 +244,8 @@ because its randomness never arrives or the NFT cannot be transferred, anyone
 can `abort` it into refunds a week after it ended (its scheduled end, or the
 moment it was closed if it sold out earlier), or a week after its draw was
 requested if a winner was drawn but nobody could settle. A raffle cannot be
-aborted while an answer to its pending draw would still be accepted.
+aborted while an answer to its pending draw would still be accepted, and once
+the abort time has passed `close` opens refunds instead of requesting a draw.
 
 ## IP licensing
 

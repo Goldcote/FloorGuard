@@ -9,13 +9,19 @@ import {Games} from "../src/Games.sol";
 import {Vault} from "../src/Vault.sol";
 import {TicketRaffle} from "../src/TicketRaffle.sol";
 import {Lottery} from "../src/Lottery.sol";
+import {ChainlinkVRFRandomness, IVRFCoordinatorV2Plus} from "../src/randomness/ChainlinkVRFRandomness.sol";
 import {Marketplace} from "../src/Marketplace.sol";
 import {BuybackEngine} from "../src/BuybackEngine.sol";
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {Treasury} from "../src/Treasury.sol";
 import {MockNFT, RejectETH} from "./mocks/MockNFT.sol";
 import {MockRandomness} from "./mocks/MockRandomness.sol";
-import {IRandomnessProvider, IPoints, ISaleRecorder} from "../src/interfaces/IFloorGuard.sol";
+import {
+    IRandomnessProvider,
+    IRandomnessConsumer,
+    IPoints,
+    ISaleRecorder
+} from "../src/interfaces/IFloorGuard.sol";
 
 /// @dev Regression tests for the issues found in the first independent review.
 contract RegressionsTest is Base {
@@ -520,10 +526,11 @@ contract RegressionsTest is Base {
         vm.prank(carol);
         ticketRaffle.buy{value: 0.5 ether}(id, 5);
 
-        skip(9 days); // nobody closed it for more than a week
+        skip(1 days + 6 days + 12 hours); // closed late, half a day before the abort time
         ticketRaffle.close(id);
+        skip(12 hours); // a week after the end: the answer to the draw is still awaited
         vm.prank(bob);
-        vm.expectRevert(abi.encodeWithSelector(TicketRaffle.TooEarly.selector, block.timestamp + 1 days));
+        vm.expectRevert(abi.encodeWithSelector(TicketRaffle.TooEarly.selector, block.timestamp + 12 hours));
         ticketRaffle.abort(id);
 
         randomness.fulfill(1, 7); // carol's ticket: the result stands
@@ -555,12 +562,90 @@ contract RegressionsTest is Base {
         lottery.setConfig(address(nft), 0.01 ether, 1 days, true);
         vm.prank(bob);
         uint256 roundId = lottery.buy{value: 0.1 ether}(address(nft), 10);
-        skip(9 days);
+        skip(1 days + 6 days + 12 hours);
         lottery.draw(roundId);
-        vm.expectRevert(abi.encodeWithSelector(Lottery.TooEarly.selector, block.timestamp + 1 days));
+        skip(12 hours);
+        vm.expectRevert(abi.encodeWithSelector(Lottery.TooEarly.selector, block.timestamp + 12 hours));
         lottery.abort(roundId);
         randomness.fulfill(1, 0);
         assertEq(lottery.owedTo(bob), 0.095 ether);
+    }
+
+    // ------------------------------------------------------------------ sixth review
+
+    /// Once a round or raffle is past its abort time, closing it refunds instead of requesting another
+    /// draw, so retrying a draw cannot keep pushing refunds out.
+    function test_drawPastTheAbortTimeGoesStraightToRefunds() public {
+        vm.startPrank(gov);
+        lottery.setConfig(address(nft), 0.01 ether, 1 days, true);
+        ticketRaffle.setCollectionSupport(address(nft), true);
+        vm.stopPrank();
+        vm.prank(bob);
+        uint256 roundId = lottery.buy{value: 0.1 ether}(address(nft), 10);
+        _mintApproved(alice, 1, address(ticketRaffle));
+        vm.prank(alice);
+        uint256 raffleId = ticketRaffle.create(address(nft), 1, 0.1 ether, 1, 10, 1 days);
+        vm.prank(bob);
+        ticketRaffle.buy{value: 0.5 ether}(raffleId, 5);
+
+        skip(9 days);
+        lottery.draw(roundId);
+        ticketRaffle.close(raffleId);
+        assertEq(randomness.lastRequestId(), 0);
+
+        uint256 before = bob.balance;
+        vm.startPrank(bob);
+        lottery.refund(roundId);
+        ticketRaffle.refund(raffleId);
+        vm.stopPrank();
+        assertEq(bob.balance - before, 0.6 ether);
+    }
+
+    /// The lottery only ever accepts the answer to a round's current request, even from a provider
+    /// that numbers its requests from zero.
+    function test_lotteryRejectsAnswersToAbandonedRequestsFromAZeroBasedProvider() public {
+        ZeroBasedRandomness zero = new ZeroBasedRandomness();
+        vm.startPrank(gov);
+        lottery.setRandomness(IRandomnessProvider(address(zero)));
+        lottery.setConfig(address(nft), 0.01 ether, 1 days, true);
+        vm.stopPrank();
+        vm.prank(alice);
+        uint256 roundId = lottery.buy{value: 0.1 ether}(address(nft), 10);
+        skip(1 days);
+        lottery.draw(roundId); // request 0
+        skip(1 days);
+        lottery.resetDraw(roundId);
+        lottery.draw(roundId); // request 1
+
+        vm.expectRevert(Lottery.StaleRequest.selector);
+        zero.fulfill(0, 0);
+        zero.fulfill(1, 0);
+        assertEq(lottery.owedTo(alice), 0.095 ether);
+        vm.expectRevert(Lottery.StaleRequest.selector);
+        zero.fulfill(1, 0);
+    }
+
+    /// The floor recorded at unlock is capped, and a governance unlock clears it.
+    function test_unlockFloorIsCappedAndClearedByGovernanceUnlock() public {
+        uint256 vaultId = _holdingBoughtAt10();
+        skip(180 days);
+        _pushFloor(10_000 ether); // a pumped reading
+        vault.unlock(vaultId);
+        assertEq(vault.unlockFloorOf(vaultId), 208 ether); // 16 x the 13 ETH unlock price
+
+        vm.startPrank(gov);
+        vault.relock(vaultId, block.timestamp + 1 days);
+        vault.governanceUnlock(vaultId);
+        vm.stopPrank();
+        assertEq(vault.unlockFloorOf(vaultId), 0);
+    }
+
+    function test_vrfAdapterRejectsALowCallbackGasLimit() public {
+        ChainlinkVRFRandomness adapter =
+            new ChainlinkVRFRandomness(gov, IVRFCoordinatorV2Plus(address(1)), games, bytes32(0), 1);
+        vm.prank(gov);
+        vm.expectRevert(ChainlinkVRFRandomness.CallbackGasTooLow.selector);
+        adapter.setConfig(bytes32(0), 1, 3, 299_999, false);
     }
 
     /// A prediction market's fee and a raffle's minimum pot are fixed when they are created.
@@ -606,6 +691,21 @@ contract RegressionsTest is Base {
         vm.expectRevert(Marketplace.NotAContract.selector);
         marketplace.setSaleRecorder(ISaleRecorder(address(0xdead)));
         vm.stopPrank();
+    }
+}
+
+/// @dev A randomness provider that numbers its requests from zero.
+contract ZeroBasedRandomness is IRandomnessProvider {
+    uint256 public next;
+    mapping(uint256 => address) public consumerOf;
+
+    function requestRandomness() external returns (uint256 requestId) {
+        requestId = next++;
+        consumerOf[requestId] = msg.sender;
+    }
+
+    function fulfill(uint256 requestId, uint256 word) external {
+        IRandomnessConsumer(consumerOf[requestId]).fulfillRandomness(requestId, word);
     }
 }
 

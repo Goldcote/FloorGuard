@@ -4,7 +4,7 @@
 
 FloorGuard has had no professional audit, no formal verification and no testnet
 soak. The test suite covers the behaviour described in `docs/ARCHITECTURE.md`,
-which is not the same as being safe. Five automated review passes have been run
+which is not the same as being safe. Six automated review passes have been run
 and their findings fixed; [docs/AUDIT.md](docs/AUDIT.md) records them. That is
 not a professional audit.
 
@@ -55,9 +55,10 @@ not a professional audit.
   or `TicketRaffle` is the operator's legal responsibility. The
   bankroll carries variance: a run of player wins can shrink it. The fairness of
   every bet rests on the randomness provider.
-- **Shared randomness subscription.** The deploy script puts the raffle and the
-  games on one Chainlink VRF subscription. Many minimum-size bets can drain it
-  and stall raffle draws. Use separate subscriptions and a `minBet` that covers
+- **Shared randomness subscription.** The deploy script puts all four randomness
+  consumers (vault raffle, games, ticket raffle and lottery) on one Chainlink
+  VRF subscription. Many minimum-size bets can drain it and stall every draw
+  until it is refilled. Use separate subscriptions and a `minBet` that covers
   the cost of a request.
 - **No slippage guard on bets.** The owner can change the games edge (up to 10%)
   between a player signing a bet and it being mined.

@@ -46,7 +46,8 @@ contract Vault is IVault, Ownable2Step, ReentrancyGuard {
     ///         by buyers competing on the way down, not by where the auction starts.
     uint256 public constant AUCTION_START_MULTIPLE = 16;
     uint256 public constant AUCTION_HALF_LIFE = 1 days;
-    /// @notice Time for a price opening at 16 times its reserve to fall to the reserve.
+    /// @notice Time for a price opening at 16 times its reserve to fall to the reserve. An auction that
+    ///         opens higher, because of the floor recorded at unlock, takes longer.
     uint256 public constant AUCTION_DURATION = 4 days;
 
     ITreasury public immutable treasury;
@@ -63,8 +64,9 @@ contract Vault is IVault, Ownable2Step, ReentrancyGuard {
     /// @notice True while a holding's auction runs at prices the owner chose. Only the owner can
     ///         restart or replace such an auction.
     mapping(uint256 vaultId => bool) public isOwnerPriced;
-    /// @notice The oracle floor seen when a holding unlocked on its own. An auction never opens below 16
-    ///         times this, so pushing the oracle down afterwards cannot lower the opening price.
+    /// @notice The oracle floor seen when a holding unlocked on its own, capped at 16 times the unlock
+    ///         price. An auction never opens below 16 times this. Whoever calls `unlock` can influence
+    ///         the oracle at that moment, so `minReserveOf` is the protection to rely on.
     mapping(uint256 vaultId => uint256) public unlockFloorOf;
     /// @notice An owner-set lower bound on the auction reserve of a collection's holdings.
     mapping(address collection => uint256) public minReserveOf;
@@ -137,7 +139,12 @@ contract Vault is IVault, Ownable2Step, ReentrancyGuard {
 
     function unlock(uint256 vaultId) external {
         if (!canUnlock(vaultId)) revert UnlockConditionsNotMet();
-        (, unlockFloorOf[vaultId]) = _tryFloor(holdings[vaultId].collection);
+        // Remember the floor seen now, capped so that a pumped oracle cannot push the opening price of
+        // every later auction out of reach.
+        Holding storage h = holdings[vaultId];
+        (, uint256 floor) = _tryFloor(h.collection);
+        uint256 cap = uint256(h.purchasePrice) * UNLOCK_BPS / BPS * AUCTION_START_MULTIPLE;
+        unlockFloorOf[vaultId] = floor > cap ? cap : floor;
         _unlock(vaultId, false);
     }
 
@@ -145,6 +152,7 @@ contract Vault is IVault, Ownable2Step, ReentrancyGuard {
     function governanceUnlock(uint256 vaultId) external onlyOwner {
         Status status = holdings[vaultId].status;
         if (status != Status.Locked) revert WrongStatus(status);
+        delete unlockFloorOf[vaultId];
         _unlock(vaultId, true);
     }
 

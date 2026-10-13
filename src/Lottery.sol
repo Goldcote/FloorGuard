@@ -156,7 +156,11 @@ contract Lottery is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         if (r.status != Status.Open) revert WrongStatus(r.status);
         if (block.timestamp < r.endTime) revert StillOpen();
 
-        if (r.ticketsSold == 0 || uint256(r.ticketPrice) * r.ticketsSold < minPotOf[roundId]) {
+        // Past the abort time no new draw is requested: retrying a draw must not keep pushing refunds out.
+        if (
+            r.ticketsSold == 0 || uint256(r.ticketPrice) * r.ticketsSold < minPotOf[roundId]
+                || block.timestamp >= r.endTime + ABORT_DELAY
+        ) {
             r.status = Status.Refunding;
             emit RoundRefunding(roundId);
             return;
@@ -176,6 +180,8 @@ contract Lottery is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         uint256 roundId = roundOfRequest[requestId];
         if (roundId == 0) revert StaleRequest();
         Round storage r = rounds[roundId];
+        // only the round's current request is ever accepted, whatever ids the provider hands out
+        if (r.status != Status.Drawing || currentRequest[roundId] != requestId) revert StaleRequest();
         delete roundOfRequest[requestId];
         delete currentRequest[roundId];
 
@@ -289,11 +295,8 @@ contract Lottery is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     }
 
     function _clearRequest(uint256 roundId) private {
-        uint256 requestId = currentRequest[roundId];
-        if (requestId != 0) {
-            delete roundOfRequest[requestId];
-            delete currentRequest[roundId];
-        }
+        delete roundOfRequest[currentRequest[roundId]];
+        delete currentRequest[roundId];
     }
 
     function _send(address to, uint256 amount) private {

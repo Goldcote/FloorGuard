@@ -23,6 +23,9 @@ interface IVRFCoordinatorV2Plus {
 /// @dev Written against the published v2.5 coordinator interface. Not yet tested against a live
 ///      coordinator.
 contract ChainlinkVRFRandomness is IRandomnessProvider, Ownable2Step {
+    /// @notice Lower bound on the callback gas. With less, a player contract could make a losing
+    ///         settlement run out of gas and take the refund instead.
+    uint32 public constant MIN_CALLBACK_GAS = 300_000;
     bytes4 private constant EXTRA_ARGS_V1_TAG = bytes4(keccak256("VRF ExtraArgsV1"));
 
     IVRFCoordinatorV2Plus public immutable coordinator;
@@ -45,6 +48,7 @@ contract ChainlinkVRFRandomness is IRandomnessProvider, Ownable2Step {
 
     error NotConsumer();
     error NotCoordinator();
+    error CallbackGasTooLow();
 
     constructor(
         address owner_,
@@ -87,6 +91,7 @@ contract ChainlinkVRFRandomness is IRandomnessProvider, Ownable2Step {
         uint32 callbackGasLimit_,
         bool nativePayment_
     ) external onlyOwner {
+        if (callbackGasLimit_ < MIN_CALLBACK_GAS) revert CallbackGasTooLow();
         keyHash = keyHash_;
         subscriptionId = subscriptionId_;
         requestConfirmations = requestConfirmations_;

@@ -14,6 +14,7 @@ contest, is required before the contracts hold real funds.
 | Review 2 | Games, project fee share, fixes from review 1 | 2 Medium, 7 Low |
 | Review 3 | TicketRaffle, IPLicenseManager, deploy scripts, fixes from review 2 | 1 High, 5 Medium, 7 Low |
 | Review 5 | Fixes from review 3 and the full-system audit; fresh look at everything | 2 Medium, 8 Low |
+| Review 6 | Slots, Lottery, fixes from review 5, deploy scripts | 1 Medium, 4 Low |
 | Full-system audit | Core contracts and how all modules interact | 1 High, 3 Medium, 6 Low |
 | Static analysis | Slither 0.11.6 on `src/` | No actionable medium or high finding |
 | Web app | Every write flow clicked through with a local test account | 4 bugs fixed |
@@ -22,9 +23,9 @@ Each reviewer worked independently from the code, proved its High findings with
 tests, and reported what it had not verified. No Critical finding was reported
 in any pass.
 
-Test suite at the time of writing: 181 tests (unit, fuzz, stateful invariant and
+Test suite at the time of writing: 193 tests (unit, fuzz, stateful invariant and
 end-to-end). Line coverage of `src/` was 94% when last measured, before the
-slots, lottery and review 5 changes.
+slots, lottery and later changes.
 
 ## High findings, all fixed
 
@@ -51,6 +52,8 @@ Fixed:
 - A holding on auction could not be taken off auction.
 - Anyone could replace an auction the owner had priced with an oracle-priced one.
 - A ticket raffle could be aborted while its draw was pending, vetoing a result.
+- The lottery could pay a round twice with a randomness provider that numbers
+  its requests from zero.
 
 Accepted and documented in [SECURITY.md](../SECURITY.md), not fixed:
 
@@ -72,7 +75,7 @@ The owner is fully trusted. A malicious or compromised owner can take:
 | Treasury | `setSpender` | Every collection budget and the unallocated pool |
 | BuybackEngine | `configureBid` | A collection's budget, by setting a huge bid and selling a junk token |
 | Vault | `startAuctionWithPrices`, `setRaffle` | Every NFT in the Vault |
-| VaultRaffle, Games, TicketRaffle | `setRandomness` | Undrawn prizes and bet outcomes, by choosing the random word |
+| VaultRaffle, Games, TicketRaffle, Lottery | `setRandomness` | Undrawn prizes and bet outcomes, by choosing the random word |
 | Points | `setRate`, `setRaffle` | Unlimited points for itself |
 | PredictionMarket | `setOracle` | Losing stakes, by dictating the price |
 
@@ -114,7 +117,5 @@ and check after every step that:
 - NFT contracts with transfer hooks, blocklists or other non-standard behaviour.
 - The web app's own security (it has been tested for function, not reviewed for
   attacks).
-- Slots and the Lottery contract have tests but have not been through an
-  independent review.
-- The fixes made after review 5 have regression tests but have not been through
+- The fixes made after review 6 have regression tests but have not been through
   another independent pass.
