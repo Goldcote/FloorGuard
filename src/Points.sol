@@ -8,9 +8,9 @@ import {IPoints} from "./interfaces/IFloorGuard.sol";
 /// @notice Non-transferable points earned in proportion to the protocol fees a user generates. Points
 ///         are the weights in vault NFT raffles. Because they follow fees paid, farming them always
 ///         funds buybacks.
-/// @dev Balances live in the leaves of a 16-ary sum tree, so crediting costs `DEPTH + 1` storage writes
-///      and picking a point-weighted random holder costs at most `16 * DEPTH` reads, with no loop over
-///      users.
+/// @dev Earning points is one storage write. Activated balances live in the leaves of a 16-ary sum tree:
+///      activating costs `DEPTH + 1` writes and picking a point-weighted random holder costs at most
+///      `16 * DEPTH` reads, with no loop over users.
 contract Points is IPoints, Ownable2Step {
     uint256 private constant ARITY_BITS = 4;
     uint256 private constant ARITY = 1 << ARITY_BITS;
@@ -25,9 +25,9 @@ contract Points is IPoints, Ownable2Step {
     /// @notice Share of their points a raffle winner keeps.
     uint256 public winnerKeepBps = 2_000;
 
-    /// @notice Number of raffle draws in flight. While non-zero, credits are held back.
+    /// @notice Number of raffle draws in flight. While non-zero, pending points cannot be activated.
     uint256 public freezeCount;
-    /// @notice Credits earned during a draw, not yet counted in `pointsOf` or `totalPoints`.
+    /// @notice Points earned but not yet activated; not counted in `pointsOf` or `totalPoints`.
     mapping(address => uint256) public pendingOf;
 
     address[] private _users;
@@ -36,6 +36,7 @@ contract Points is IPoints, Ownable2Step {
     mapping(uint256 level => mapping(uint256 index => uint256)) private _nodes;
 
     event PointsCredited(address indexed user, address indexed source, uint256 amount);
+    event PointsActivated(address indexed user, uint256 amount);
     event WinnerReset(address indexed user, uint256 kept, uint256 removed);
     event RateSet(address indexed source, uint256 pointsPerEth);
     event RaffleSet(address raffle);
@@ -50,26 +51,40 @@ contract Points is IPoints, Ownable2Step {
     constructor(address owner_) Ownable(owner_) {}
 
     /// @inheritdoc IPoints
-    /// @dev While a raffle draw is in flight the credit is held in `pendingOf` and reaches the tree with
-    ///      the user's next credit or a call to `flush`.
+    /// @dev Costs one storage write, so trades stay cheap. The credit lands in `pendingOf` and only
+    ///      counts in raffles once it has been moved into the tree with `flush`.
     function creditFee(address user, uint256 feeWei) external {
         uint256 rate = rateOf[msg.sender];
         if (rate == 0) revert NotAuthorised();
         uint256 amount = feeWei * rate / 1 ether;
         if (amount == 0) return;
+        pendingOf[user] += amount;
         emit PointsCredited(user, msg.sender, amount);
-
-        if (freezeCount != 0) {
-            pendingOf[user] += amount;
-            return;
-        }
-        _credit(user, amount + pendingOf[user]);
     }
 
-    /// @notice Move a user's held-back credits into the tree. Anyone may call when no draw is in flight.
-    function flush(address user) external {
+    /// @notice Activate a user's pending points so they count in raffles. Anyone may call for anyone,
+    ///         except while a raffle draw is in flight.
+    function flush(address user) public {
         if (freezeCount != 0) revert Frozen();
-        if (pendingOf[user] != 0) _credit(user, pendingOf[user]);
+        uint256 amount = pendingOf[user];
+        if (amount == 0) return;
+        delete pendingOf[user];
+
+        uint256 index = _indexPlusOne[user];
+        if (index == 0) {
+            if (_users.length == MAX_USERS) revert TooManyUsers();
+            _users.push(user);
+            index = _users.length;
+            _indexPlusOne[user] = index;
+        }
+        _update(index - 1, amount, true);
+        emit PointsActivated(user, amount);
+    }
+
+    function flushMany(address[] calldata users) external {
+        for (uint256 i; i < users.length; ++i) {
+            flush(users[i]);
+        }
     }
 
     /// @inheritdoc IPoints
@@ -84,18 +99,7 @@ contract Points is IPoints, Ownable2Step {
         --freezeCount;
     }
 
-    function _credit(address user, uint256 amount) private {
-        delete pendingOf[user];
-        uint256 index = _indexPlusOne[user];
-        if (index == 0) {
-            if (_users.length == MAX_USERS) revert TooManyUsers();
-            _users.push(user);
-            index = _users.length;
-            _indexPlusOne[user] = index;
-        }
-        _update(index - 1, amount, true);
-    }
-
+    /// @notice Activated points: the user's weight in raffles.
     function pointsOf(address user) public view returns (uint256) {
         uint256 index = _indexPlusOne[user];
         return index == 0 ? 0 : _nodes[0][index - 1];

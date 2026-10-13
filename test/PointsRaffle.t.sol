@@ -18,6 +18,7 @@ contract PointsTest is Base {
     function _credit(address user, uint256 feeWei) internal {
         vm.prank(source);
         points.creditFee(user, feeWei);
+        points.flush(user);
     }
 
     function test_credit_scalesWithFeeAndAccumulates() public {
@@ -28,6 +29,23 @@ contract PointsTest is Base {
         assertEq(points.pointsOf(bob), 1_000e18);
         assertEq(points.totalPoints(), 1_750e18);
         assertEq(points.userCount(), 2);
+    }
+
+    function test_credit_staysPendingUntilFlushed() public {
+        vm.prank(source);
+        points.creditFee(alice, 1 ether);
+        assertEq(points.pendingOf(alice), 1_000e18);
+        assertEq(points.pointsOf(alice), 0);
+        assertEq(points.totalPoints(), 0);
+
+        address[] memory users = new address[](2);
+        users[0] = alice;
+        users[1] = bob; // nothing pending: skipped
+        vm.prank(carol); // anyone may activate for anyone
+        points.flushMany(users);
+        assertEq(points.pendingOf(alice), 0);
+        assertEq(points.pointsOf(alice), 1_000e18);
+        assertEq(points.userCount(), 1);
     }
 
     function test_credit_onlyAuthorisedSources() public {
@@ -144,7 +162,7 @@ contract VaultRaffleTest is Base {
     }
 
     function test_draw_waitsForAnnouncePeriodAndPoints() public {
-        points.creditFee(bob, 1 ether);
+        _earn(bob, 1 ether);
         vm.expectRevert(abi.encodeWithSelector(VaultRaffle.TooEarly.selector, block.timestamp + 7 days));
         raffle.draw(raffleId);
 
@@ -160,8 +178,8 @@ contract VaultRaffleTest is Base {
     }
 
     function test_fullRaffle_weightedWinnerGetsNftAndLosesPoints() public {
-        points.creditFee(bob, 1 ether); // points 0 .. 999
-        points.creditFee(carol, 3 ether); // points 1000 .. 3999
+        _earn(bob, 1 ether); // points 0 .. 999
+        _earn(carol, 3 ether); // points 1000 .. 3999
         skip(7 days);
         raffle.draw(raffleId);
         randomness.fulfill(1, 2_500e18);
@@ -180,7 +198,7 @@ contract VaultRaffleTest is Base {
     }
 
     function test_fulfill_onlyRandomnessProviderAndOnlyOnce() public {
-        points.creditFee(bob, 1 ether);
+        _earn(bob, 1 ether);
         skip(7 days);
         raffle.draw(raffleId);
 
@@ -194,7 +212,7 @@ contract VaultRaffleTest is Base {
     }
 
     function test_resetDraw_reopensAfterTimeout() public {
-        points.creditFee(bob, 1 ether);
+        _earn(bob, 1 ether);
         skip(7 days);
         raffle.draw(raffleId);
 

@@ -116,11 +116,11 @@ contract PredictionMarketTest is Base {
         prediction.claim(marketId);
         assertEq(bob.balance, before);
         // bob's stake funds 3% of 2 ETH in fees
-        assertEq(points.pointsOf(bob), 0.06 ether * POINTS_RATE / 1 ether);
+        assertEq(points.pendingOf(bob), 0.06 ether * POINTS_RATE / 1 ether);
 
         vm.prank(alice);
         prediction.claim(marketId);
-        assertEq(points.pointsOf(alice), 0.06 ether * POINTS_RATE / 1 ether);
+        assertEq(points.pendingOf(alice), 0.06 ether * POINTS_RATE / 1 ether);
     }
 
     function test_claim_onlyOnceAndOnlyWithStake() public {
