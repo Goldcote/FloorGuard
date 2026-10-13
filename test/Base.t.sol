@@ -70,6 +70,8 @@ abstract contract Base is Test {
         nft = new MockNFT();
         vm.prank(gov);
         prediction.setCollectionSupport(address(nft), true);
+        vm.prank(gov);
+        marketplace.setCollectionSupport(address(nft), true);
         vm.deal(alice, 1_000 ether);
         vm.deal(bob, 1_000 ether);
         vm.deal(carol, 1_000 ether);

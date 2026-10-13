@@ -33,6 +33,7 @@ contract SeedLocal is Script {
         for (uint256 tokenId = 1; tokenId <= 10; ++tokenId) {
             nft.mint(deployer, tokenId);
         }
+        marketplace.setCollectionSupport(address(nft), true);
         nft.setApprovalForAll(address(marketplace), true);
         nft.setApprovalForAll(address(engine), true);
 

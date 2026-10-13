@@ -89,17 +89,17 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
 
     // ------------------------------------------------------------------ markets
 
-    /// @notice Open a market on a supported collection. Betting runs for `bettingPeriod`; the market
-    ///         settles on the floor price `duration` after creation.
+    /// @notice Open a market on a supported collection. Betting runs for `bettingPeriod`, at most half of
+    ///         `duration`; the market settles on a floor price published at or after `duration`.
     function createMarket(address collection, uint256 bettingPeriod, uint256 duration)
         external
         returns (uint256 marketId)
     {
         if (!isSupported[collection]) revert UnsupportedCollection();
-        if (bettingPeriod < MIN_BETTING_PERIOD || duration <= bettingPeriod || duration > MAX_DURATION) {
+        if (bettingPeriod < MIN_BETTING_PERIOD || duration < 2 * bettingPeriod || duration > MAX_DURATION) {
             revert InvalidDuration();
         }
-        (bool fresh, uint256 price) = _tryFloor(collection);
+        (bool fresh, uint256 price,) = _tryFloor(collection);
         if (!fresh) revert OracleUnavailable();
 
         marketId = ++marketCount;
@@ -139,8 +139,11 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
         if (m.higherPool == 0 || m.lowerPool == 0) {
             outcome = Outcome.Void;
         } else {
+            // the settlement price must have been published after the market's settlement time
             bool fresh;
-            (fresh, endPrice) = _tryFloor(m.collection);
+            uint256 updatedAt;
+            (fresh, endPrice, updatedAt) = _tryFloor(m.collection);
+            fresh = fresh && updatedAt >= m.resolveTime;
             if (!fresh) {
                 if (block.timestamp < uint256(m.resolveTime) + VOID_GRACE) revert OracleUnavailable();
                 outcome = Outcome.Void;
@@ -185,7 +188,10 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
 
         emit Claimed(marketId, msg.sender, payout, fee);
         if (fee != 0) treasury.deposit{value: fee}(m.collection);
-        if (pointsFee != 0 && address(points) != address(0)) points.creditFee(msg.sender, pointsFee);
+        if (pointsFee != 0 && address(points) != address(0)) {
+            // points are a bonus; a failure there must never block a payout
+            try points.creditFee(msg.sender, pointsFee) {} catch {}
+        }
         if (payout != 0) {
             (bool ok,) = msg.sender.call{value: payout}("");
             if (!ok) revert TransferFailed();
@@ -218,11 +224,15 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
         emit PointsSet(address(points_));
     }
 
-    function _tryFloor(address collection) private view returns (bool fresh, uint256 price) {
-        try oracle.floorPrice(collection) returns (uint256 p, uint256 updatedAt) {
-            return (p != 0 && updatedAt + maxOracleAge >= block.timestamp, p);
+    function _tryFloor(address collection)
+        private
+        view
+        returns (bool fresh, uint256 price, uint256 updatedAt)
+    {
+        try oracle.floorPrice(collection) returns (uint256 p, uint256 at) {
+            return (p != 0 && at + maxOracleAge >= block.timestamp, p, at);
         } catch {
-            return (false, 0);
+            return (false, 0, 0);
         }
     }
 }
