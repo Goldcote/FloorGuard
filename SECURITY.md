@@ -36,6 +36,12 @@ professional audit.
   settlement time. If nobody resolves promptly, whoever benefits can wait for a
   price they like. Someone has to call `resolve` as soon as the first price after
   settlement is published.
+- **Other things that need a keeper.** A ticket raffle with a winner has to be
+  settled within a week of its draw or anyone can turn it into refunds. A
+  lottery round or raffle not drawn within a week of its end is refunded. A
+  prediction market's settlement price is rejected once it is a day old, so a
+  market has to be resolved within a day of that price. `keeper/` is a bot that
+  does all of this; it has not been run on a public network.
 - **Points need activating.** Pending points do not count in a raffle. Someone
   has to call `flushMany` for holders before each draw, or holders must activate
   their own.

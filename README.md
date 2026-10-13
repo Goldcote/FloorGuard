@@ -72,6 +72,7 @@ explains how the games' results can be checked.
 | Chainlink VRF adapter | Written, not tested against a live coordinator |
 | Deployment | Local chain only; simulated on Base Sepolia, not broadcast. See [docs/TESTNET.md](docs/TESTNET.md) |
 | Web app in `app/` | Reads and transactions tested against a local chain; not yet tested with a browser wallet. See [app/README.md](app/README.md) |
+| Keeper bot in `keeper/` | Tested end to end on a local chain; not run on a public network |
 | Audit | None |
 
 A governance token from the concept document is not built. The full list is at the end of the architecture document.
@@ -122,6 +123,7 @@ src/            contracts
 test/           unit, fuzz, invariant and end-to-end tests
 script/         deployment and local seeding
 app/            web front end
+keeper/         bot for the maintenance calls anyone may make
 docs/           architecture and the original concept documents
 ```
 

@@ -198,7 +198,13 @@ contract VaultTest is Base {
         vm.expectRevert(Vault.AuctionRunning.selector);
         vault.startAuction(vaultId);
 
-        skip(4 days);
+        skip(4 days); // the price has just reached the reserve
+        _pushFloor(20 ether);
+        vm.prank(carol);
+        vm.expectRevert(Vault.AuctionRunning.selector); // it must rest there for a day first
+        vault.startAuction(vaultId);
+
+        skip(1 days);
         _pushFloor(20 ether); // floor rose while the auction sat at 13
         vm.prank(carol);
         vault.startAuction(vaultId);

@@ -159,6 +159,8 @@ contract Deploy is Script {
         vm.serializeAddress(key, "lottery", address(d.lottery));
         vm.serializeAddress(key, "lotteryRandomness", d.lotteryRandomness);
         vm.serializeAddress(key, "timelock", d.timelock);
+        // the block to start reading events from; the app and the keeper need it
+        vm.serializeUint(key, "deployBlock", block.number);
         string memory json = vm.serializeAddress(key, "owner", owner);
         string memory path = string.concat("deployments/", vm.toString(block.chainid), ".json");
         vm.writeJson(json, path);

@@ -455,6 +455,12 @@ contract RegressionsTest is Base {
         _pushFloor(13 ether);
         assertEq(vault.auctionPrice(vaultId), 13 ether);
         vm.prank(carol);
+        vm.expectRevert(Vault.AuctionRunning.selector); // it must rest at the reserve for a day first
+        vault.startAuction(vaultId);
+
+        skip(1 days);
+        _pushFloor(13 ether);
+        vm.prank(carol);
         vault.startAuction(vaultId);
     }
 
@@ -510,6 +516,10 @@ contract RegressionsTest is Base {
         vm.expectRevert(VaultRaffle.DrawInFlight.selector);
         raffle.draw(second);
         randomness.fulfill(1, 0);
+        // after a draw ends there is an hour in which points can be activated before the next
+        vm.expectRevert(abi.encodeWithSelector(VaultRaffle.TooEarly.selector, block.timestamp + 1 hours));
+        raffle.draw(second);
+        skip(1 hours);
         raffle.draw(second);
     }
 

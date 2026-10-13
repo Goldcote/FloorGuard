@@ -46,6 +46,8 @@ contract Vault is IVault, Ownable2Step, ReentrancyGuard {
     ///         by buyers competing on the way down, not by where the auction starts.
     uint256 public constant AUCTION_START_MULTIPLE = 16;
     uint256 public constant AUCTION_HALF_LIFE = 1 days;
+    /// @notice How long an unsold auction rests at its end price before it can be restarted.
+    uint256 public constant AUCTION_RESTART_DWELL = 1 days;
     /// @notice Time for a price opening at 16 times its reserve to fall to the reserve. An auction that
     ///         opens higher, because of the floor recorded at unlock, takes longer.
     uint256 public constant AUCTION_DURATION = 4 days;
@@ -277,11 +279,26 @@ contract Vault is IVault, Ownable2Step, ReentrancyGuard {
     ///      its end price without a buyer. Only the owner can replace an owner-priced auction.
     function _checkAuctionable(uint256 vaultId, Holding memory h) private view {
         if (h.status == Status.Auction) {
-            if (auctionPrice(vaultId) > auctions[vaultId].endPrice) revert AuctionRunning();
+            // An auction can be restarted once it has rested at its end price for a day, so that buyers
+            // get a real chance at that price before it jumps back up.
+            if (block.timestamp < _reachesEndAt(auctions[vaultId]) + AUCTION_RESTART_DWELL) {
+                revert AuctionRunning();
+            }
             if (isOwnerPriced[vaultId] && msg.sender != owner()) revert OwnerPricedAuction();
         } else if (h.status != Status.Unlocked) {
             revert WrongStatus(h.status);
         }
+    }
+
+    /// @dev The time at which an auction's price first equals its end price.
+    function _reachesEndAt(Auction memory a) private pure returns (uint256) {
+        uint256 halvings;
+        uint256 price = a.startPrice;
+        while (price > a.endPrice && halvings < 128) {
+            price >>= 1;
+            ++halvings;
+        }
+        return a.startTime + halvings * AUCTION_HALF_LIFE;
     }
 
     function _startAuction(uint256 vaultId, uint256 startPrice, uint256 endPrice) private {

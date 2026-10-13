@@ -44,7 +44,7 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     ///         set this to several times the points one prize's worth of fees would earn.
     uint256 public minPointsToDraw;
 
-    /// @notice After any draw is reset, no draw can be requested before this time. Together with the
+    /// @notice After any draw ends, with a winner or a reset, no draw can be requested before this time. Together with the
     ///         rule of one draw at a time, this leaves a window in which points can be activated.
     uint256 public nextDrawAt;
 
@@ -140,6 +140,8 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
         r.status = Status.Won;
         points.resetWinner(winner);
         points.unfreeze();
+        // leave a window for points to be activated before the next raffle is drawn
+        nextDrawAt = block.timestamp + REDRAW_COOLDOWN;
         emit WinnerDrawn(raffleId, winner);
     }
 

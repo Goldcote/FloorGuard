@@ -339,6 +339,7 @@ contract Review8MiscTest is Base {
 
         raffle.draw(first);
         randomness.fulfill(randomness.lastRequestId(), 0);
+        skip(1 hours); // the cooldown after a draw
         assertEq(points.totalPoints(), 120e18); // bob won and kept 20%
 
         vm.expectRevert(abi.encodeWithSelector(VaultRaffle.BelowMinPoints.selector, 120e18, 500e18));

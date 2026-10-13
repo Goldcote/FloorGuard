@@ -209,8 +209,8 @@ Each buyback creates a holding with its purchase price and time.
   the market is more than 16 times that opening basis. Whoever calls `unlock`
   can influence the oracle at that moment, so the recorded floor is a help, not
   a guarantee: the owner-set `minReserveOf` is the protection to rely on.
-- An oracle-priced auction whose price has fallen to its reserve without a buyer
-  can be restarted by anyone, at fresh oracle prices. Proceeds go to the
+- An oracle-priced auction that has rested at its reserve for a day without a
+  buyer can be restarted by anyone, at fresh oracle prices. Proceeds go to the
   collection's budget.
 - `startAuctionWithPrices` lets the owner choose the prices, for example to exit
   a collection that has collapsed or whose oracle is dead. Only the owner can
@@ -382,7 +382,8 @@ random point reads at most 96 slots and never loops over users.
 
 `VaultRaffle.draw` requests randomness once the seven-day announce period has
 passed, and freezes point weights until the randomness arrives. Only one draw
-can be in flight at a time. Points cannot be
+can be in flight at a time, and after any draw ends there is an hour before the
+next can be requested, so points can be activated in between. Points cannot be
 activated in that window, so they count from the next raffle. Without the
 freeze, anyone who saw the random word before it landed could add just enough
 points to steer the result. The winner keeps 20% of their points. Randomness
