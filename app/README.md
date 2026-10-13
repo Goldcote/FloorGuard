@@ -4,9 +4,53 @@ Web front end for the FloorGuard protocol: Vite + React + TypeScript, wagmi v2 +
 
 > Unaudited experimental software. Do not use with real funds.
 
-It connects through an injected browser wallet, or, on the local anvil chain only, through one of
-anvil's unlocked test accounts (see below). There is no WalletConnect, no analytics and no backend: the only network requests are JSON-RPC calls to the selected chain (the local anvil node, or
-Base Sepolia).
+It has two modes, switched in the header:
+
+- **Demo** (the default when no local chain answers): a simulated protocol that runs entirely in the
+  browser tab, with play money and no wallet. It follows the contracts' rules through the same maths
+  module the live path uses (`src/lib/gameMath.ts`), settles with a seeded pseudo-random generator,
+  and runs its clock 600 times faster than real time so rounds end while you watch. It is labelled
+  "Demo: simulated, no real transactions, play money" on every page and is not fair play.
+- **Live**: a real chain through wagmi and viem. The only network requests are JSON-RPC calls to the
+  selected chain. There is no analytics, no CDN, no remote font or image, and no backend.
+
+The pages (hash routes, each a lazy chunk): `#/` landing · `#/app` overview · Trade (marketplace,
+floor bid) · Vault (holdings and auctions, licences, vault raffles) · Play (dice, slots, lottery,
+ticket raffles, predictions) · Fairness. Design decisions are recorded in [DESIGN.md](DESIGN.md).
+
+## Wallets and chains
+
+- **Browser wallets** are discovered through EIP-6963 and listed by their own name and icon (Rabby
+  first when present). The generic "Browser wallet" entry appears only when no wallet announced
+  itself. A MetaMask-branded entry whose provider is really Rabby is hidden when Rabby is listed too.
+  The last wallet reconnects on reload.
+- **Local test account** (chain 31337 only): see below. It never reconnects by itself.
+- **Safe**: when the app runs inside an iframe (opened as a Safe App), wagmi's `safe` connector is
+  added. It talks to the parent Safe window by `postMessage`; it is not created otherwise.
+- **WalletConnect** is off unless `VITE_WALLETCONNECT_PROJECT_ID` is set at build time. When enabled,
+  using it loads the WalletConnect SDK (a separate chunk bundled with the app) which connects to
+  WalletConnect/Reown's relay and API servers and may load its modal's assets from their servers.
+  Those are third-party network calls; the exact list is theirs and has not been audited here.
+- **Chains**: anvil, Ethereum, Sepolia, Base and Base Sepolia, each on its public RPC unless
+  `VITE_MAINNET_RPC_URL`, `VITE_SEPOLIA_RPC_URL`, `VITE_BASE_RPC_URL` or `VITE_BASE_SEPOLIA_RPC_URL`
+  is set. A chain without a `deployments/<chainId>.json` shows "No deployment found for this chain"
+  and is never queried.
+
+Real Rabby and MetaMask extensions have not been tested. For development, opening the dev server with
+`?mock-wallets` in the URL (for example `http://localhost:5173/?mock-wallets#/app`) announces two
+fake EIP-6963 wallets named like Rabby and MetaMask that proxy to anvil's unlocked accounts;
+`?mock-wallets=impersonate` adds a MetaMask-branded entry backed by the fake Rabby. The module
+(`src/dev/mockWallets.ts`) is not part of a production build.
+
+## Fairness and Verify
+
+Every settled bet, spin, lottery round and ticket raffle has a **Verify** button: it reads the
+events, recomputes the payout step by step in the browser and shows it next to what the contract
+paid, with the settlement transaction (linked to the block explorer on chains that have one). The
+**Fairness** page explains the rules from `docs/FAIRNESS.md` and shows, for the connected chain, each
+module's randomness provider and whether it is the local mock, who owns Games and whether that is a
+contract, and the current edge, fees and limits. On a chain whose provider is the mock, every game
+screen says so. Vault raffle draws emit only the winner, so they cannot be recomputed.
 
 ## Run against a local anvil chain
 
@@ -33,6 +77,9 @@ npm install
 npm run sync   # picks up deployments/31337.json and the current ABIs
 npm run dev    # http://localhost:5173
 ```
+
+With anvil deployed and reachable, a first visit starts in Live mode; otherwise it starts in the demo.
+The choice made with the Demo/Live switch is remembered.
 
 ### Local test account (no browser wallet needed)
 
@@ -71,7 +118,16 @@ Things to know on a local chain:
   can be drawn 7 days after it opens, and only once someone has activated points; a prediction market
   resolves only with an oracle price pushed after its resolve time.
 
-## Games tab
+## Games (Play)
+
+Dice and slots are separate pages over the same house bankroll; the lottery has its own page. The
+slots page states that the reels illustrate the roll and the payout comes from the contract: the line
+shown is derived from the settled roll alone and never stages a near miss. Only a result that pays
+more than the wager is presented as a win; a 1x result is shown as "stake returned". The session's
+wagered, paid back and net figures stay on screen. Sound (WebAudio, no files) is off until turned on
+in the header.
+
+## Dice (formerly the Games tab)
 
 Dice and coinflip against the house bankroll (`Games.sol`), backing the selected collection: the edge on
 every wager is a protocol fee for that collection. The tab shows the bankroll, the edge, the funds
@@ -170,7 +226,9 @@ npm run build       # typecheck + production build into dist/
 npm test            # integration test, see below
 ```
 
-`npm test` runs `test/anvil.test.ts` against a freshly deployed and seeded anvil (the steps above; it
+`npm test` runs four files. `test/fairness.test.ts` (payout recomputation), `test/wallets.test.ts`
+(wallet menu ordering) and `test/demo.test.ts` (the demo simulator against the shared maths) need no
+chain. `test/anvil.test.ts` runs against a freshly deployed and seeded anvil (the steps above; it
 asserts on the seeded state, so do not click around in the app first). It
 calls every read function behind the UI and sends every transaction the UI can build from anvil's
 unlocked accounts, then asserts on the results and on the decoded custom errors. It snapshots the chain
@@ -185,10 +243,13 @@ src/generated/               generated, checked in
 src/lib/reads.ts             every on-chain read, as plain functions over a viem client
 src/lib/calls.ts             every transaction the UI sends, as plain builders
 src/lib/errors.ts            custom error -> readable message
-src/hooks.ts                 react-query wrappers around lib/reads.ts (5 s polling)
-src/tx.tsx                   transaction runner: simulate, sign, wait, with pending/success/error panel
+src/lib/gameMath.ts          fee, stake, dice payout, slots table, pot split: used by live and demo
+src/demo/                    demo mode: the in-browser simulated protocol and the mode switch
+src/routes.ts                hash routes; src/theme.ts light/dark; src/brand.tsx logo and floor line
+src/WalletMenu.tsx           wallet picker and chain selector; src/lib/wallets.ts its ordering rules
+src/hooks.ts                 react-query wrappers around lib/reads.ts (5 s polling; 1 s in the demo)
+src/tx.tsx                   transaction runner: review dialog, simulate, sign, wait, result
 src/localWallet.ts           local-only connector for anvil's unlocked accounts
-src/tabs/                    Overview, Marketplace, Floor bid, Predictions, Games, Ticket raffles,
-                             Vault (with Licences), Vault raffles
-test/anvil.test.ts           integration test against anvil
+src/tabs/                    one file per page, plus Verify.tsx and gamesShared.tsx
+test/                        anvil integration test and three chain-free unit test files
 ```

@@ -1,22 +1,26 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { Abi, Hash } from "viem";
-import { useAccount, useChainId, useConfig, useSwitchChain } from "wagmi";
+import { useAccount, useChainId, useChains, useConfig, useSwitchChain } from "wagmi";
 import { simulateContract, waitForTransactionReceipt, writeContract } from "wagmi/actions";
 import { errorsAbi } from "./generated/abis";
 import type { Call } from "./lib/calls";
 import { decodeError } from "./lib/errors";
-import { QUERY_ROOT } from "./hooks";
+import { demoWrite } from "./demo/sim";
+import { QUERY_ROOT, useProtocol } from "./hooks";
+import { Modal } from "./ui";
 
-/** How long a confirmed action stays in the panel. */
-const SUCCESS_VISIBLE_MS = 6_000;
+/** How long the dialog shows a confirmation before closing by itself. */
+const SUCCESS_VISIBLE_MS = 1_600;
 
-type Status = "preparing" | "wallet" | "confirming" | "success" | "error";
+type Status = "review" | "preparing" | "wallet" | "confirming" | "success" | "error";
 
 export type TxEntry = {
   id: number;
   /** The user-level action, e.g. "Accept offer #3". */
   title: string;
+  /** What will happen, shown before anything is signed: amounts, who receives what, approval steps. */
+  details: readonly string[];
   /** The transaction currently in flight within the action, e.g. "Approve marketplace". */
   step?: string;
   status: Status;
@@ -28,35 +32,81 @@ export type TxEntry = {
 export type Send = (step: string, call: Call) => Promise<void>;
 
 type TxContextValue = {
-  entries: TxEntry[];
-  /** True while an action is in flight; action buttons disable themselves. */
+  /** True from the moment an action is opened for review until it has finished. */
   busy: boolean;
-  /** Run an action of one or more transactions. Never throws: failures land in `entries`. */
-  run: (title: string, action: (send: Send) => Promise<void>) => Promise<void>;
-  dismiss: (id: number) => void;
+  /** The latest finished actions, newest first. */
+  history: TxEntry[];
+  /**
+   * Review, then run, an action of one or more transactions. `details` is what the user reads before
+   * confirming. Never throws: a failure is shown in the dialog.
+   */
+  run: (title: string, action: (send: Send) => Promise<void>, details?: readonly string[], options?: { quickInDemo?: boolean }) => Promise<void>;
 };
 
 const TxContext = createContext<TxContextValue | null>(null);
+
+const STATUS_TEXT: Record<Exclude<Status, "review">, string> = {
+  preparing: "Checking…",
+  wallet: "Waiting for your wallet…",
+  confirming: "Waiting for confirmation…",
+  success: "Confirmed",
+  error: "Failed",
+};
 
 export function TxProvider({ children }: { children: ReactNode }) {
   const config = useConfig();
   const queryClient = useQueryClient();
   const chainId = useChainId();
+  const chains = useChains();
   const account = useAccount();
+  const { demo, user } = useProtocol();
   const { switchChainAsync } = useSwitchChain();
-  const [entries, setEntries] = useState<TxEntry[]>([]);
-  const [busy, setBusy] = useState(false);
+  const [current, setCurrent] = useState<TxEntry>();
+  const [history, setHistory] = useState<TxEntry[]>([]);
   const nextId = useRef(1);
+  const decision = useRef<(confirmed: boolean) => void>();
+
+  const chainName = chains.find((chain) => chain.id === chainId)?.name ?? `chain ${chainId}`;
 
   const run = useCallback<TxContextValue["run"]>(
-    async (title, action) => {
+    async (title, action, details = [], options = {}) => {
       const id = nextId.current++;
-      const update = (patch: Partial<TxEntry>) =>
-        setEntries((list) => list.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)));
-      setEntries((list) => [{ id, title, status: "preparing" as const }, ...list].slice(0, 4));
-      setBusy(true);
+      if (demo && options.quickInDemo) {
+        // A demo bet: nothing is signed, and the cost is on screen next to the button, so the game
+        // is not interrupted by a dialog. A refusal is still shown.
+        try {
+          await action(async (_step, call) => {
+            await demoWrite(call);
+            await queryClient.invalidateQueries({ queryKey: [QUERY_ROOT] });
+          });
+        } catch (error) {
+          setCurrent({ id, title, details: [], status: "error", error: decodeError(error).message });
+        }
+        return;
+      }
+      let entry: TxEntry = { id, title, details, status: "review" };
+      const update = (patch: Partial<TxEntry>) => {
+        entry = { ...entry, ...patch };
+        setCurrent(entry);
+      };
+      setCurrent(entry);
+
+      const confirmed = await new Promise<boolean>((resolve) => {
+        decision.current = resolve;
+      });
+      if (!confirmed) {
+        setCurrent(undefined);
+        return;
+      }
 
       const send: Send = async (step, call) => {
+        if (demo) {
+          // Demo mode: nothing is signed or sent; the simulated protocol applies the same call.
+          update({ step, status: "confirming", hash: undefined });
+          await demoWrite(call);
+          await queryClient.invalidateQueries({ queryKey: [QUERY_ROOT] });
+          return;
+        }
         if (!account.address) throw new Error("Connect a wallet first.");
         update({ step, status: "preparing", hash: undefined });
         if (account.chainId !== chainId) await switchChainAsync({ chainId });
@@ -82,24 +132,84 @@ export function TxProvider({ children }: { children: ReactNode }) {
       };
 
       try {
+        update({ status: "preparing" });
         await action(send);
         update({ status: "success" });
-        // The panel floats over the page; a confirmation must not keep covering the buttons under
-        // it. Failures stay until dismissed.
-        setTimeout(() => setEntries((list) => list.filter((entry) => entry.id !== id)), SUCCESS_VISIBLE_MS);
+        setTimeout(() => setCurrent((shown) => (shown?.id === id ? undefined : shown)), SUCCESS_VISIBLE_MS);
       } catch (error) {
         console.error(error);
         update({ status: "error", error: decodeError(error).message });
-      } finally {
-        setBusy(false);
       }
+      setHistory((list) => [entry, ...list].slice(0, 5));
     },
-    [account.address, account.chainId, chainId, config, queryClient, switchChainAsync],
+    [account.address, account.chainId, chainId, config, demo, queryClient, switchChainAsync],
   );
 
-  const dismiss = useCallback((id: number) => setEntries((list) => list.filter((e) => e.id !== id)), []);
-  const value = useMemo(() => ({ entries, busy, run, dismiss }), [entries, busy, run, dismiss]);
-  return <TxContext.Provider value={value}>{children}</TxContext.Provider>;
+  const busy = !!current && current.status !== "success" && current.status !== "error";
+  const value = useMemo(() => ({ busy, history, run }), [busy, history, run]);
+  const inFlight = !!current && (current.status === "preparing" || current.status === "wallet" || current.status === "confirming");
+
+  const close = () => {
+    if (current?.status === "review") decision.current?.(false);
+    else setCurrent(undefined);
+  };
+
+  return (
+    <TxContext.Provider value={value}>
+      {children}
+      <Modal open={!!current} onClose={close} title={current?.title ?? ""} dismissible={!inFlight}>
+        {current && (
+          <div className={`tx-dialog tx-${current.status}`}>
+            {current.details.length > 0 && (
+              <ul className="tx-details">
+                {current.details.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            )}
+            {current.status === "review" ? (
+              <>
+                <p className={demo ? "demo-note small" : "muted small"}>
+                  {demo
+                    ? "Demo: simulated in this browser with play money. Nothing is signed or sent."
+                    : `On ${chainName}, from ${user ?? "your wallet"}. The transaction is simulated first; if it would fail you will see why before anything is signed.`}
+                </p>
+                <div className="modal-actions">
+                  <button type="button" className="btn secondary" onClick={() => decision.current?.(false)}>
+                    Cancel
+                  </button>
+                  <button type="button" className="btn" autoFocus onClick={() => decision.current?.(true)}>
+                    Confirm
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="tx-status" role="status" aria-live="polite">
+                  {inFlight && <span className="spinner" aria-hidden="true" />}
+                  <strong>{STATUS_TEXT[current.status]}</strong>
+                  {current.step && current.status !== "success" && <span className="muted">{current.step}</span>}
+                </div>
+                {current.error && (
+                  <p className="tx-message" role="alert">
+                    {current.error}
+                  </p>
+                )}
+                {current.hash && <code className="tx-hash">{current.hash}</code>}
+                {!inFlight && (
+                  <div className="modal-actions">
+                    <button type="button" className="btn secondary" autoFocus onClick={close}>
+                      Close
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </Modal>
+    </TxContext.Provider>
+  );
 }
 
 export function useTx(): TxContextValue {
@@ -108,37 +218,25 @@ export function useTx(): TxContextValue {
   return value;
 }
 
-const STATUS_TEXT: Record<Status, string> = {
-  preparing: "Preparing…",
-  wallet: "Confirm in your wallet…",
-  confirming: "Waiting for confirmation…",
-  success: "Confirmed",
-  error: "Failed",
-};
-
-/** Fixed panel listing the latest actions with their pending / success / error state. */
-export function TxPanel() {
-  const { entries, dismiss } = useTx();
-  if (entries.length === 0) return null;
+/** The last few actions and how they ended, in normal page flow so it never covers a control. */
+export function TxHistory() {
+  const { history } = useTx();
+  if (history.length === 0) return null;
   return (
-    <div className="tx-panel" aria-live="polite">
-      {entries.map((entry) => (
-        <div key={entry.id} className={`tx tx-${entry.status}`}>
-          <div className="tx-head">
-            <strong>{entry.title}</strong>
-            <button className="link" onClick={() => dismiss(entry.id)} aria-label="Dismiss">
-              ×
-            </button>
-          </div>
-          <div className="tx-status">
-            {entry.status !== "success" && entry.status !== "error" && <span className="spinner" />}
-            {STATUS_TEXT[entry.status]}
-            {entry.step && entry.status !== "success" ? ` (${entry.step})` : ""}
-          </div>
-          {entry.error && <div className="tx-message">{entry.error}</div>}
-          {entry.hash && <code className="tx-hash">{entry.hash}</code>}
-        </div>
-      ))}
-    </div>
+    <details className="tx-history">
+      <summary>
+        Recent transactions ({history.length}): last one {history[0].status === "success" ? "confirmed" : "failed"}
+      </summary>
+      <ul>
+        {history.map((entry) => (
+          <li key={entry.id}>
+            <span className={entry.status === "success" ? "ok" : "error"}>{entry.status === "success" ? "Confirmed" : "Failed"}</span>{" "}
+            {entry.title}
+            {entry.error && <span className="muted">: {entry.error}</span>}
+            {entry.hash && <code className="tx-hash">{entry.hash}</code>}
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }

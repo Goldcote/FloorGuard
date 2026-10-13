@@ -6,7 +6,7 @@ import { bps, dateTime, duration, eth, relative } from "../lib/format";
 import { parseEth } from "../lib/parse";
 import { impliedMultiple, Outcome, OUTCOME_NAMES, readMarkets, type Market } from "../lib/reads";
 import { useTx } from "../tx";
-import { ActionButton, Addr, Badge, Card, Field, QueryView, Stat } from "../ui";
+import { ActionButton, Addr, Badge, Card, Empty, Field, QueryView, Stat } from "../ui";
 
 function pays(value: number | undefined, side: string): string {
   return value === undefined ? "No bets on this side yet" : `Pays ${value.toFixed(2)}× if ${side}`;
@@ -25,16 +25,31 @@ export function Predictions({ collection }: { collection: Address }) {
   const create = () =>
     void run(`Create a ${newMarket.durationHours}h market`, (send) =>
       send("Create market", createMarketCall(d!, collection, BigInt(bettingSeconds), BigInt(durationSeconds))),
+      [
+        `Opens a market on the selected collection: betting for ${duration(bettingSeconds)}, settled ${duration(durationSeconds)} from now.`,
+        "The oracle's current floor becomes the start price. No ETH is sent; you pay only the transaction fee.",
+      ],
     );
 
   const bet = (market: Market, higher: boolean, amount: bigint) =>
     void run(`Bet ${eth(amount)} ETH on ${higher ? "higher" : "lower"} (market #${market.id})`, (send) =>
       send("Place bet", placeBetCall(d!, market.id, higher, amount)),
+      [
+        `${eth(amount)} ETH moves from your wallet into the ${higher ? "higher" : "lower"} pool of market #${market.id}.`,
+        `If the floor at resolution is ${higher ? "above" : "below"} ${eth(market.startPrice)} ETH, you get it back plus a share of the other pool, less the fee on winnings.`,
+        "Otherwise you lose it. If the market is voided, you get a full refund. A bet cannot be withdrawn.",
+      ],
     );
   const resolve = (market: Market) =>
-    void run(`Resolve market #${market.id}`, (send) => send("Resolve", resolveMarketCall(d!, market.id)));
+    void run(`Resolve market #${market.id}`, (send) => send("Resolve", resolveMarketCall(d!, market.id)), [
+      "Settles the market against the oracle's floor price. Anyone may do this; you pay only the transaction fee.",
+    ]);
   const claim = (market: Market) =>
-    void run(`Claim from market #${market.id}`, (send) => send("Claim", claimMarketCall(d!, market.id)));
+    void run(`Claim from market #${market.id}`, (send) => send("Claim", claimMarketCall(d!, market.id)), [
+      market.outcome === Outcome.Void
+        ? "The market was voided: you receive your whole stake back."
+        : "You receive your winning stake plus its share of the losing pool, less the fee on winnings. A losing stake pays nothing but earns points.",
+    ]);
 
   return (
     <Card title="Prediction markets">
@@ -77,11 +92,11 @@ export function Predictions({ collection }: { collection: Address }) {
             </div>
             <p className="muted">
               Pooled bets on whether the floor will be higher or lower than the start price at resolution. Winners
-              split the losing pool; {bps(feeBps)} of winnings funds buybacks. Minimum bet {eth(minBet)} ETH. A
+              split the losing pool; a fee on winnings ({bps(feeBps)} for new markets, fixed per market when it opens) funds buybacks. Minimum bet {eth(minBet)} ETH. A
               market with a one-sided pool or an unchanged price is voided and refunded. Resolving needs an oracle
               price published after the resolve time; if none arrives within 3 days the market is voided.
             </p>
-            {markets.length === 0 && <p className="muted">No markets yet.</p>}
+            {markets.length === 0 && <Empty title="No markets yet.">Create the first one above.</Empty>}
             {markets.map((m) => {
               const key = m.id.toString();
               const pending = m.outcome === Outcome.Pending;
@@ -115,12 +130,12 @@ export function Predictions({ collection }: { collection: Address }) {
                     <Stat
                       label="Higher pool"
                       value={`${eth(m.higherPool)} ETH`}
-                      hint={pending ? pays(impliedMultiple(m.higherPool, m.lowerPool, feeBps), "higher") : undefined}
+                      hint={pending ? pays(impliedMultiple(m.higherPool, m.lowerPool, m.feeBps), "higher") : undefined}
                     />
                     <Stat
                       label="Lower pool"
                       value={`${eth(m.lowerPool)} ETH`}
-                      hint={pending ? pays(impliedMultiple(m.lowerPool, m.higherPool, feeBps), "lower") : undefined}
+                      hint={pending ? pays(impliedMultiple(m.lowerPool, m.higherPool, m.feeBps), "lower") : undefined}
                     />
                     <Stat
                       label="Your stake"
@@ -134,6 +149,7 @@ export function Predictions({ collection }: { collection: Address }) {
                         <input
                           className="narrow"
                           placeholder="ETH"
+                          aria-label={`Bet amount in ETH for market ${key}`}
                           inputMode="decimal"
                           value={amounts[key] ?? ""}
                           onChange={(e) => setAmounts((s) => ({ ...s, [key]: e.target.value }))}

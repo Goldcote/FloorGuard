@@ -5,7 +5,8 @@ import { useChainTime, useProtocol, useRead } from "../hooks";
 import { dateTime, relative } from "../lib/format";
 import { RAFFLE_STATUS_NAMES, RaffleStatus, readRaffles, type Raffle } from "../lib/reads";
 import { useTx } from "../tx";
-import { ActionButton, Addr, Badge, Card, QueryView } from "../ui";
+import { RandomnessNotice } from "./Verify";
+import { ActionButton, Addr, Badge, Card, Empty, QueryView } from "../ui";
 
 const TONE = ["muted", "good", "warn", "good", "muted"] as const;
 
@@ -17,26 +18,34 @@ export function Raffles() {
   const query = useRead(["raffles"], readRaffles);
 
   const draw = (r: Raffle) =>
-    void run(`Draw raffle #${r.id}`, (send) => send("Request draw", drawRaffleCall(d!, r.id)));
+    void run(`Draw raffle #${r.id}`, (send) => send("Request draw", drawRaffleCall(d!, r.id)), [
+      "Requests the random draw. The winner is picked among points holders, weighted by their active points at this moment.",
+      "Points are frozen until the draw completes. No ETH is sent; you pay only the transaction fee.",
+    ]);
   const settleLocally = (r: Raffle) =>
     void run(`Answer raffle #${r.id} draw with mock randomness`, (send) =>
       send("Mock fulfil", mockFulfillCall(d!.randomness, r.requestId!, randomWord())),
+      ["Local chain only: answers the draw's randomness request through the mock provider.", "The random word comes from this browser, so this is for testing, not a fair draw."],
     );
   const claim = (r: Raffle) =>
-    void run(`Claim raffle #${r.id} prize`, (send) => send("Claim prize", claimRaffleCall(d!, r.id)));
+    void run(`Claim raffle #${r.id} prize`, (send) => send("Claim prize", claimRaffleCall(d!, r.id)), [
+      `Sends token #${r.tokenId} to the winner, ${r.winner}. Anyone may do this; you pay only the transaction fee.`,
+    ]);
 
   return (
     <Card title="Vault raffles (for points holders)">
+      <RandomnessNotice />
       <QueryView query={query}>
-        {({ raffles, totalPoints, nextDrawAt }) => (
+        {({ raffles, totalPoints, nextDrawAt, drawInFlight }) => (
           <>
             <p className="muted">
               Unlocked vault tokens raffled to points holders. Nobody buys tickets: the chance of winning is your share
               of all active points when the draw is requested (activate pending points on the Overview tab first). Anyone can request the draw after the announce period, and
-              anyone can send a drawn prize to its winner.
+              anyone can send a drawn prize to its winner. The draw emits only the winner, not the point number, so this
+              draw cannot be recomputed in the browser; its transaction is on the chain.
             </p>
             {raffles.length === 0 ? (
-              <p className="muted">No raffles yet.</p>
+              <Empty title="No vault raffles yet.">The owner can send an unlocked holding to a raffle.</Empty>
             ) : (
               <div className="table-wrap">
                 <table>
@@ -83,7 +92,9 @@ export function Raffles() {
                                 blocked={
                                   now < drawableAt
                                     ? `Draw possible from ${dateTime(drawableAt)}`
-                                    : totalPoints === 0n && "Nobody holds active points yet"
+                                    : drawInFlight
+                                      ? "Another raffle's draw is in flight; only one can run at a time"
+                                      : totalPoints === 0n && "Nobody holds active points yet"
                                 }
                               >
                                 Draw

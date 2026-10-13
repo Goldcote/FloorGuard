@@ -20,6 +20,7 @@ import {
 import { bps, dateTime, duration, eth, relative } from "../lib/format";
 import { parseEth, parseUint, randomWord } from "../lib/parse";
 import {
+  abortableAt,
   readTicketRaffles,
   readTokenState,
   TICKET_RAFFLE_STATUS_NAMES,
@@ -27,7 +28,8 @@ import {
   ticketRaffleWouldRefund,
 } from "../lib/reads";
 import { useTx } from "../tx";
-import { ActionButton, Addr, Badge, Card, Field, QueryView } from "../ui";
+import { RandomnessNotice, VerifyButton } from "./Verify";
+import { ActionButton, Addr, Badge, Card, Empty, Field, Notice, QueryView } from "../ui";
 
 const TONE = ["muted", "good", "warn", "good", "muted", "warn", "muted"] as const;
 
@@ -47,8 +49,8 @@ export function TicketRaffles({ collection }: { collection: Address }) {
   const [form, setForm] = useState({ tokenId: "", price: "", min: "1", max: "", hours: "72" });
 
   const isMe = (address: Address) => !!user && address.toLowerCase() === user.toLowerCase();
-  const act = (title: string, step: string, call: Call) =>
-    void run(title, (send) => send(step, call));
+  const act = (title: string, step: string, call: Call, details: string[]) =>
+    void run(title, (send) => send(step, call), details);
 
   const input = {
     tokenId: parseUint(form.tokenId),
@@ -66,24 +68,31 @@ export function TicketRaffles({ collection }: { collection: Address }) {
       if (!isMe(token.owner)) throw new Error(`You do not own token #${tokenId}.`);
       if (!token.approved) await send("Approve raffle contract", approveCall(collection, d.ticketRaffle, tokenId));
       await send("Create raffle", createTicketRaffleCall(d, collection, tokenId, price, min, max, BigInt(seconds)));
-    });
+    }, [
+      `Token #${tokenId} moves from your wallet into escrow in the raffle contract for ${duration(seconds)}.`,
+      `Up to ${max} tickets are sold at ${eth(price)} ETH. If at least ${min} sell (and the pot reaches the minimum), a random ticket wins the token and you can withdraw the ticket revenue less the platform fee.`,
+      "Otherwise buyers are refunded and you take the token back. You can cancel while no ticket has been sold.",
+      "If the raffle contract is not yet approved for this token, an approval transaction comes first.",
+    ]);
   };
 
   return (
     <>
       <Card title="Ticket raffles">
-        <p className="notice">
+        <Notice>
           Paid raffles are regulated or prohibited in many places. Check the law where you are before buying tickets,
           creating a raffle or operating this.
-        </p>
+        </Notice>
+        <RandomnessNotice />
         <QueryView query={query}>
           {(t) => (
             <>
               <p className="muted">
                 Anyone can raffle an NFT of an enabled collection for paid tickets. When the raffle ends or sells out, a
                 random ticket wins the NFT and the creator receives the ticket revenue less the platform fee, which
-                funds the collection's buybacks. If fewer than the minimum number of tickets sell, or the pot is below{" "}
-                {eth(t.minPot)} ETH, every buyer can take a full refund and the creator takes the NFT back.
+                funds the collection's buybacks. If fewer than the minimum number of tickets sell, or the pot is below
+                the raffle's minimum ({eth(t.minPot)} ETH for new raffles), every buyer can take a full refund and the
+                creator takes the NFT back.
               </p>
               <p className="muted">
                 Odds are shown against the tickets sold so far and against the maximum. They can fall until the raffle
@@ -94,12 +103,12 @@ export function TicketRaffles({ collection }: { collection: Address }) {
                   <p>
                     <strong>{eth(t.userOwed)} ETH</strong> of raffle revenue is waiting for you.
                   </p>
-                  <ActionButton onClick={() => d && act("Withdraw raffle revenue", "Withdraw", withdrawTicketRaffleCall(d))}>
+                  <ActionButton onClick={() => d && act("Withdraw raffle revenue", "Withdraw", withdrawTicketRaffleCall(d), [`You receive ${eth(t.userOwed!)} ETH of ticket revenue from the raffle contract.`])}>
                     Withdraw
                   </ActionButton>
                 </div>
               )}
-              {t.raffles.length === 0 && <p className="muted">No raffles yet.</p>}
+              {t.raffles.length === 0 && <Empty title="No raffles yet.">Create the first one below.</Empty>}
               {t.raffles.map((r) => {
                 const key = r.id.toString();
                 const selling = r.status === S.Open && now < r.endTime && r.ticketsSold < r.maxTickets;
@@ -107,14 +116,9 @@ export function TicketRaffles({ collection }: { collection: Address }) {
                 const left = r.maxTickets - r.ticketsSold;
                 const count = Number(parseUint(counts[key] ?? "1") ?? 0n);
                 const mine = r.userTickets ?? 0;
-                const abortAt =
-                  r.status === S.Open || r.status === S.Drawing
-                    ? r.endTime + t.abortDelay
-                    : r.status === S.Won
-                      ? r.requestedAt + t.abortDelay
-                      : undefined;
+                const abortAt = abortableAt(r, r.status === S.Open ? "open" : r.status === S.Drawing ? "drawing" : r.status === S.Won ? "won" : "done", t);
                 const resetAt = r.status === S.Drawing ? r.requestedAt + t.drawTimeout : undefined;
-                const wouldRefund = ticketRaffleWouldRefund(r, t.minPot);
+                const wouldRefund = ticketRaffleWouldRefund(r, now, t.abortDelay);
                 return (
                   <div className="item" key={key}>
                     <div className="item-head">
@@ -176,7 +180,8 @@ export function TicketRaffles({ collection }: { collection: Address }) {
                             <th>Winner</th>
                             <td colSpan={3}>
                               <Addr address={r.winner} /> {isMe(r.winner) && <Badge tone="good">You</Badge>}
-                              {r.status === S.Won && " (prize not delivered yet: settle)"}
+                              {r.status === S.Won && " (prize not delivered yet: settle)"}{" "}
+                              <VerifyButton kind="ticketRaffle" id={r.id} ticketPrice={r.ticketPrice} feeBps={r.feeBps} />
                             </td>
                           </tr>
                         )}
@@ -200,7 +205,11 @@ export function TicketRaffles({ collection }: { collection: Address }) {
                             />
                           </Field>
                           <ActionButton
-                            onClick={() => d && act(`Buy ${count} ticket(s) in raffle #${key}`, "Buy tickets", buyTicketsCall(d, r.id, count, r.ticketPrice))}
+                            onClick={() => d && act(`Buy ${count} ticket(s) in raffle #${key}`, "Buy tickets", buyTicketsCall(d, r.id, count, r.ticketPrice), [
+                                `You pay ${eth(r.ticketPrice * BigInt(count))} ETH for ${count} ticket(s) at ${eth(r.ticketPrice)} ETH each.`,
+                                `One random ticket wins token #${r.tokenId}. If fewer than ${r.minTickets} tickets sell, you can take a full refund.`,
+                                "Your odds can fall until the raffle closes, as more tickets are bought.",
+                              ])}
                             blocked={count < 1 ? "Enter how many tickets to buy" : count > left && `Only ${left} ticket(s) are left`}
                           >
                             Buy for {count >= 1 ? eth(r.ticketPrice * BigInt(count)) : "–"} ETH
@@ -208,49 +217,66 @@ export function TicketRaffles({ collection }: { collection: Address }) {
                         </>
                       )}
                       {selling && isMe(r.creator) && r.ticketsSold === 0 && (
-                        <ActionButton className="secondary" onClick={() => d && act(`Cancel raffle #${key}`, "Cancel", cancelTicketRaffleCall(d, r.id))}>
+                        <ActionButton className="secondary" onClick={() => d && act(`Cancel raffle #${key}`, "Cancel", cancelTicketRaffleCall(d, r.id), [`Ends the raffle and returns token #${r.tokenId} from escrow to you.`])}>
                           Cancel and take the NFT back
                         </ActionButton>
                       )}
                       {closable && (
-                        <ActionButton onClick={() => d && act(`Close raffle #${key}`, "Close", closeTicketRaffleCall(d, r.id))}>
-                          {wouldRefund ? "Close (too few tickets: opens refunds)" : "Close and request the draw"}
+                        <ActionButton onClick={() => d && act(`Close raffle #${key}`, "Close", closeTicketRaffleCall(d, r.id), [
+                              wouldRefund
+                                ? "Too few tickets sold, the pot is below the minimum, or the raffle ended over a week ago: this opens refunds for buyers and lets the creator reclaim the token."
+                                : `Ends ticket sales and requests the random draw among the ${r.ticketsSold} tickets sold.`,
+                              "Anyone may do this; you pay only the transaction fee.",
+                            ])}>
+                          {wouldRefund ? "Close (opens refunds)" : "Close and request the draw"}
                         </ActionButton>
                       )}
-                      {r.status === S.Drawing && <span className="muted">Waiting for randomness</span>}
+                      {r.status === S.Drawing && (
+                        <span className="muted">
+                          Waiting for randomness
+                          {abortAt !== undefined && now < abortAt && <>; if none arrives, refunds can be opened from {dateTime(abortAt)}</>}
+                        </span>
+                      )}
                       {r.status === S.Drawing && isLocal && r.requestId !== undefined && (
                         <ActionButton
                           className="secondary local"
                           onClick={() =>
                             d &&
-                            act(`Answer raffle #${key} draw with mock randomness`, "Mock fulfil", mockFulfillCall(d.ticketRaffleRandomness, r.requestId!, randomWord()))
+                            act(`Answer raffle #${key} draw with mock randomness`, "Mock fulfil", mockFulfillCall(d.ticketRaffleRandomness, r.requestId!, randomWord()), [
+                              "Local chain only: answers the draw's randomness request through the mock provider.",
+                              "The random word comes from this browser, so this is for testing, not a fair draw.",
+                            ])
                           }
                         >
                           Local only: draw with mock randomness
                         </ActionButton>
                       )}
                       {resetAt !== undefined && now >= resetAt && (
-                        <ActionButton className="secondary" onClick={() => d && act(`Reset the draw of raffle #${key}`, "Reset draw", resetTicketDrawCall(d, r.id))}>
+                        <ActionButton className="secondary" onClick={() => d && act(`Reset the draw of raffle #${key}`, "Reset draw", resetTicketDrawCall(d, r.id), ["No randomness arrived within a day. This reopens the raffle so the draw can be requested again."])}>
                           Reset the draw (no randomness arrived)
                         </ActionButton>
                       )}
                       {r.status === S.Won && (
-                        <ActionButton onClick={() => d && act(`Settle raffle #${key}`, "Settle", settleTicketRaffleCall(d, r.id))}>
+                        <ActionButton onClick={() => d && act(`Settle raffle #${key}`, "Settle", settleTicketRaffleCall(d, r.id), [
+                              `Sends token #${r.tokenId} to the winner, ${r.winner}.`,
+                              `Credits the creator with the ticket revenue less the ${bps(r.feeBps)} fee, which goes to the collection's buyback budget.`,
+                              "Anyone may do this; you pay only the transaction fee.",
+                            ])}>
                           Settle: deliver the prize
                         </ActionButton>
                       )}
                       {r.status === S.Refunding && mine > 0 && (
-                        <ActionButton onClick={() => d && act(`Refund my tickets in raffle #${key}`, "Refund", refundTicketsCall(d, r.id))}>
+                        <ActionButton onClick={() => d && act(`Refund my tickets in raffle #${key}`, "Refund", refundTicketsCall(d, r.id), [`You receive ${eth(r.userPaid ?? 0n)} ETH back.`])}>
                           Refund {eth(r.userPaid ?? 0n)} ETH
                         </ActionButton>
                       )}
                       {r.status === S.Refunding && isMe(r.creator) && !r.nftReturned && (
-                        <ActionButton onClick={() => d && act(`Reclaim the NFT of raffle #${key}`, "Reclaim", reclaimTicketRaffleCall(d, r.id))}>
+                        <ActionButton onClick={() => d && act(`Reclaim the NFT of raffle #${key}`, "Reclaim", reclaimTicketRaffleCall(d, r.id), [`Returns token #${r.tokenId} from escrow to you, the raffle's creator.`])}>
                           Reclaim the NFT
                         </ActionButton>
                       )}
                       {abortAt !== undefined && now >= abortAt && (
-                        <ActionButton className="secondary" onClick={() => d && act(`Abort raffle #${key}`, "Abort", abortTicketRaffleCall(d, r.id))}>
+                        <ActionButton className="secondary" onClick={() => d && act(`Abort raffle #${key}`, "Abort", abortTicketRaffleCall(d, r.id), ["The raffle has been stuck for a week. This turns it into refunds: every buyer can take back what they paid, and the creator can reclaim the token."])}>
                           Abort: stuck too long, open refunds
                         </ActionButton>
                       )}

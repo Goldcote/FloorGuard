@@ -28,6 +28,7 @@ const CONTRACTS = {
   vaultRaffleAbi: "VaultRaffle",
   gamesAbi: "Games",
   ticketRaffleAbi: "TicketRaffle",
+  lotteryAbi: "Lottery",
   ipLicenseManagerAbi: "IPLicenseManager",
   salesFloorOracleAbi: "SalesFloorOracle",
   pushFloorOracleAbi: "PushFloorOracle",
@@ -46,12 +47,14 @@ const REQUIRED_KEYS = [
   "vaultRaffle",
   "games",
   "ticketRaffle",
+  "lottery",
   "ipLicenseManager",
   "salesFloorOracle",
   "pushFloorOracle",
   "randomness",
   "gamesRandomness",
   "ticketRaffleRandomness",
+  "lotteryRandomness",
   "owner",
 ];
 const OPTIONAL_KEYS = ["demoCollection"];

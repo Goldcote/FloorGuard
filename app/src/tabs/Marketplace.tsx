@@ -6,7 +6,7 @@ import { bps, eth, relative } from "../lib/format";
 import { parseEth, parsePercentBps, parseUint } from "../lib/parse";
 import { readExpectedProceeds, readOpenOffers, readTokenState, withSlippage, type Offer } from "../lib/reads";
 import { useTx } from "../tx";
-import { ActionButton, Addr, Badge, Card, Field, QueryView } from "../ui";
+import { ActionButton, Addr, Badge, Card, Empty, Field, QueryView } from "../ui";
 import { LOGS_FROM_BLOCK } from "../wagmi";
 
 const DAY = 86_400;
@@ -24,6 +24,7 @@ export function Marketplace({ collection }: { collection: Address }) {
   const [collectionOffer, setCollectionOffer] = useState({ price: "", quantity: "1", days: "7" });
 
   const toleranceBps = parsePercentBps(tolerance);
+  const feeBps = query.data?.feeBps ?? 0n;
 
   const accept = (offer: Offer) => {
     const tokenId = offer.collectionWide ? parseUint(acceptToken[offer.id.toString()] ?? "") : offer.tokenId;
@@ -38,12 +39,19 @@ export function Marketplace({ collection }: { collection: Address }) {
       const expected = await readExpectedProceeds(client, d, offer.collection, tokenId, offer.price);
       const minProceeds = withSlippage(expected.proceeds, toleranceBps);
       await send("Accept offer", acceptOfferCall(d, offer.id, tokenId, minProceeds));
-    });
+    }, [
+      `You sell token #${tokenId} to the offerer for ${eth(offer.price)} ETH.`,
+      `The ${bps(feeBps)} protocol fee, and any royalty the collection sets, are deducted; you receive the rest.`,
+      `The sale is rejected if you would receive more than ${tolerance}% less than the proceeds read just before signing.`,
+      "If the marketplace is not yet approved for this token, an approval transaction comes first.",
+    ]);
   };
 
   const cancel = (offer: Offer) => {
     if (!d) return;
-    void run(`Cancel offer #${offer.id}`, (send) => send("Cancel offer", cancelOfferCall(d, offer.id)));
+    void run(`Cancel offer #${offer.id}`, (send) => send("Cancel offer", cancelOfferCall(d, offer.id)), [
+      `The unfilled part of the offer, ${eth(offer.price * BigInt(offer.remaining))} ETH, returns from escrow to you.`,
+    ]);
   };
 
   const tokenOfferInput = {
@@ -63,6 +71,11 @@ export function Marketplace({ collection }: { collection: Address }) {
     if (!d || tokenId === undefined || price === undefined || !validDays(days)) return;
     void run(`Offer ${eth(price)} ETH for token #${tokenId}`, (send) =>
       send("Make offer", makeOfferCall(d, collection, tokenId, BigInt(now + Math.round(days * DAY)), price)),
+      [
+        `${eth(price)} ETH moves from your wallet into escrow in the marketplace.`,
+        `The owner of token #${tokenId} can accept at any time in the next ${days} day(s); the token then comes to you.`,
+        "You can cancel and take the ETH back at any time before it is accepted.",
+      ],
     );
   };
 
@@ -74,6 +87,11 @@ export function Marketplace({ collection }: { collection: Address }) {
         "Make collection offer",
         makeCollectionOfferCall(d, collection, quantity, BigInt(now + Math.round(days * DAY)), price),
       ),
+      [
+        `${eth(price * quantity)} ETH (${quantity} × ${eth(price)}) moves from your wallet into escrow in the marketplace.`,
+        `Any holder can sell you any token of the collection at ${eth(price)} ETH each for the next ${days} day(s).`,
+        "You can cancel the unfilled part and take that ETH back at any time.",
+      ],
     );
   };
 
@@ -101,7 +119,7 @@ export function Marketplace({ collection }: { collection: Address }) {
                   {source === "scan" && " The RPC refused the log query, so recent offer ids were scanned instead."}
                 </p>
                 {shown.length === 0 ? (
-                  <p className="muted">No open offers.</p>
+                  <Empty title="No open offers.">Make the first one below.</Empty>
                 ) : (
                   <div className="table-wrap">
                     <table>
@@ -145,6 +163,7 @@ export function Marketplace({ collection }: { collection: Address }) {
                                   <input
                                     className="narrow"
                                     placeholder="Token id"
+                                    aria-label={`Token id to sell into offer ${key}`}
                                     inputMode="numeric"
                                     value={tokenText}
                                     onChange={(e) => setAcceptToken((s) => ({ ...s, [key]: e.target.value }))}

@@ -5,7 +5,13 @@ import { WagmiProvider } from "wagmi";
 import { App } from "./App";
 import { TxProvider } from "./tx";
 import { config } from "./wagmi";
+import "@fontsource-variable/space-grotesk";
 import "./styles.css";
+
+// Development aid: fake EIP-6963 wallets for exercising the wallet menu. Stripped from production builds.
+if (import.meta.env.DEV && new URLSearchParams(window.location.search).has("mock-wallets")) {
+  (await import("./dev/mockWallets")).installMockWallets();
+}
 
 const queryClient = new QueryClient();
 

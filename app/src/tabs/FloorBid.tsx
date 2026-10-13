@@ -30,7 +30,12 @@ export function FloorBid({ collection }: { collection: Address }) {
       // Re-read the bid after the approval: it moves with time and drops when someone else sells.
       const { currentBid } = await readFloorBid(client, d, collection);
       await send("Sell", sellCall(d, collection, tokenId, withSlippage(currentBid, slippageBps)));
-    });
+    }, [
+      `You sell token #${tokenId} to the protocol at the live bid${query.data ? `, about ${eth(query.data.currentBid)} ETH` : ""}, paid in full from the collection's buyback budget. No fee is taken.`,
+      `The sale is rejected if the bid has dropped more than ${slippageText}% by the time it is mined.`,
+      "The token goes to the vault and is locked there; this cannot be undone.",
+      "If the buyback engine is not yet approved for this token, an approval transaction comes first.",
+    ]);
   };
 
   return (

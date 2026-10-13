@@ -4,7 +4,7 @@ import { requestLicenseCall } from "../lib/calls";
 import { dateTime, duration, eth } from "../lib/format";
 import { HoldingStatus, LICENSE_TIER_PROBE, readLicensing } from "../lib/reads";
 import { useTx } from "../tx";
-import { ActionButton, Addr, Badge, Card, Field, QueryView } from "../ui";
+import { ActionButton, Addr, Badge, Card, Empty, Field, Notice, QueryView } from "../ui";
 
 const byteLength = (text: string) => new TextEncoder().encode(text).length;
 
@@ -18,11 +18,11 @@ export function Licences() {
 
   return (
     <Card title="Artwork licences">
-      <p className="notice">
+      <Notice>
         A licence here is a record that you paid for a licence tier on a vault NFT, for a limited time. It is not, by
         itself, a right to use the artwork: whether the vault can license a collection's artwork at all, and on what
         terms, depends on that collection's own terms. The licence text lives off-chain. Nothing here is legal advice.
-      </p>
+      </Notice>
       <QueryView query={query}>
         {({ holdings, maxScopeLength }) => {
           const lockable = holdings.filter((h) => h.holding.status === HoldingStatus.Locked);
@@ -33,18 +33,24 @@ export function Licences() {
             if (!d || !selected || !tier) return;
             void run(`Request a tier ${tier.tier} licence on holding #${selected.holding.id}`, (send) =>
               send("Request licence", requestLicenseCall(d, selected.holding.id, tier.tier, scope, tier.price)),
+              [
+                tier.price === 0n ? "This tier is free; you pay only the transaction fee." : `You pay ${eth(tier.price)} ETH, which goes to the collection's buyback budget. It is not refundable.`,
+                `Records a tier ${tier.tier} licence for ${duration(tier.duration)} on vault holding #${selected.holding.id}, with your intended-use text stored publicly on-chain.`,
+                "This is a record of payment. Whether it gives you any right to use the artwork depends on the collection's own terms.",
+              ],
             );
           };
           return (
             <>
               <p className="muted">
                 Licence fees go to the collection's buyback budget. Only holdings still locked in the vault can be
-                licensed. A licence lapses when its term ends, when the owner revokes it, or when the NFT goes to
+                licensed. Licences are per tier, and you can hold several on one holding. A licence lapses when its term
+                ends, when the owner revokes it (which also bans you from that holding), or when the NFT goes to
                 auction or leaves the vault; no refund is paid. Tier numbers are defined by the protocol owner per
                 collection (tiers 0 to {LICENSE_TIER_PROBE - 1} are shown).
               </p>
               {holdings.length === 0 ? (
-                <p className="muted">The vault holds nothing that can be licensed.</p>
+                <Empty title="The vault holds nothing that can be licensed.">Holdings appear here once the floor bid has bought a token.</Empty>
               ) : (
                 <div className="table-wrap">
                   <table>
@@ -55,11 +61,11 @@ export function Licences() {
                         <th>Token</th>
                         <th>Status</th>
                         <th>Available tiers</th>
-                        <th>Your licence in force</th>
+                        <th>Your licences in force</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {holdings.map(({ holding, tiers, license, banned }) => (
+                      {holdings.map(({ holding, tiers, licenses, banned }) => (
                         <tr key={holding.id.toString()}>
                           <td>#{holding.id.toString()}</td>
                           <td><Addr address={holding.collection} /></td>
@@ -80,17 +86,25 @@ export function Licences() {
                                   </div>
                                 ))}
                           </td>
-                          <td>
+                          <td className="wrap">
                             {!user ? (
                               <span className="muted">Connect a wallet</span>
-                            ) : license ? (
-                              <>
-                                Tier {license.tier}, until {dateTime(license.end)}
-                              </>
+                            ) : banned ? (
+                              <Badge tone="bad">Banned from this holding</Badge>
+                            ) : licenses.length > 0 ? (
+                              licenses.map((l) => (
+                                <div key={l.tier}>
+                                  Tier {l.tier}, until {dateTime(l.end)}
+                                </div>
+                              ))
                             ) : (
                               "None"
                             )}
-                            {banned && <div><Badge tone="bad">Revoked: you cannot license this holding</Badge></div>}
+                            {banned && (
+                              <div className="muted small">
+                                A licence of yours here was revoked. None is in force and you cannot buy another unless the owner lifts the ban.
+                              </div>
+                            )}
                           </td>
                         </tr>
                       ))}

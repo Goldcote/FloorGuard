@@ -8,7 +8,8 @@ import { getAddress, http, numberToHex, SwitchChainError, type Address, type EIP
 import { createConnector } from "wagmi";
 import { anvil } from "wagmi/chains";
 
-export const LOCAL_WALLET_ID = "localTestAccount";
+export { LOCAL_WALLET_ID } from "./lib/wallets";
+import { LOCAL_WALLET_ID } from "./lib/wallets";
 /** anvil accounts #0..#3 are offered. #0 is the deployer and protocol owner after the seed script. */
 export const LOCAL_ACCOUNT_COUNT = 4;
 

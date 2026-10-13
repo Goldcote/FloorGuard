@@ -23,7 +23,7 @@ const MESSAGES: Record<string, (args: Args) => string> = {
   NotSpender: () => "Only the buyback engine can spend the treasury.",
   InsufficientBudget: ([budget, wanted]) =>
     `The collection's buyback budget (${wei(budget)}) does not cover ${wei(wanted)}.`,
-  InactiveCollection: () => "There is no active floor bid for this collection.",
+  InactiveCollection: () => "This is not active for the collection (no floor bid, or no lottery, is configured).",
   InvalidConfig: () => "Invalid bid configuration.",
   FillCooldown: ([readyAt]) => `The floor bid is pausing between fills; the next sale is possible from ${when(readyAt)}.`,
   BidBelowMinimum: ([bid, min]) => `The floor bid is now ${wei(bid)}, below your minimum of ${wei(min)}.`,
@@ -35,7 +35,9 @@ const MESSAGES: Record<string, (args: Args) => string> = {
     "Unlock conditions are not met: the lock must have ended and the floor must be at least 130% of the purchase price.",
   GovernanceWindowOpen: ([opensAt]) =>
     `Only the owner can start this auction until the governance window ends on ${when(opensAt)}.`,
-  AuctionRunning: () => "The auction is still running.",
+  AuctionRunning: () => "The auction is still running: it can be restarted only once its price has reached the reserve.",
+  OwnerPricedAuction: () => "The owner set this auction's prices by hand, so only the owner can restart it.",
+  NotAContract: () => "That address is not a contract.",
   InvalidLock: () => "Invalid lock time.",
   InvalidPrices: () => "Invalid auction prices.",
   StaleOracle: () => "The floor oracle has no fresh price for this collection.",
@@ -57,6 +59,7 @@ const MESSAGES: Record<string, (args: Args) => string> = {
   TooManyUsers: () => "The points registry is full.",
   Frozen: () => "Points cannot be activated while a raffle draw is in flight.",
   StaleRequest: () => "This randomness request has been superseded.",
+  DrawInFlight: () => "Another raffle's draw is in flight. Wait for it to complete or be reset.",
   InvalidBps: () => "Invalid basis-points value.",
   NotVault: () => "Only the vault can open raffles.",
   NotRandomness: () => "Only the randomness provider can call this.",
@@ -82,6 +85,8 @@ const MESSAGES: Record<string, (args: Args) => string> = {
     remaining === 0n ? "This raffle is sold out." : `Only ${String(remaining)} ticket(s) are left (and at least one must be bought).`,
   WrongPayment: ([expected]) => `The payment must be exactly ${wei(expected)}.`,
   StillOpen: () => "The raffle is still running: it can be closed once its time is up or it has sold out.",
+  // Lottery
+  InvalidCount: () => "Enter a number of tickets of at least 1.",
   // IPLicenseManager
   NotInVault: () => "Only holdings locked in the vault can be licensed.",
   TierInactive: () => "This licence tier is not available for the collection.",

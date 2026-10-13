@@ -1,17 +1,19 @@
 // Every on-chain read the UI makes, as plain async functions over a viem client. The React hooks in
 // hooks.ts are thin react-query wrappers around these, and test/reads.anvil.test.ts calls the same
 // functions against a local anvil chain.
-import { parseAbi, type Address, type Client } from "viem";
+import { formatEther, parseAbi, type Address, type Client, type Hash } from "viem";
 import { getBlock, getCode, getContractEvents, readContract } from "viem/actions";
 import {
   buybackEngineAbi,
   erc721Abi,
   gamesAbi,
   ipLicenseManagerAbi,
+  lotteryAbi,
   marketplaceAbi,
   pointsAbi,
   predictionMarketAbi,
   pushFloorOracleAbi,
+  mockRandomnessAbi,
   salesFloorOracleAbi,
   ticketRaffleAbi,
   treasuryAbi,
@@ -19,7 +21,11 @@ import {
   vaultRaffleAbi,
 } from "../generated/abis";
 import type { Deployment } from "../generated/addresses";
+import { demoReads, isDemo } from "../demo/sim";
 import { decodeError } from "./errors";
+import { gameExposure, slotsExposure, SLOTS_MAX_MULTIPLIER } from "./gameMath";
+
+export * from "./gameMath";
 
 const BPS = 10_000n;
 /** Lists show at most this many of the most recent entries. */
@@ -40,12 +46,14 @@ function recentIds(count: bigint): bigint[] {
 
 /** Timestamp of the latest block. Contract deadlines are compared to this, not to the wall clock. */
 export async function readChainTime(client: Client): Promise<number> {
+  if (isDemo(client)) return demoReads.chainTime();
   const block = await getBlock(client, { blockTag: "latest" });
   return Number(block.timestamp);
 }
 
 /** Whether the deployment's addresses actually hold contracts on the connected chain. */
 export async function readIsDeployed(client: Client, d: Deployment): Promise<boolean> {
+  if (isDemo(client)) return true;
   const codes = await Promise.all(
     [d.marketplace, d.treasury, d.buybackEngine, d.vault].map((address) => getCode(client, { address })),
   );
@@ -97,6 +105,7 @@ export type FloorBid = {
 };
 
 export async function readFloorBid(client: Client, d: Deployment, collection: Address): Promise<FloorBid> {
+  if (isDemo(client)) return demoReads.floorBid();
   const engine = { address: d.buybackEngine, abi: buybackEngineAbi } as const;
   const [budget, currentBid, isFillable, bid, cooldown, lastFillAt] = await Promise.all([
     readContract(client, { address: d.treasury, abi: treasuryAbi, functionName: "budgetOf", args: [collection] }),
@@ -152,6 +161,7 @@ export async function readOverview(
   collection: Address,
   user?: Address,
 ): Promise<Overview> {
+  if (isDemo(client)) return demoReads.overview();
   const pts = { address: d.points, abi: pointsAbi } as const;
   const treasury = { address: d.treasury, abi: treasuryAbi } as const;
   const [
@@ -229,6 +239,7 @@ export type OpenOffers = {
  * range) the most recent ids are scanned instead.
  */
 export async function readOpenOffers(client: Client, d: Deployment, fromBlock = 0n): Promise<OpenOffers> {
+  if (isDemo(client)) return demoReads.openOffers();
   const market = { address: d.marketplace, abi: marketplaceAbi } as const;
   const feeBpsPromise = readContract(client, { ...market, functionName: "feeBps" });
 
@@ -272,6 +283,7 @@ export async function readTokenState(
   tokenId: bigint,
   operator: Address,
 ): Promise<TokenState> {
+  if (isDemo(client)) return demoReads.tokenState(tokenId);
   const nft = { address: collection, abi: erc721Abi } as const;
   const owner = await readContract(client, { ...nft, functionName: "ownerOf", args: [tokenId] });
   const [approvedFor, approvedForAll] = await Promise.all([
@@ -291,6 +303,7 @@ export async function readExpectedProceeds(
   tokenId: bigint,
   price: bigint,
 ): Promise<Proceeds> {
+  if (isDemo(client)) return demoReads.expectedProceeds(price);
   const market = { address: d.marketplace, abi: marketplaceAbi } as const;
   const [feeBps, royaltyCapBps] = await Promise.all([
     readContract(client, { ...market, functionName: "feeBps" }),
@@ -334,6 +347,8 @@ export type Market = {
   higherPool: bigint;
   lowerPool: bigint;
   outcome: number;
+  /** The fee on winnings of this market, fixed when it was created. */
+  feeBps: bigint;
   /** The connected user's stake, when a user was given. */
   stake?: { higher: bigint; lower: bigint };
 };
@@ -349,6 +364,7 @@ export type Markets = {
 };
 
 export async function readMarkets(client: Client, d: Deployment, user?: Address): Promise<Markets> {
+  if (isDemo(client)) return demoReads.markets();
   const pm = { address: d.predictionMarket, abi: predictionMarketAbi } as const;
   const [marketCount, feeBps, minBet, minBettingPeriod, maxDuration] = await Promise.all([
     readContract(client, { ...pm, functionName: "marketCount" }),
@@ -359,8 +375,9 @@ export async function readMarkets(client: Client, d: Deployment, user?: Address)
   ]);
   const markets = await Promise.all(
     recentIds(marketCount).map(async (id): Promise<Market> => {
-      const [market, stake] = await Promise.all([
+      const [market, marketFeeBps, stake] = await Promise.all([
         readContract(client, { ...pm, functionName: "markets", args: [id] }),
+        readContract(client, { ...pm, functionName: "feeBpsOf", args: [id] }),
         user ? readContract(client, { ...pm, functionName: "stakes", args: [id, user] }) : undefined,
       ]);
       const [collection, startPrice, closeTime, resolveTime, higherPool, lowerPool, outcome] = market;
@@ -373,6 +390,7 @@ export async function readMarkets(client: Client, d: Deployment, user?: Address)
         higherPool,
         lowerPool,
         outcome,
+        feeBps: marketFeeBps,
         stake: stake ? { higher: stake[0], lower: stake[1] } : undefined,
       };
     }),
@@ -408,8 +426,38 @@ export type Holding = {
   status: number;
   canUnlock: boolean;
   /** Present while `status` is Auction. */
-  auction?: { startPrice: bigint; endPrice: bigint; startTime: number; currentPrice: bigint };
+  auction?: {
+    startPrice: bigint;
+    /** The reserve: the price stops falling here. */
+    endPrice: bigint;
+    startTime: number;
+    currentPrice: bigint;
+    /** The price has reached the reserve; only then can an unsold auction be restarted. */
+    atReserve: boolean;
+    /** The owner set the prices by hand; only the owner may restart such an auction. */
+    ownerPriced: boolean;
+  };
 };
+
+/**
+ * When a vault auction's price reaches its reserve: it halves every `halfLife`, falling linearly
+ * within each period. Mirrors `Vault.auctionPrice`.
+ */
+export function auctionReachesReserveAt(auction: { startPrice: bigint; endPrice: bigint; startTime: number }, halfLife: number): number {
+  let price = auction.startPrice;
+  let periods = 0;
+  // whole periods after which the price is still above the reserve
+  while (periods < 128 && price / 2n > auction.endPrice) {
+    price /= 2n;
+    periods++;
+  }
+  if (price <= auction.endPrice) return auction.startTime + periods * halfLife;
+  // within this period the price falls linearly from `price` by `price / 2`
+  const drop = price - auction.endPrice;
+  const half = price / 2n;
+  const seconds = half === 0n ? 0n : (drop * BigInt(halfLife) + half - 1n) / half; // rounded up
+  return auction.startTime + periods * halfLife + Number(seconds);
+}
 
 export type VaultState = {
   holdings: Holding[];
@@ -417,8 +465,6 @@ export type VaultState = {
   owner: Address;
   /** Seconds after unlocking during which only the owner may start an auction. */
   governanceWindow: number;
-  /** Seconds after which an unsold auction can be restarted. */
-  auctionDuration: number;
   /** An auction starts at this multiple of its reserve... */
   auctionStartMultiple: number;
   /** ...and its price halves every this many seconds until it reaches the reserve. */
@@ -426,12 +472,12 @@ export type VaultState = {
 };
 
 export async function readHoldings(client: Client, d: Deployment): Promise<VaultState> {
+  if (isDemo(client)) return demoReads.holdings();
   const vault = { address: d.vault, abi: vaultAbi } as const;
-  const [holdingCount, owner, governanceWindow, auctionDuration, auctionStartMultiple, auctionHalfLife] = await Promise.all([
+  const [holdingCount, owner, governanceWindow, auctionStartMultiple, auctionHalfLife] = await Promise.all([
     readContract(client, { ...vault, functionName: "holdingCount" }),
     readContract(client, { ...vault, functionName: "owner" }),
     readContract(client, { ...vault, functionName: "GOVERNANCE_WINDOW" }),
-    readContract(client, { ...vault, functionName: "AUCTION_DURATION" }),
     readContract(client, { ...vault, functionName: "AUCTION_START_MULTIPLE" }),
     readContract(client, { ...vault, functionName: "AUCTION_HALF_LIFE" }),
   ]);
@@ -445,11 +491,12 @@ export async function readHoldings(client: Client, d: Deployment): Promise<Vault
       let auction: Holding["auction"];
       if (status === HoldingStatus.Auction) {
         // auctionPrice reverts unless the status is Auction, so it is only read here.
-        const [[startPrice, endPrice, startTime], currentPrice] = await Promise.all([
+        const [[startPrice, endPrice, startTime], currentPrice, ownerPriced] = await Promise.all([
           readContract(client, { ...vault, functionName: "auctions", args: [id] }),
           readContract(client, { ...vault, functionName: "auctionPrice", args: [id] }),
+          readContract(client, { ...vault, functionName: "isOwnerPriced", args: [id] }),
         ]);
-        auction = { startPrice, endPrice, startTime, currentPrice };
+        auction = { startPrice, endPrice, startTime, currentPrice, atReserve: currentPrice <= endPrice, ownerPriced };
       }
       return { id, collection, tokenId, purchasePrice, acquiredAt, lockedUntil, unlockedAt, status, canUnlock, auction };
     }),
@@ -459,7 +506,6 @@ export async function readHoldings(client: Client, d: Deployment): Promise<Vault
     holdingCount,
     owner,
     governanceWindow: Number(governanceWindow),
-    auctionDuration: Number(auctionDuration),
     auctionStartMultiple: Number(auctionStartMultiple),
     auctionHalfLife: Number(auctionHalfLife),
   };
@@ -488,13 +534,17 @@ export type Raffles = {
   totalPoints: bigint;
   /** After any draw is reset, no raffle can be drawn before this time (0 when no cooldown applies). */
   nextDrawAt: number;
+  /** A draw is in flight; no other raffle can be drawn until it completes or is reset. */
+  drawInFlight: boolean;
 };
 
 export async function readRaffles(client: Client, d: Deployment): Promise<Raffles> {
+  if (isDemo(client)) return demoReads.raffles();
   const raffle = { address: d.vaultRaffle, abi: vaultRaffleAbi } as const;
-  const [raffleCount, nextDrawAt, totalPoints] = await Promise.all([
+  const [raffleCount, nextDrawAt, freezeCount, totalPoints] = await Promise.all([
     readContract(client, { ...raffle, functionName: "raffleCount" }),
     readContract(client, { ...raffle, functionName: "nextDrawAt" }),
+    readContract(client, { address: d.points, abi: pointsAbi, functionName: "freezeCount" }),
     readContract(client, { address: d.points, abi: pointsAbi, functionName: "totalPoints" }),
   ]);
   const raffles = await Promise.all(
@@ -511,7 +561,7 @@ export async function readRaffles(client: Client, d: Deployment): Promise<Raffle
       return { id, collection, tokenId, drawAfter, requestedAt, status, winner, requestId };
     }),
   );
-  return { raffles, raffleCount, totalPoints, nextDrawAt: Number(nextDrawAt) };
+  return { raffles, raffleCount, totalPoints, nextDrawAt: Number(nextDrawAt), drawInFlight: freezeCount !== 0n };
 }
 
 // ---------------------------------------------------------------- games
@@ -536,6 +586,7 @@ export type GamesState = {
 };
 
 export async function readGames(client: Client, d: Deployment, collection: Address, user?: Address): Promise<GamesState> {
+  if (isDemo(client)) return demoReads.games();
   const games = { address: d.games, abi: gamesAbi } as const;
   const [bankroll, reserved, maxTotalExposureBps, edgeBps, minBet, maxExposureBps, supported, refundTimeout, userOwed] = await Promise.all([
     readContract(client, { ...games, functionName: "bankroll" }),
@@ -565,6 +616,7 @@ export type GameQuote = { payout: bigint; fee: bigint };
 
 /** `Games.quote`: what a winning bet pays (wager included) and the fee taken from the wager. */
 export async function readGameQuote(client: Client, d: Deployment, wager: bigint, chanceBps: number): Promise<GameQuote> {
+  if (isDemo(client)) return demoReads.gameQuote(wager, chanceBps);
   const [payout, fee] = await readContract(client, {
     address: d.games,
     abi: gamesAbi,
@@ -572,13 +624,6 @@ export async function readGameQuote(client: Client, d: Deployment, wager: bigint
     args: [wager, BigInt(chanceBps)],
   });
   return { payout, fee };
-}
-
-/** House money a bet puts at risk. Mirrors the arithmetic of `Games.play`. */
-export function gameExposure(wager: bigint, chanceBps: number, edgeBps: bigint): bigint {
-  const fee = (wager * edgeBps) / BPS;
-  const payout = ((wager - fee) * BPS) / BigInt(chanceBps);
-  return payout - (wager - fee);
 }
 
 export type GameLimits = {
@@ -619,11 +664,24 @@ export function maxGameWager(
   return wager;
 }
 
+/** Largest wager `Games.spin` accepts: the one whose reserve fits both exposure caps. */
+export function maxSlotsWager(
+  state: Pick<GamesState, "bankroll" | "reserved" | "maxExposureBps" | "maxTotalExposureBps" | "edgeBps">,
+): bigint | undefined {
+  if (state.edgeBps >= BPS) return undefined;
+  const limit = gameLimits(state).exposure;
+  let wager = (limit * BPS) / ((SLOTS_MAX_MULTIPLIER - 1n) * (BPS - state.edgeBps));
+  while (wager > 0n && slotsExposure(wager, state.edgeBps) > limit) wager -= wager > 1_000n ? 1_000n : 1n;
+  return wager;
+}
+
 export type GameBet = {
   requestId: bigint;
   collection: Address;
   wager: bigint;
-  /** Chance of winning in basis points; 0 marks a slots spin (placed outside this app). */
+  /** "slots" for a spin (recorded on-chain with a chance of 0), "dice" for dice and coinflip. */
+  kind: "dice" | "slots";
+  /** Dice: the chance of winning in basis points. Slots: 0. */
   chanceBps: number;
   status: "pending" | "won" | "lost" | "refunded";
   /** Settled bets: the roll (0..9999; below `chanceBps` wins), the payout and the fee. */
@@ -646,6 +704,7 @@ export async function readUserBets(
   refundTimeout: number,
   fromBlock = 0n,
 ): Promise<GameBet[]> {
+  if (isDemo(client)) return demoReads.userBets();
   const games = { address: d.games, abi: gamesAbi } as const;
   const range = { fromBlock, toBlock: "latest", args: { player: user }, strict: true } as const;
   const [placed, settled, refunded] = await Promise.all([
@@ -659,7 +718,7 @@ export async function readUserBets(
   const bets = placed
     .map((log): GameBet => {
       const { requestId, collection, wager, chanceBps } = log.args;
-      const base = { requestId, collection, wager, chanceBps: Number(chanceBps) };
+      const base = { requestId, collection, wager, kind: chanceBps === 0n ? ("slots" as const) : ("dice" as const), chanceBps: Number(chanceBps) };
       const result = settledById.get(requestId);
       if (result) {
         return { ...base, status: result.won ? "won" : "lost", roll: Number(result.roll), payout: result.payout, fee: result.fee };
@@ -702,6 +761,8 @@ export type TicketRaffle = {
   winner: Address;
   /** The platform fee of this raffle, fixed when it was created. */
   feeBps: bigint;
+  /** The smallest pot this raffle is drawn at, fixed when it was created; below it, it is refunded. */
+  minPot: bigint;
   /** Whether the creator has taken the NFT back (cancelled or refunded raffles). */
   nftReturned: boolean;
   /** While Drawing: the randomness request in flight. */
@@ -715,7 +776,7 @@ export type TicketRaffle = {
 export type TicketRaffles = {
   raffles: TicketRaffle[];
   raffleCount: bigint;
-  /** A raffle whose ticket revenue is below this is refunded instead of drawn. */
+  /** The minimum pot new raffles get: a raffle whose ticket revenue ends below its own is refunded. */
   minPot: bigint;
   /** The fee new raffles get. */
   feeBps: bigint;
@@ -737,6 +798,7 @@ export async function readTicketRaffles(
   user?: Address,
   collection?: Address,
 ): Promise<TicketRaffles> {
+  if (isDemo(client)) return demoReads.ticketRaffles();
   const tr = { address: d.ticketRaffle, abi: ticketRaffleAbi } as const;
   const [raffleCount, minPot, feeBps, minDuration, maxDuration, drawTimeout, abortDelay, collectionSupported, userOwed] =
     await Promise.all([
@@ -752,9 +814,10 @@ export async function readTicketRaffles(
     ]);
   const raffles = await Promise.all(
     recentIds(raffleCount).map(async (id): Promise<TicketRaffle> => {
-      const [raffle, raffleFeeBps, nftReturned, userPaid] = await Promise.all([
+      const [raffle, raffleFeeBps, raffleMinPot, nftReturned, userPaid] = await Promise.all([
         readContract(client, { ...tr, functionName: "raffles", args: [id] }),
         readContract(client, { ...tr, functionName: "feeBpsOf", args: [id] }),
+        readContract(client, { ...tr, functionName: "minPotOf", args: [id] }),
         readContract(client, { ...tr, functionName: "nftReturned", args: [id] }),
         user ? readContract(client, { ...tr, functionName: "paidBy", args: [id, user] }) : undefined,
       ]);
@@ -778,6 +841,7 @@ export async function readTicketRaffles(
         status,
         winner,
         feeBps: raffleFeeBps,
+        minPot: raffleMinPot,
         nftReturned,
         requestId,
         userPaid,
@@ -803,12 +867,39 @@ export async function readTicketRaffles(
  * What `TicketRaffle.close` would do with the raffle as it stands: request a draw, or open refunds
  * because too few tickets sold or the pot is below the minimum. Mirrors the contract.
  */
-export function ticketRaffleWouldRefund(raffle: Pick<TicketRaffle, "ticketsSold" | "minTickets" | "ticketPrice">, minPot: bigint): boolean {
+export function ticketRaffleWouldRefund(
+  raffle: Pick<TicketRaffle, "ticketsSold" | "minTickets" | "ticketPrice" | "minPot" | "endTime">,
+  now: number,
+  abortDelay: number,
+): boolean {
   return (
+    // closed a week or more after its end, a raffle is refunded rather than drawn
+    now >= raffle.endTime + abortDelay ||
     raffle.ticketsSold === 0 ||
     raffle.ticketsSold < raffle.minTickets ||
-    raffle.ticketPrice * BigInt(raffle.ticketsSold) < minPot
+    raffle.ticketPrice * BigInt(raffle.ticketsSold) < raffle.minPot
   );
+}
+
+/**
+ * When anyone may abort an unfinished raffle or lottery round into refunds; undefined once it is
+ * finished. While a draw is pending, never before its answer would stop being accepted. Mirrors
+ * `TicketRaffle.abort` and `Lottery.abort` (a lottery round has no `won` waiting state).
+ */
+/** What `Lottery.draw` would do with a round right now: open refunds instead of requesting a draw. */
+export function lotteryWouldRefund(round: Pick<LotteryRound, "ticketsSold" | "pot" | "minPot" | "endTime">, now: number, abortDelay: number): boolean {
+  return now >= round.endTime + abortDelay || round.ticketsSold === 0 || round.pot < round.minPot;
+}
+
+export function abortableAt(
+  item: { endTime: number; requestedAt: number },
+  phase: "open" | "drawing" | "won" | "done",
+  timing: { abortDelay: number; drawTimeout: number },
+): number | undefined {
+  if (phase === "open") return item.endTime + timing.abortDelay;
+  if (phase === "drawing") return Math.max(item.endTime + timing.abortDelay, item.requestedAt + timing.drawTimeout);
+  if (phase === "won") return item.requestedAt + timing.abortDelay;
+  return undefined;
 }
 
 // ---------------------------------------------------------------- licences
@@ -822,9 +913,12 @@ export type HoldingLicense = {
   holding: Holding;
   /** Active tiers of the holding's collection (among tier numbers 0..LICENSE_TIER_PROBE-1). */
   tiers: LicenseTier[];
-  /** The user's licence in force on this holding, if any. */
-  license?: { tier: number; end: number };
-  /** The owner revoked a licence of the user on this holding; they cannot buy another. */
+  /** The user's licences in force on this holding, one per tier at most, lowest tier first. */
+  licenses: { tier: number; end: number }[];
+  /**
+   * The owner revoked a licence of the user on this holding: none of their licences on it is in
+   * force and they cannot buy another until the ban is lifted.
+   */
   banned?: boolean;
 };
 
@@ -836,6 +930,7 @@ export type Licensing = {
 };
 
 export async function readLicensing(client: Client, d: Deployment, user?: Address): Promise<Licensing> {
+  if (isDemo(client)) return demoReads.licensing();
   const lm = { address: d.ipLicenseManager, abi: ipLicenseManagerAbi } as const;
   const [vault, maxScopeLength] = await Promise.all([
     readHoldings(client, d),
@@ -863,18 +958,447 @@ export async function readLicensing(client: Client, d: Deployment, user?: Addres
 
   const holdings = await Promise.all(
     relevant.map(async (holding): Promise<HoldingLicense> => {
-      const [tiers, valid, banned] = await Promise.all([
+      const [tiers, banned, perTier] = await Promise.all([
         tiersOf(holding.collection),
-        user ? readContract(client, { ...lm, functionName: "validLicenseOf", args: [user, holding.id] }) : undefined,
         user ? readContract(client, { ...lm, functionName: "isBanned", args: [user, holding.id] }) : undefined,
+        // A licence can outlive its tier being switched off, so every probed tier number is checked.
+        user
+          ? Promise.all(
+              Array.from({ length: LICENSE_TIER_PROBE }, async (_, tier) => {
+                const [valid, end] = await readContract(client, { ...lm, functionName: "validLicenseOf", args: [user, holding.id, tier] });
+                return valid ? { tier, end } : undefined;
+              }),
+            )
+          : [],
       ]);
       return {
         holding,
         tiers,
-        license: valid && valid[0] ? { tier: valid[1], end: valid[2] } : undefined,
+        licenses: (perTier as ({ tier: number; end: number } | undefined)[]).filter((l): l is { tier: number; end: number } => l !== undefined),
         banned,
       };
     }),
   );
   return { holdings, maxScopeLength: Number(maxScopeLength) };
+}
+
+// ---------------------------------------------------------------- lottery
+
+export const LotteryStatus = { None: 0, Open: 1, Drawing: 2, Won: 3, Refunding: 4 } as const;
+export const LOTTERY_STATUS_NAMES = ["None", "Open", "Drawing", "Won", "Refunding"] as const;
+
+export type LotteryRound = {
+  id: bigint;
+  collection: Address;
+  ticketPrice: bigint;
+  ticketsSold: number;
+  endTime: number;
+  requestedAt: number;
+  /** The fee of this round, fixed when it opened. */
+  feeBps: number;
+  status: number;
+  winner: Address;
+  /** The smallest pot this round is drawn at, fixed when it opened; below it, it is refunded. */
+  minPot: bigint;
+  /** `ticketPrice * ticketsSold`. */
+  pot: bigint;
+  /** What the winner receives: the pot less the fee. */
+  prize: bigint;
+  /** While Drawing: the randomness request in flight. */
+  requestId?: bigint;
+  /** What the user paid in and has not been refunded. */
+  userPaid?: bigint;
+  userTickets?: number;
+};
+
+export type LotteryState = {
+  /** The collection's settings for its next round. `active` false: no new rounds open. */
+  config: { ticketPrice: bigint; duration: number; active: boolean };
+  /** The collection's latest round (it may have ended), if it ever had one. */
+  current?: LotteryRound;
+  /** Earlier rounds of this collection, newest first (among the most recent rounds of all collections). */
+  past: LotteryRound[];
+  /** The minimum pot new rounds get: a round whose pot ends below its own is refunded, not drawn. */
+  minPot: bigint;
+  /** The fee new rounds get. */
+  feeBps: bigint;
+  drawTimeout: number;
+  abortDelay: number;
+  /** Winnings waiting for the user to withdraw. */
+  userOwed?: bigint;
+};
+
+export async function readLottery(client: Client, d: Deployment, collection: Address, user?: Address): Promise<LotteryState> {
+  if (isDemo(client)) return demoReads.lottery();
+  const lottery = { address: d.lottery, abi: lotteryAbi } as const;
+  const [config, currentId, roundCount, minPot, feeBps, drawTimeout, abortDelay, userOwed] = await Promise.all([
+    readContract(client, { ...lottery, functionName: "configOf", args: [collection] }),
+    readContract(client, { ...lottery, functionName: "currentRoundOf", args: [collection] }),
+    readContract(client, { ...lottery, functionName: "roundCount" }),
+    readContract(client, { ...lottery, functionName: "minPot" }),
+    readContract(client, { ...lottery, functionName: "feeBps" }),
+    readContract(client, { ...lottery, functionName: "DRAW_TIMEOUT" }),
+    readContract(client, { ...lottery, functionName: "ABORT_DELAY" }),
+    user ? readContract(client, { ...lottery, functionName: "owedTo", args: [user] }) : undefined,
+  ]);
+  const rounds = (
+    await Promise.all(
+      recentIds(roundCount).map(async (id): Promise<LotteryRound> => {
+        const [round, roundMinPot, userPaid] = await Promise.all([
+          readContract(client, { ...lottery, functionName: "rounds", args: [id] }),
+          readContract(client, { ...lottery, functionName: "minPotOf", args: [id] }),
+          user ? readContract(client, { ...lottery, functionName: "paidBy", args: [id, user] }) : undefined,
+        ]);
+        const [roundCollection, ticketPrice, ticketsSold, endTime, requestedAt, roundFeeBps, status, winner] = round;
+        const requestId =
+          status === LotteryStatus.Drawing
+            ? await readContract(client, { ...lottery, functionName: "currentRequest", args: [id] })
+            : undefined;
+        const pot = ticketPrice * BigInt(ticketsSold);
+        return {
+          id,
+          collection: roundCollection,
+          ticketPrice,
+          ticketsSold,
+          endTime,
+          requestedAt,
+          feeBps: roundFeeBps,
+          status,
+          winner,
+          minPot: roundMinPot,
+          pot,
+          prize: pot - (pot * BigInt(roundFeeBps)) / BPS,
+          requestId,
+          userPaid,
+          userTickets: userPaid !== undefined && ticketPrice > 0n ? Number(userPaid / ticketPrice) : undefined,
+        };
+      }),
+    )
+  ).filter((round) => round.collection.toLowerCase() === collection.toLowerCase());
+  return {
+    config: { ticketPrice: config[0], duration: config[1], active: config[2] },
+    current: rounds.find((round) => round.id === currentId),
+    past: rounds.filter((round) => round.id !== currentId),
+    minPot,
+    feeBps,
+    drawTimeout: Number(drawTimeout),
+    abortDelay: Number(abortDelay),
+    userOwed,
+  };
+}
+
+// ---------------------------------------------------------------- points and activity
+
+export type PointsBalance = { active: bigint; pending: bigint };
+
+export async function readPoints(client: Client, d: Deployment, user: Address): Promise<PointsBalance> {
+  if (isDemo(client)) return demoReads.points();
+  const pts = { address: d.points, abi: pointsAbi } as const;
+  const [active, pending] = await Promise.all([
+    readContract(client, { ...pts, functionName: "pointsOf", args: [user] }),
+    readContract(client, { ...pts, functionName: "pendingOf", args: [user] }),
+  ]);
+  return { active, pending };
+}
+
+export type ActivityItem = {
+  /** Unique within the feed. */
+  key: string;
+  /** Where in the app this happened, as a route (see routes.ts). */
+  route: string;
+  module: string;
+  text: string;
+  /** Who did it, when the event names an account. */
+  actor?: Address;
+  blockNumber: bigint;
+  /** Block timestamp; missing if the block could not be read. */
+  time?: number;
+};
+
+/**
+ * Recent events of one collection across the protocol's modules, newest first. Only events indexed by
+ * collection are used, one log query per contract. Returns an empty list if the RPC refuses the
+ * queries (public RPCs cap the block range): the feed is a convenience, not a source of truth.
+ */
+export async function readActivity(
+  client: Client,
+  d: Deployment,
+  collection: Address,
+  fromBlock = 0n,
+  limit = 12,
+): Promise<ActivityItem[]> {
+  if (isDemo(client)) return demoReads.activity();
+  const range = { fromBlock, toBlock: "latest", args: { collection }, strict: true } as const;
+  const wei = (v: bigint) => `${formatEther(v).replace(/(\.\d{0,4})\d*$/, "$1").replace(/\.?0+$/, "") || "0"} ETH`;
+  let items: ActivityItem[];
+  try {
+    const [made, accepted, buybacks, bets, raffles, rounds, markets] = await Promise.all([
+      getContractEvents(client, { address: d.marketplace, abi: marketplaceAbi, eventName: "OfferMade", ...range }),
+      getContractEvents(client, { address: d.marketplace, abi: marketplaceAbi, eventName: "OfferAccepted", ...range }),
+      getContractEvents(client, { address: d.buybackEngine, abi: buybackEngineAbi, eventName: "Buyback", ...range }),
+      getContractEvents(client, { address: d.games, abi: gamesAbi, eventName: "BetPlaced", ...range }),
+      getContractEvents(client, { address: d.ticketRaffle, abi: ticketRaffleAbi, eventName: "RaffleCreated", ...range }),
+      getContractEvents(client, { address: d.lottery, abi: lotteryAbi, eventName: "RoundOpened", ...range }),
+      getContractEvents(client, { address: d.predictionMarket, abi: predictionMarketAbi, eventName: "MarketCreated", ...range }),
+    ]);
+    const key = (log: { blockNumber: bigint; logIndex: number }) => `${log.blockNumber}-${log.logIndex}`;
+    items = [
+      ...made.map((l) => ({
+        key: key(l),
+        route: "/trade/marketplace",
+        module: "Marketplace",
+        text: l.args.collectionWide
+          ? `Collection offer: ${l.args.quantity} × ${wei(l.args.price)}`
+          : `Offer of ${wei(l.args.price)} for token #${l.args.tokenId}`,
+        actor: l.args.offerer,
+        blockNumber: l.blockNumber,
+      })),
+      ...accepted.map((l) => ({
+        key: key(l),
+        route: "/trade/marketplace",
+        module: "Marketplace",
+        text: `Token #${l.args.tokenId} sold for ${wei(l.args.price)} (${wei(l.args.fee)} fee)`,
+        actor: l.args.seller,
+        blockNumber: l.blockNumber,
+      })),
+      ...buybacks.map((l) => ({
+        key: key(l),
+        route: "/vault/holdings",
+        module: "Floor bid",
+        text: `Bought token #${l.args.tokenId} for ${wei(l.args.price)}, now vault holding #${l.args.vaultId}`,
+        actor: l.args.seller,
+        blockNumber: l.blockNumber,
+      })),
+      ...bets.map((l) => ({
+        key: key(l),
+        route: l.args.chanceBps === 0n ? "/play/slots" : "/play/dice",
+        module: "Games",
+        text: l.args.chanceBps === 0n ? `Slots spin of ${wei(l.args.wager)}` : `Dice bet of ${wei(l.args.wager)} at ${Number(l.args.chanceBps) / 100}%`,
+        actor: l.args.player,
+        blockNumber: l.blockNumber,
+      })),
+      ...raffles.map((l) => ({
+        key: key(l),
+        route: "/play/ticket-raffles",
+        module: "Ticket raffle",
+        text: `Raffle #${l.args.raffleId} opened for token #${l.args.tokenId} at ${wei(l.args.ticketPrice)} a ticket`,
+        actor: l.args.creator,
+        blockNumber: l.blockNumber,
+      })),
+      ...rounds.map((l) => ({
+        key: key(l),
+        route: "/play/lottery",
+        module: "Lottery",
+        text: `Lottery round #${l.args.roundId} opened at ${wei(l.args.ticketPrice)} a ticket`,
+        blockNumber: l.blockNumber,
+      })),
+      ...markets.map((l) => ({
+        key: key(l),
+        route: "/play/predictions",
+        module: "Predictions",
+        text: `Prediction market #${l.args.marketId} opened at a ${wei(l.args.startPrice)} floor`,
+        blockNumber: l.blockNumber,
+      })),
+    ];
+  } catch {
+    return [];
+  }
+  items.sort((a, b) => (a.blockNumber === b.blockNumber ? (a.key < b.key ? 1 : -1) : a.blockNumber < b.blockNumber ? 1 : -1));
+  items = items.slice(0, limit);
+  const times = new Map<bigint, number>();
+  await Promise.all(
+    [...new Set(items.map((item) => item.blockNumber))].map(async (blockNumber) => {
+      try {
+        times.set(blockNumber, Number((await getBlock(client, { blockNumber })).timestamp));
+      } catch {
+        // leave the time out
+      }
+    }),
+  );
+  return items.map((item) => ({ ...item, time: times.get(item.blockNumber) }));
+}
+
+// ---------------------------------------------------------------- fairness: proofs and status
+
+export type BetProof = {
+  requestId: bigint;
+  wager: bigint;
+  /** 0 marks a slots spin. */
+  chanceBps: number;
+  /** The edge the bet was placed with, in basis points. */
+  edgeBps: bigint;
+  /** "stored": read from the bet's record as it was just before settlement. "fee": implied by the fee paid. */
+  edgeSource: "stored" | "fee";
+  roll: number;
+  /** What the contract actually paid and took, from the BetSettled event. */
+  paidPayout: bigint;
+  paidFee: bigint;
+  placedTx: Hash;
+  settledTx: Hash;
+};
+
+/** Everything needed to recompute a settled bet, from its two events. Undefined if it is not settled. */
+export async function readBetProof(client: Client, d: Deployment, requestId: bigint, fromBlock = 0n): Promise<BetProof | undefined> {
+  if (isDemo(client)) return demoReads.betProof(requestId);
+  const games = { address: d.games, abi: gamesAbi } as const;
+  const range = { fromBlock, toBlock: "latest", args: { requestId }, strict: true } as const;
+  const [placed, settled] = await Promise.all([
+    getContractEvents(client, { ...games, eventName: "BetPlaced", ...range }),
+    getContractEvents(client, { ...games, eventName: "BetSettled", ...range }),
+  ]);
+  if (placed.length === 0 || settled.length === 0) return undefined;
+  const bet = placed[placed.length - 1];
+  const result = settled[settled.length - 1];
+  const { wager, chanceBps } = bet.args;
+  // The bet's record, with the edge it was placed at, is deleted at settlement. Read it as it stood
+  // one block earlier; a node without that history leaves only the fee to infer it from.
+  let edgeBps: bigint;
+  let edgeSource: BetProof["edgeSource"] = "stored";
+  try {
+    const stored = await readContract(client, { ...games, functionName: "bets", args: [requestId], blockNumber: result.blockNumber - 1n });
+    if (BigInt(stored[0]) === 0n) throw new Error("no record");
+    edgeBps = BigInt(stored[5]);
+  } catch {
+    edgeSource = "fee";
+    edgeBps = wager === 0n ? 0n : (result.args.fee * BPS) / wager;
+    while ((wager * edgeBps) / BPS < result.args.fee) edgeBps++;
+  }
+  return {
+    requestId,
+    wager,
+    chanceBps: Number(chanceBps),
+    edgeBps,
+    edgeSource,
+    roll: Number(result.args.roll),
+    paidPayout: result.args.payout,
+    paidFee: result.args.fee,
+    placedTx: bet.transactionHash,
+    settledTx: result.transactionHash,
+  };
+}
+
+export type DrawProof = {
+  ticketsSold: number;
+  /** The winning ticket number the contract emitted (0-based). */
+  ticket: bigint;
+  /** The winner the contract recorded. */
+  winner: Address;
+  /** Who `ownerOfTicket` says held that ticket. */
+  ticketHolder: Address;
+  drawTx: Hash;
+};
+
+/** The draw of a lottery round or ticket raffle: the emitted ticket and who held it. */
+export async function readDrawProof(
+  client: Client,
+  d: Deployment,
+  kind: "lottery" | "ticketRaffle",
+  id: bigint,
+  fromBlock = 0n,
+): Promise<DrawProof | undefined> {
+  if (isDemo(client)) return demoReads.drawProof(kind, id);
+  const range = { fromBlock, toBlock: "latest", strict: true } as const;
+  if (kind === "lottery") {
+    const lottery = { address: d.lottery, abi: lotteryAbi } as const;
+    const logs = await getContractEvents(client, { ...lottery, eventName: "RoundWon", args: { roundId: id }, ...range });
+    const log = logs[logs.length - 1];
+    if (!log) return undefined;
+    const [round, ticketHolder] = await Promise.all([
+      readContract(client, { ...lottery, functionName: "rounds", args: [id] }),
+      readContract(client, { ...lottery, functionName: "ownerOfTicket", args: [id, log.args.ticket] }),
+    ]);
+    return { ticketsSold: round[2], ticket: log.args.ticket, winner: log.args.winner, ticketHolder, drawTx: log.transactionHash };
+  }
+  const raffle = { address: d.ticketRaffle, abi: ticketRaffleAbi } as const;
+  const logs = await getContractEvents(client, { ...raffle, eventName: "WinnerDrawn", args: { raffleId: id }, ...range });
+  const log = logs[logs.length - 1];
+  if (!log) return undefined;
+  const [data, ticketHolder] = await Promise.all([
+    readContract(client, { ...raffle, functionName: "raffles", args: [id] }),
+    readContract(client, { ...raffle, functionName: "ownerOfTicket", args: [id, log.args.ticket] }),
+  ]);
+  return { ticketsSold: data[6], ticket: log.args.ticket, winner: log.args.winner, ticketHolder, drawTx: log.transactionHash };
+}
+
+export type RandomnessSource = {
+  module: "Games" | "Lottery" | "Ticket raffles" | "Vault raffles";
+  provider: Address;
+  /**
+   * True when the provider answers like test/mocks/MockRandomness.sol, where whoever calls `fulfill`
+   * picks the number. False only says it is not that mock, not that it is the Chainlink adapter.
+   */
+  isMock: boolean;
+};
+
+export type FairnessStatus = {
+  sources: RandomnessSource[];
+  anyMock: boolean;
+  /** The owner of the Games contract, who can replace its randomness provider. */
+  gamesOwner: Address;
+  /** Whether that owner is a contract (a timelock or multisig could be) rather than a plain account. */
+  ownerIsContract: boolean;
+  games: { edgeBps: bigint; minBet: bigint; maxExposureBps: bigint; maxTotalExposureBps: bigint; refundTimeout: number };
+  lottery: { feeBps: bigint; minPot: bigint };
+  ticketRaffle: { feeBps: bigint; minPot: bigint };
+};
+
+async function isMockRandomness(client: Client, provider: Address): Promise<boolean> {
+  try {
+    // Only the mock has this counter; the Chainlink adapter does not answer the call.
+    await readContract(client, { address: provider, abi: mockRandomnessAbi, functionName: "lastRequestId" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The on-chain facts the fairness claim depends on, for the connected chain. */
+export async function readFairnessStatus(client: Client, d: Deployment): Promise<FairnessStatus> {
+  if (isDemo(client)) return demoReads.fairness();
+  const games = { address: d.games, abi: gamesAbi } as const;
+  const lottery = { address: d.lottery, abi: lotteryAbi } as const;
+  const ticketRaffle = { address: d.ticketRaffle, abi: ticketRaffleAbi } as const;
+  const [gamesRng, lotteryRng, ticketRng, vaultRng, gamesOwner, edgeBps, minBet, maxExposureBps, maxTotalExposureBps, refundTimeout, lotteryFee, lotteryMinPot, raffleFee, raffleMinPot] =
+    await Promise.all([
+      readContract(client, { ...games, functionName: "randomness" }),
+      readContract(client, { ...lottery, functionName: "randomness" }),
+      readContract(client, { ...ticketRaffle, functionName: "randomness" }),
+      readContract(client, { address: d.vaultRaffle, abi: vaultRaffleAbi, functionName: "randomness" }),
+      readContract(client, { ...games, functionName: "owner" }),
+      readContract(client, { ...games, functionName: "edgeBps" }),
+      readContract(client, { ...games, functionName: "minBet" }),
+      readContract(client, { ...games, functionName: "maxExposureBps" }),
+      readContract(client, { ...games, functionName: "MAX_TOTAL_EXPOSURE_BPS" }),
+      readContract(client, { ...games, functionName: "REFUND_TIMEOUT" }),
+      readContract(client, { ...lottery, functionName: "feeBps" }),
+      readContract(client, { ...lottery, functionName: "minPot" }),
+      readContract(client, { ...ticketRaffle, functionName: "feeBps" }),
+      readContract(client, { ...ticketRaffle, functionName: "minPot" }),
+    ]);
+  const providers = [
+    ["Games", gamesRng],
+    ["Lottery", lotteryRng],
+    ["Ticket raffles", ticketRng],
+    ["Vault raffles", vaultRng],
+  ] as const;
+  const [mocks, ownerCode] = await Promise.all([
+    Promise.all(providers.map(([, provider]) => isMockRandomness(client, provider))),
+    getCode(client, { address: gamesOwner }),
+  ]);
+  const sources = providers.map(([module, provider], i) => ({ module, provider, isMock: mocks[i] }));
+  return {
+    sources,
+    anyMock: mocks.some(Boolean),
+    gamesOwner,
+    ownerIsContract: ownerCode !== undefined && ownerCode !== "0x",
+    games: { edgeBps, minBet, maxExposureBps, maxTotalExposureBps, refundTimeout: Number(refundTimeout) },
+    lottery: { feeBps: lotteryFee, minPot: lotteryMinPot },
+    ticketRaffle: { feeBps: raffleFee, minPot: raffleMinPot },
+  };
+}
+
+/** `Vault.auctionPrice`: the current price of a holding in auction. */
+export async function readAuctionPrice(client: Client, d: Deployment, vaultId: bigint): Promise<bigint> {
+  if (isDemo(client)) return demoReads.auctionPrice(vaultId);
+  return readContract(client, { address: d.vault, abi: vaultAbi, functionName: "auctionPrice", args: [vaultId] });
 }

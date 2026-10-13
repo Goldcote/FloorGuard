@@ -6,6 +6,7 @@ import {
   erc721Abi,
   gamesAbi,
   ipLicenseManagerAbi,
+  lotteryAbi,
   marketplaceAbi,
   mockRandomnessAbi,
   pointsAbi,
@@ -272,3 +273,39 @@ export const requestLicenseCall = (d: Deployment, vaultId: bigint, tier: number,
   args: [vaultId, tier, usageScope],
   value: price,
 });
+
+// ---------------------------------------------------------------- slots
+
+/** Spin the slots with `wager`; the edge funds `collection`'s buybacks. */
+export const spinCall = (d: Deployment, collection: Address, wager: bigint): Call => ({
+  address: d.games,
+  abi: gamesAbi,
+  functionName: "spin",
+  args: [collection],
+  value: wager,
+});
+
+// ---------------------------------------------------------------- lottery
+
+const lotteryCall = (d: Deployment, functionName: string, args: readonly unknown[], value?: bigint): Call => ({
+  address: d.lottery,
+  abi: lotteryAbi,
+  functionName,
+  args,
+  value,
+});
+
+/**
+ * Buy tickets in the collection's open round; opens the next round if the latest has ended. The
+ * contract requires exactly `count * ticketPrice` at the price of the round the tickets land in:
+ * the open round's price, or the configured price when a new round opens.
+ */
+export const buyLotteryTicketsCall = (d: Deployment, collection: Address, count: number, ticketPrice: bigint): Call =>
+  lotteryCall(d, "buy", [collection, count], ticketPrice * BigInt(count));
+
+export const drawLotteryCall = (d: Deployment, roundId: bigint): Call => lotteryCall(d, "draw", [roundId]);
+export const resetLotteryDrawCall = (d: Deployment, roundId: bigint): Call => lotteryCall(d, "resetDraw", [roundId]);
+export const abortLotteryCall = (d: Deployment, roundId: bigint): Call => lotteryCall(d, "abort", [roundId]);
+export const refundLotteryCall = (d: Deployment, roundId: bigint): Call => lotteryCall(d, "refund", [roundId]);
+/** Withdraw the caller's lottery winnings. */
+export const withdrawLotteryCall = (d: Deployment): Call => lotteryCall(d, "withdraw", []);
