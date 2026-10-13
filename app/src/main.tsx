@@ -7,6 +7,8 @@ import { TxProvider } from "./tx";
 import { config } from "./wagmi";
 import "@fontsource-variable/space-grotesk";
 import "./styles.css";
+import "./styles/world.css";
+import "./styles/play.css";
 
 // Development aid: fake EIP-6963 wallets for exercising the wallet menu. Stripped from production builds.
 if (import.meta.env.DEV && new URLSearchParams(window.location.search).has("mock-wallets")) {
