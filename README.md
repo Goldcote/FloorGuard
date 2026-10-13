@@ -40,7 +40,11 @@ flowchart LR
    down. 3% of winnings funds buybacks.
 5. **Games.** Dice and coinflip against a house bankroll. The 2% edge on every
    wager funds buybacks for the collection the player backs.
-6. **Points and raffles.** Users earn points for the fees they generate. Points
+6. **Ticket raffles.** Anyone can raffle an NFT for paid tickets; 5% of ticket
+   revenue funds buybacks.
+7. **IP licensing.** Licences to use the artwork of NFTs held in the Vault, with
+   the fees funding buybacks.
+8. **Points and raffles.** Users earn points for the fees they generate. Points
    are their odds of winning NFTs raffled from the Vault.
 
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains each contract and lists
@@ -56,8 +60,7 @@ where the code departs from the concept document.
 | Web app in `app/` | Reads and transactions tested against a local chain; not yet tested with a browser wallet. See [app/README.md](app/README.md) |
 | Audit | None |
 
-Slots, lotteries, IP licensing and a governance token from the concept document
-are not built. The full list is at the end of the architecture document.
+Slots, lotteries and a governance token from the concept document are not built. The full list is at the end of the architecture document.
 
 ## Getting started
 

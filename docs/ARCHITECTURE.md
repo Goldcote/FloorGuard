@@ -15,6 +15,8 @@ code are right. The differences are listed at the end.
 | `Vault` | Locks bought NFTs. Unlock needs 180 days and a floor at 130% of the purchase price. Then raffle, relock or Dutch auction. |
 | `PredictionMarket` | Pooled higher/lower bets on a collection's floor. 3% fee on winnings to the Treasury. |
 | `Games` | Dice and coinflip against a house bankroll. The edge on each wager goes to the Treasury. |
+| `TicketRaffle` | Anyone raffles an NFT for paid tickets. 5% of ticket revenue goes to the Treasury. |
+| `IPLicenseManager` | Sells time-limited licences for NFTs held in the Vault. Licence fees go to the Treasury. |
 | `Points` | Non-transferable points earned per ETH of fees generated. Raffle weights. |
 | `VaultRaffle` | Raffles vault NFTs to points holders using a randomness provider. |
 | `SalesFloorOracle` | Floor from the protocol's own floor-type sales (lower median of the last 7). |
@@ -79,6 +81,7 @@ collection cannot spend another's fees. ETH sent without a collection sits in
 | Games bankroll | Anyone, with `fundBankroll`; losing stakes | Winning players, or the Treasury's unallocated pool | The owner can only move it to the Treasury |
 | Marketplace escrow | Open offers | The seller on acceptance, or back to the offerer | The offerer and the seller |
 | Prediction pools | Bets | Winners, or refunds when void | The oracle price |
+| Ticket raffle revenue | Ticket sales | The raffle's creator, 5% to the Treasury, or refunds | The raffle outcome |
 
 There is no team wallet, staking pool or token. Vault auction proceeds are
 recycled capital and are not split with the project.
@@ -87,9 +90,20 @@ recycled capital and are not split with the project.
 
 Every contract has one `owner`, set at deployment. The owner cannot withdraw from
 the Treasury, but it chooses the spender, the oracles and the randomness
-providers, so it has to be fully trusted. Before any real use it should be a
-multisig behind a timelock. Each NFT project can also deploy its own instance of
-the protocol and be its own owner.
+providers, so it has to be fully trusted. Each NFT project can also deploy its
+own instance of the protocol and be its own owner.
+
+What the owner is, is the deployer's choice, and the contracts do not care:
+
+- a single wallet, which is fine for a testnet and nothing else;
+- a multisig, by setting `OWNER`;
+- a multisig behind a timelock, by also setting `TIMELOCK_DELAY`. The deploy
+  script then creates an OpenZeppelin `TimelockController` that owns every
+  contract, with `OWNER` as its only proposer and executor, so each owner action
+  is public for the delay before it can run.
+
+Ownership transfers are two-step. `script/AcceptOwnership.s.sol` completes the
+handover in either setup.
 
 Adding a collection is an owner action: mark it supported on the Marketplace,
 set its bid curve on the BuybackEngine, and optionally set a project share and
@@ -167,6 +181,32 @@ leave to winning players or to the Treasury.
 Each bet costs the operator one randomness request, which on Ethereum mainnet is
 likely to exceed the fee on a small wager. Set `minBet` accordingly.
 
+## Ticket raffles
+
+`TicketRaffle` lets anyone raffle an NFT they own. The creator sets a ticket
+price, a minimum and maximum number of tickets and a duration, and the NFT is
+held in escrow. When the raffle ends, anyone can `close` it:
+
+- if the minimum was reached, a random ticket wins the NFT, the creator receives
+  the ticket revenue and 5% goes to the Treasury (to the collection's budget if
+  the collection is supported, otherwise to the unallocated pool);
+- if not, the NFT goes back to the creator and every buyer can take a refund.
+
+The creator can cancel only while no ticket has been sold. Late randomness is
+ignored, as in the other modules.
+
+## IP licensing
+
+`IPLicenseManager` sells time-limited licences for the artwork of NFTs held in
+the Vault. The owner defines numbered tiers per collection, each with a price
+and a duration. The licence fee goes to the Treasury as a fee for that
+collection. A licence stops being valid when its term ends, when the owner
+revokes it, or when the NFT goes to auction or leaves the Vault.
+
+The contract records who paid for which licence and nothing more. Whether the
+Vault may sublicense a collection's artwork depends on that collection's own
+terms, and the licence text has to exist off-chain.
+
 ## Points and raffles
 
 Points are credited per ETH of **fees that reach the buyback budget**, not per
@@ -229,8 +269,8 @@ contract is about 7 KB, well under the 24 KB limit.
 
 ## Not built yet
 
-- Slots, lotteries and paid-ticket raffles
-- IP licensing of vault NFTs
+- Slots and lotteries
+- Revenue-share and exclusive licences
 - A governance token; the owner is a single address, meant to be a multisig
 - Burning vault NFTs
 - Streak, referral and daily bonuses for points

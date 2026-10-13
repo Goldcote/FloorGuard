@@ -41,6 +41,7 @@ VRF_COORDINATOR=0x5C210eF41CD1a72de73bF76eC39637bB0d3d7BEE
 VRF_KEY_HASH=0x9e1344a1247c8a1785d0a4681a27152bffdb43666ae5bf7d14d24a5efd44bf71
 VRF_SUB_ID=<your subscription id>
 OWNER=<your multisig, or leave empty to keep the deployer as owner>
+TIMELOCK_DELAY=<optional: seconds owner actions wait in a public timelock>
 ```
 
 ## 4. Deploy
@@ -61,11 +62,13 @@ Addresses are written to `deployments/84532.json`. Commit that file.
 
 ## 5. After deploying
 
-1. Add the `randomness` and `gamesRandomness` addresses from the deployment file
-   as consumers of the VRF subscription. Raffles and games cannot settle until
-   this is done.
-2. If `OWNER` was set, that account must call `acceptOwnership()` on every
-   contract.
+1. Add the `randomness`, `gamesRandomness` and `ticketRaffleRandomness` addresses
+   from the deployment file as consumers of the VRF subscription. Raffles and
+   games cannot settle until this is done.
+2. If `OWNER` was set, that account finishes the handover with
+   `script/AcceptOwnership.s.sol`. With a timelock, run it once with
+   `STEP=schedule` and again after the delay with `STEP=execute`. A multisig
+   submits the same calls itself.
 3. Onboard a collection (see `script/AddCollection.s.sol` for all options):
 
    ```bash
