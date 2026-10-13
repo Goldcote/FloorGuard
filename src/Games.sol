@@ -117,6 +117,12 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
 
     // ------------------------------------------------------------------ playing
 
+    /// @notice The largest wager accepted right now. If it is below `minBet`, the bankroll is too small
+    ///         for any bet.
+    function maxWager() public view returns (uint256) {
+        return bankroll * maxWagerBps / BPS;
+    }
+
     /// @notice What a winning bet of `wager` at `chanceBps` pays, the wager included.
     function quote(uint256 wager, uint256 chanceBps) public view returns (uint256 payout, uint256 fee) {
         fee = wager * edgeBps / BPS;
@@ -162,8 +168,8 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     {
         if (!isSupported[collection]) revert UnsupportedCollection();
         if (msg.value < minBet) revert BetTooSmall();
-        uint256 maxWager = bankroll * maxWagerBps / BPS;
-        if (msg.value > maxWager) revert WagerTooHigh(msg.value, maxWager);
+        uint256 limit_ = maxWager();
+        if (msg.value > limit_) revert WagerTooHigh(msg.value, limit_);
 
         uint256 limit = bankroll * maxExposureBps / BPS;
         if (exposure > limit) revert ExposureTooHigh(exposure, limit);

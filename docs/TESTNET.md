@@ -72,7 +72,7 @@ Addresses are written to `deployments/84532.json`. Commit that file.
    calls have to come from the new owner.
 
    ```bash
-   COLLECTION=<address> BID_BASE=<wei> BID_MAX=<wei> forge script script/AddCollection.s.sol --rpc-url base_sepolia --account floorguard-deployer --broadcast
+   COLLECTION=<address> BID_BASE=<wei> BID_MAX=<wei> MIN_AUCTION_RESERVE=<wei> forge script script/AddCollection.s.sol --rpc-url base_sepolia --account floorguard-deployer --broadcast
    ```
 
 3. For prediction markets, give a price reporter the right to push floors with

@@ -27,7 +27,9 @@ bankroll, to pay for the risk the bankroll carries. The owner can change that
 split. The owner also sets the price limits at which
 that budget is spent.
 
-The edge that applies to a bet is stored with the bet when it is placed. Fees
+The edge that applies to a bet is stored with the bet when it is placed. How
+that edge is split between the bankroll and the Treasury is read when the bet
+settles; it does not change what the player is paid. Fees
 and minimum pots of a lottery round, a raffle and a prediction market are fixed
 when they are created. A later change by the owner cannot reach them.
 

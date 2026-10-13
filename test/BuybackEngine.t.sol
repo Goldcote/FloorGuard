@@ -80,8 +80,9 @@ contract BuybackEngineTest is Base {
         engine.sell(address(nft), 1, 100 ether);
         assertEq(alice.balance - before, 100 ether);
         assertEq(treasury.budgetOf(address(nft)), 0);
-        // a budget-limited sale lowers the base by one step only, not to the sale price
-        assertEq(engine.curvePrice(address(nft)), 135 ether);
+        // a budget-limited sale pulls the base down by at most three steps before the usual one:
+        // the anchor is max(100, 150 less 30%) = 105 ETH, and the new base is 10% below it
+        assertEq(engine.curvePrice(address(nft)), 94.5 ether);
 
         _mintApproved(alice, 2, address(engine));
         vm.prank(alice);
@@ -106,6 +107,55 @@ contract BuybackEngineTest is Base {
         assertEq(engine.currentBid(address(nft)), 165 ether);
         treasury.deposit{value: 1 ether}(address(nft));
         assertEq(engine.currentBid(address(nft)), 165 ether);
+    }
+
+    /// A deposit never lowers the bid: when the bid was the budget, the curve restarts from there.
+    function test_curveRestartsFromTheOldBudgetWhenThatIsAboveTheBase() public {
+        vm.prank(gov);
+        engine.configureBid(address(nft), 80 ether, 300 ether, 1_000, 500, true);
+        skip(5 days); // curve at 120 ETH, budget 100: the bid is 100
+        assertEq(engine.currentBid(address(nft)), 100 ether);
+        treasury.deposit{value: 1}(address(nft));
+        assertEq(engine.curvePrice(address(nft)), 100 ether);
+        assertEq(engine.currentBid(address(nft)), 100 ether);
+    }
+
+    /// No buyback below the collection's minimum bid, so a seller who names no minimum is never paid
+    /// dust out of a nearly empty budget.
+    function test_noBuybackBelowTheMinimumBid() public {
+        assertEq(engine.minBidOf(address(nft)), 1 ether); // a tenth of the 10 ETH base by default
+        vm.prank(gov);
+        engine.configureBid(address(nft), 100 ether, 200 ether, 0, 0, true);
+        _mintApproved(alice, 1, address(engine));
+        _mintApproved(alice, 2, address(engine));
+        treasury.deposit{value: 0.5 ether}(address(nft)); // 100.5 ETH: one sale leaves 0.5 ETH
+        vm.startPrank(alice);
+        engine.sell(address(nft), 1, 0);
+        assertEq(engine.currentBid(address(nft)), 0.5 ether);
+        assertFalse(engine.isFillable(address(nft)));
+        vm.expectRevert(BuybackEngine.NothingToBid.selector);
+        engine.sell(address(nft), 2, 0);
+        vm.stopPrank();
+    }
+
+    /// In a market that has fallen, budget-limited sales pull the base down quickly enough that a later
+    /// lump is not spent far above the market.
+    function test_baseFollowsAFallingMarket() public {
+        vm.startPrank(gov);
+        engine.configureBid(address(nft), 100 ether, 200 ether, 1_000, 1_500, true);
+        engine.setMinBid(address(nft), 1 ether);
+        vm.stopPrank();
+        // the market is now 40 ETH and the budget arrives 40 ETH at a time
+        vm.prank(address(engine));
+        treasury.spend(address(nft), 60 ether, payable(address(0xdead)));
+        for (uint256 id = 1; id <= 2; ++id) {
+            _mintApproved(alice, id, address(engine));
+            vm.prank(alice);
+            engine.sell(address(nft), id, 40 ether);
+            treasury.deposit{value: 40 ether}(address(nft));
+        }
+        // two budget-limited sales at 40 have brought the base from 100 down to 34
+        assertLt(engine.curvePrice(address(nft)), 50 ether);
     }
 
     function test_onBudgetIncrease_onlyTreasury() public {

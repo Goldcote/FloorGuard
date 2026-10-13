@@ -201,19 +201,17 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
                 payout = won + profit - fee;
             }
             // each fee is credited once: half to the winners who pay it, half to the losers who fund it
-            pointsFee = (fee + lost * marketFeeBps / BPS) / 2;
+            pointsFee = lost * marketFeeBps / BPS;
         }
 
         emit Claimed(marketId, msg.sender, payout, fee);
-        if (fee != 0) {
-            // points follow what reached the buyback budget, not the project's share of the fee
-            uint256 toBudget = treasury.depositFee{value: fee}(m.collection);
-            pointsFee = pointsFee * toBudget / fee;
-        } else if (pointsFee != 0) {
-            // a losing stake pays no fee here, but the fee it funded is split the same way
+        // points follow what reaches the buyback budget, not the project's share of the fee
+        if (pointsFee != 0) {
             (, uint16 shareBps) = treasury.projectShareOf(m.collection);
             pointsFee = pointsFee * (BPS - shareBps) / BPS;
         }
+        if (fee != 0) pointsFee += treasury.depositFee{value: fee}(m.collection);
+        pointsFee /= 2;
         if (pointsFee != 0 && address(points) != address(0)) {
             // points are a bonus; a failure there must never block a payout
             try points.creditFee(msg.sender, pointsFee) {} catch {}

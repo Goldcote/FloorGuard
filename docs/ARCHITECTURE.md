@@ -128,29 +128,45 @@ bid(t)   = min(curve(t), the collection's budget)
 ```
 
 Any holder can call `sell(collection, tokenId, minPrice)` and is paid the current
-bid from the collection's budget. After a sale the base price becomes the sale
-price less `stepDownBps`, and the curve starts rising again.
+bid from the collection's budget. After a sale the curve restarts one step
+(`stepDownBps`) below the sale price.
 
-Three rules keep the bid from running ahead of the market:
+Four rules keep the bid from running ahead of the market:
 
 - **The bid is never more than the budget can pay.** With a thin budget the bid
   is the budget itself, rising as fees arrive, and a sale happens when it
-  reaches the cheapest seller's price. A sale below the base lowers the base by
-  one step only, so one cheap sale cannot collapse the curve.
-- **The curve only rises while the budget covers it.** Whenever a budget grows,
-  the Treasury tells the engine; if the budget could not cover the curve until
-  then, the curve restarts from its base. Money that arrives late or in a lump,
-  such as auction proceeds, is therefore not spent at an inflated bid.
-- **The cooldown, if set, must be short.** After a sale the curve needs
-  `stepDown / ((1 − stepDown) × growth)` days to regrow to its last price (12.6
-  hours at 5% and 10% a day). `setFillCooldown` rejects anything longer, since a
-  longer pause would let every sale happen above the one before.
+  reaches the cheapest seller's price.
+- **Late money does not inherit a rise nobody could have been paid.** The curve
+  keeps drifting up while the budget cannot cover it, but whenever a budget
+  grows the Treasury tells the engine, and if the budget could not cover the
+  curve until then, the curve restarts from the higher of its base and the old
+  budget. A deposit therefore never lowers the bid, and money arriving late or
+  in a lump starts from where the bid really was.
+- **The base follows a falling market.** A sale limited by a thin budget may be
+  far below the base. It pulls the base down by up to three steps before the
+  usual one, so a few such sales bring the base to the market without one cheap
+  sale collapsing the curve.
+- **No bid below a minimum.** `minBidOf` (a tenth of the base unless the owner
+  sets it) stops a nearly empty budget from buying a token for dust from a
+  seller who named no minimum price.
+
+The cooldown, if set, must be short: after a sale the curve needs
+`stepDown / ((1 − stepDown) × growth)` days to regrow to its last price (12.6
+hours at 5% and 10% a day, 42 hours at the onboarding script's 15%).
+`setFillCooldown` rejects anything longer.
+
+What these rules do not cover: if the market falls sharply while almost no
+fees arrive, the base stays above the market, and a lump arriving then is spent
+from that stale base. In a review's model, a floor that halved with no inflow
+followed by a lump was overpaid by 15% at a 15% step. The owner or guardian
+should lower the bid before a lump arrives in a fallen market.
 
 Holders compete to be the first to accept once the bid reaches the lowest price
 any of them will take. No oracle is involved. The owner's `maxPrice` is the
 upper limit on what the engine pays. A `guardian` address, if set, can lower a
-collection's base and maximum price or pause it, and nothing else: a fast key
-for a falling market while the owner sits behind a timelock.
+collection's base and maximum price or pause it. Each call also restarts the
+curve, so a guardian can hold a bid down but never raise it: a fast key for a
+falling market while the owner sits behind a timelock.
 
 Buying the cheapest listing on another venue and selling it into the bid pays
 only when the bid exceeds that listing by the buyer's costs, roughly 1 to 6%
@@ -159,9 +175,11 @@ that, so it takes tokens off the market without lifting listings elsewhere.
 
 These rules were added after an economics review found that the earlier design
 drifted to `maxPrice` whenever fees arrived slowly; see
-[ECONOMICS-REVIEW.md](ECONOMICS-REVIEW.md). They have tests but have not been
-through an independent review, and a single holder who dominates a collection's
-supply can still wait for the bid to reach `maxPrice`.
+[ECONOMICS-REVIEW.md](ECONOMICS-REVIEW.md). A follow-up review simulated them:
+with sellers who accept at the floor, the engine paid 1.00 times the floor in
+every steady, rising and falling scenario. A single holder who dominates a
+collection's supply can still wait for a higher bid (1.17 to 1.34 times the
+floor in the model, with the cap at 1.5).
 
 The bid only finds the true floor for a collection with a fixed supply. If
 tokens can still be minted, the cheapest seller is the minter and the bid finds

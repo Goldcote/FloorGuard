@@ -36,8 +36,9 @@ flowchart LR
 2. **Buyback.** The protocol quotes a standing bid for each collection. It rises
    over time until a holder sells into it, then steps down and rises again, so
    it finds the lowest price a holder will accept without an oracle. The bid is
-   never more than the collection's budget can pay, and it only rises while the
-   budget covers it. The owner sets a maximum price.
+   never more than the collection's budget can pay, and money that arrives late
+   does not inherit a rise nobody could have been paid. The owner sets a maximum
+   price.
 3. **Vault.** Bought NFTs are locked for at least 180 days and until the floor is
    30% above the purchase price. They are then auctioned, with proceeds returning
    to the budget, or raffled. If the floor never gets there they stay locked

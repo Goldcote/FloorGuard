@@ -39,12 +39,19 @@ professional audit.
 - **Points need activating.** Pending points do not count in a raffle. Someone
   has to call `flushMany` for holders before each draw, or holders must activate
   their own.
-- **Buyback overpayment.** The bid is limited by the collection's budget and
-  only rises while the budget covers it, which removes the drift to `maxPrice`
-  that an economics review found in the first design. What remains: the owner's
-  `maxPrice` is the only upper limit, a holder who dominates a collection's
-  supply can wait for the bid to reach it, and these rules are new and have not
-  been independently reviewed. Keep `maxPrice` close to the market.
+- **Buyback overpayment.** The bid is limited by the collection's budget, and
+  late money restarts the curve rather than inheriting its drift. In a review's
+  simulation this paid the floor in steady, rising and falling markets. What
+  remains: the owner's `maxPrice` is the only upper limit; a holder who
+  dominates a collection's supply can wait for a higher bid; and after a sharp
+  fall with almost no fee income the base is stale, so a lump arriving then
+  (auction proceeds, a donation, an allocation) is spent above the market
+  unless the owner or guardian lowers the bid first. Changing the Treasury's
+  spender and back also skips the restart: reconfigure the bid afterwards.
+- **Selling into the bid without a minimum.** With a thin budget the bid can be
+  far below the base. Always pass a `minPrice`. The engine refuses bids under
+  `minBidOf` (a tenth of the base by default), and the Vault's `minReserveOf`
+  keeps a cheaply bought holding from being auctioned cheaply: set both.
 - **Raffle farming.** Points cost fees (one point per unit of fee, and a farmer
   who also sells into the bid gets part of the fee back), only activated points
   count, and whoever calls `draw` closes activation for everyone else. A raffle
@@ -53,7 +60,7 @@ professional audit.
   `minPointsToDraw` accordingly, run `flushMany` for holders before each draw,
   and prefer an auction, which always returns more to the budget. Points are
   not time-weighted and are shared across collections.
-- **Late information in prediction markets.** Betting closes at most halfway
+- **Late information in prediction markets.** Betting closes at most a tenth of the way
   through a market and settlement needs a price published after the settlement
   time, but later bettors still see more recent prices than earlier ones.
 - **Games and paid raffles.** Operating games of chance and paid raffles is

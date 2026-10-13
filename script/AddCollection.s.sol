@@ -25,8 +25,9 @@ import {Lottery} from "../src/Lottery.sol";
 ///   PROJECT_RECIPIENT    optional: address that receives the project's share of fees
 ///   PROJECT_SHARE_BPS    optional: that share in basis points, at most 5000
 ///   ENABLE_PREDICTIONS   optional (default false). Only enable with a trustworthy oracle price.
-///   MIN_AUCTION_RESERVE  optional, in wei: the lowest reserve for vault auctions of this collection.
-///                        Recommended: it is the protection against a manipulated oracle.
+///   MIN_AUCTION_RESERVE  in wei: the lowest reserve for vault auctions of this collection. Required:
+///                        it is the protection against a manipulated oracle and a cheaply bought token.
+///   MIN_BID              optional, in wei: no buyback below this (default: a tenth of BID_BASE)
 ///   ENABLE_GAMES         optional (default false)
 ///   LOTTERY_TICKET_PRICE optional, in wei: starts a weekly lottery for the collection at this price
 ///   ENABLE_TICKET_RAFFLES optional (default false): lets holders raffle tokens of this collection
@@ -53,8 +54,10 @@ contract AddCollection is Script {
             Treasury(payable(json.readAddress(".treasury")))
                 .setProjectShare(collection, projectRecipient, uint16(vm.envUint("PROJECT_SHARE_BPS")));
         }
-        uint256 minReserve = vm.envOr("MIN_AUCTION_RESERVE", uint256(0));
-        if (minReserve != 0) Vault(json.readAddress(".vault")).setMinReserve(collection, minReserve);
+        // Required: without it a holding bought cheaply could later be auctioned cheaply.
+        Vault(json.readAddress(".vault")).setMinReserve(collection, vm.envUint("MIN_AUCTION_RESERVE"));
+        uint256 minBid = vm.envOr("MIN_BID", uint256(0));
+        if (minBid != 0) BuybackEngine(json.readAddress(".buybackEngine")).setMinBid(collection, minBid);
         if (vm.envOr("ENABLE_PREDICTIONS", false)) {
             PredictionMarket(json.readAddress(".predictionMarket")).setCollectionSupport(collection, true);
         }

@@ -35,8 +35,12 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
     ///         below the market price, such as a minter of a collection that is still minting.
     mapping(address collection => uint256) public fillCooldownOf;
     mapping(address collection => uint256) public lastFillAt;
-    /// @notice May lower a collection's prices or pause it, and nothing else. Meant for a fast key that
-    ///         can react to a falling market while the owner sits behind a timelock.
+    /// @notice No buyback below this price. With a thin budget the bid can be very small; without a
+    ///         minimum, a seller who names no minimum price of their own could be paid dust.
+    mapping(address collection => uint256) public minBidOf;
+    /// @notice May lower a collection's prices or pause it. Each call also restarts the curve, so the
+    ///         guardian can hold a bid down, never raise it. Meant for a fast key that can react to a
+    ///         falling market while the owner sits behind a timelock.
     address public guardian;
 
     event BidConfigured(
@@ -58,6 +62,7 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
     event FillCooldownSet(address indexed collection, uint256 cooldown);
     event CurveRestarted(address indexed collection);
     event GuardianSet(address guardian);
+    event MinBidSet(address indexed collection, uint256 minBid);
     event BidLowered(address indexed collection, uint256 basePrice, uint256 maxPrice, bool active);
 
     error InactiveCollection();
@@ -93,7 +98,8 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
 
     /// @notice Whether a sale into the bid would go through right now.
     function isFillable(address collection) external view returns (bool) {
-        if (currentBid(collection) == 0) return false;
+        uint256 bid = currentBid(collection);
+        if (bid == 0 || bid < minBidOf[collection]) return false;
         return
             lastFillAt[collection] == 0
                 || block.timestamp >= lastFillAt[collection] + fillCooldownOf[collection];
@@ -114,14 +120,18 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
         lastFillAt[collection] = block.timestamp;
 
         uint256 price = currentBid(collection);
-        if (price == 0) revert NothingToBid();
+        // a bid below the collection's minimum is not a bid: it would buy a token for dust
+        if (price == 0 || price < minBidOf[collection]) revert NothingToBid();
         if (price < minPrice) revert BidBelowMinimum(price, minPrice);
 
         // The next round starts one step below this sale. A sale limited by a thin budget may be far
-        // below the previous base; it lowers the base by one step only, so a single cheap sale cannot
-        // collapse the curve.
-        uint256 anchor = price > bid.basePrice ? price : bid.basePrice;
-        bid.basePrice = uint128(anchor * (BPS - bid.stepDownBps) / BPS);
+        // below the previous base: it pulls the base down by at most three steps, so the base follows a
+        // falling market without one cheap sale collapsing the curve.
+        uint256 drop = 3 * uint256(bid.stepDownBps);
+        uint256 anchor = drop >= BPS ? 0 : uint256(bid.basePrice) * (BPS - drop) / BPS;
+        if (price > anchor) anchor = price;
+        uint256 newBase = anchor * (BPS - bid.stepDownBps) / BPS;
+        bid.basePrice = uint128(newBase == 0 ? 1 : newBase);
         bid.lastReset = uint40(block.timestamp);
 
         IERC721(collection).transferFrom(msg.sender, address(vault), tokenId);
@@ -136,13 +146,18 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
     }
 
     /// @notice Called by the Treasury whenever a collection's budget grows. If the budget could not
-    ///         cover the curve until now, the curve restarts from its base: the rise that built up
-    ///         while nobody could have been paid is discarded, so money that arrives late or in a lump
-    ///         is not spent at an inflated bid.
+    ///         cover the curve until now, the curve restarts from the higher of its base and the old
+    ///         budget: the rise that built up while nobody could have been paid is discarded. This
+    ///         stops money that arrives late or in a lump being spent at an inflated bid, provided the
+    ///         base itself is not stale; after a sharp fall in the market the owner or guardian should
+    ///         lower the bid before a lump arrives.
     function onBudgetIncrease(address collection, uint256 budgetBefore) external {
         if (msg.sender != address(treasury)) revert NotTreasury();
         Bid storage bid = bids[collection];
         if (bid.active && budgetBefore < _curve(bid)) {
+            // The bid until now was the budget. Restart from there if it is above the base, so that
+            // money arriving never lowers the bid.
+            if (budgetBefore > bid.basePrice) bid.basePrice = uint128(budgetBefore);
             bid.lastReset = uint40(block.timestamp);
             emit CurveRestarted(collection);
         }
@@ -169,6 +184,11 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
             active: active
         });
         _checkCooldown(collection, fillCooldownOf[collection]);
+        // a default minimum bid of a tenth of the base, unless the owner has set one
+        if (minBidOf[collection] == 0) {
+            minBidOf[collection] = basePrice / 10;
+            emit MinBidSet(collection, basePrice / 10);
+        }
         emit BidConfigured(collection, basePrice, maxPrice, growthBpsPerDay, stepDownBps, active);
     }
 
@@ -194,6 +214,11 @@ contract BuybackEngine is Ownable2Step, ReentrancyGuard {
         bid.active = active;
         bid.lastReset = uint40(block.timestamp);
         emit BidLowered(collection, basePrice, maxPrice, active);
+    }
+
+    function setMinBid(address collection, uint256 minBid) external onlyOwner {
+        minBidOf[collection] = minBid;
+        emit MinBidSet(collection, minBid);
     }
 
     function setGuardian(address guardian_) external onlyOwner {

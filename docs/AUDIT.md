@@ -17,6 +17,7 @@ contest, is required before the contracts hold real funds.
 | Review 6 | Slots, Lottery, fixes from review 5, deploy scripts | 1 Medium, 4 Low |
 | Review 7 | Fixes from review 6; one randomised campaign across every contract at once (150,000 calls plus 32,000 in guided walks) | 2 Low; every invariant held |
 | Full-system audit | Core contracts and how all modules interact | 1 High, 3 Medium, 6 Low |
+| Review 8 | The reworked buyback bid and the other changes made after the economics review, with simulations | 2 Medium, 6 Low |
 | Economics review | Whether the mechanism does what it claims, with models | 5 main findings; see [ECONOMICS-REVIEW.md](ECONOMICS-REVIEW.md) |
 | Static analysis | Slither 0.11.6 on `src/` | No actionable medium or high finding |
 | Web app | Every write flow clicked through with a local test account | 4 bugs fixed |
@@ -25,7 +26,7 @@ Each reviewer worked independently from the code, proved its High findings with
 tests, and reported what it had not verified. No Critical finding was reported
 in any pass.
 
-Test suite at the time of writing: 222 tests (unit, fuzz, stateful invariant and
+Test suite at the time of writing: 271 tests (unit, fuzz, stateful invariant and
 end-to-end). Line coverage of `src/` was 94% when last measured, before the
 slots, lottery and later changes.
 
@@ -122,6 +123,6 @@ and check after every step that:
   attacks).
 - The fixes made after review 6 have regression tests but have not been through
   another independent pass.
-- The changes made after the economics review (the budget-limited bid, the
-  Treasury notice to the engine, the guardian, the points and prediction market
-  rules, the games limits, house shares) have tests but no independent review.
+- House shares in `Games`, and the fixes made after review 8 (the base rule for
+  falling markets, the minimum bid, restarting the curve from the old budget),
+  have tests but no independent review yet.

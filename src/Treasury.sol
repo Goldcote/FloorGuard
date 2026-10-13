@@ -23,6 +23,7 @@ contract Treasury is ITreasury, Ownable2Step {
 
     uint256 public constant BPS = 10_000;
     uint256 public constant MAX_PROJECT_SHARE_BPS = 5_000;
+    uint256 private constant NOTICE_GAS = 60_000;
     /// @notice The share of a collection's fees that goes to the NFT project itself, like a royalty.
     mapping(address collection => ProjectShare) public projectShareOf;
     /// @notice Project shares waiting to be claimed.
@@ -126,7 +127,8 @@ contract Treasury is ITreasury, Ownable2Step {
         budgetOf[collection] = before + amount;
         address listener = spender;
         if (amount != 0 && listener.code.length != 0) {
-            try IBudgetListener(listener).onBudgetIncrease(collection, before) {} catch {}
+            // capped so that a listener can never use up the gas of a randomness callback
+            try IBudgetListener(listener).onBudgetIncrease{gas: NOTICE_GAS}(collection, before) {} catch {}
         }
     }
 }
