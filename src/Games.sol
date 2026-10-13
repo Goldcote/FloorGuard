@@ -29,6 +29,8 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     uint256 public constant MAX_EDGE_BPS = 1_000;
     /// @notice A bet whose randomness never arrived can be refunded after this long.
     uint256 public constant REFUND_TIMEOUT = 1 days;
+    /// @notice The most the house may have at risk across all open bets, as a share of its total funds.
+    uint256 public constant MAX_TOTAL_EXPOSURE_BPS = 2_000;
     uint256 private constant PAYOUT_GAS = 50_000;
 
     ITreasury public immutable treasury;
@@ -44,6 +46,8 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
 
     /// @notice House funds not set aside for open bets.
     uint256 public bankroll;
+    /// @notice House funds set aside to pay the open bets if they win.
+    uint256 public reserved;
     /// @notice Winnings that could not be delivered and wait to be withdrawn.
     mapping(address => uint256) public owedTo;
     mapping(uint256 requestId => Bet) public bets;
@@ -71,6 +75,9 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     error InvalidChance();
     error BetTooSmall();
     error ExposureTooHigh(uint256 exposure, uint256 limit);
+    error TotalExposureTooHigh(uint256 total, uint256 limit);
+    error RequestIdInUse();
+    error NotAContract();
     error NotRandomness();
     error UnknownBet();
     error TooEarly(uint256 readyAt);
@@ -108,9 +115,14 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         uint256 exposure = payout - (msg.value - fee);
         uint256 limit = bankroll * maxExposureBps / BPS;
         if (exposure > limit) revert ExposureTooHigh(exposure, limit);
+        uint256 totalLimit = (bankroll + reserved) * MAX_TOTAL_EXPOSURE_BPS / BPS;
+        if (reserved + exposure > totalLimit) revert TotalExposureTooHigh(reserved + exposure, totalLimit);
         bankroll -= exposure;
+        reserved += exposure;
 
         requestId = randomness.requestRandomness();
+        // a replacement provider must never reuse the id of a bet that is still open
+        if (bets[requestId].player != address(0)) revert RequestIdInUse();
         bets[requestId] = Bet({
             player: msg.sender,
             collection: collection,
@@ -129,6 +141,14 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         Bet memory bet = bets[requestId];
         if (bet.player == address(0)) revert UnknownBet();
         delete bets[requestId];
+        reserved -= bet.exposure;
+
+        // Randomness that arrives after the refund window is not used. Otherwise whoever saw the result
+        // first could choose between letting it settle and refunding the bet.
+        if (block.timestamp >= bet.placedAt + REFUND_TIMEOUT) {
+            _refund(requestId, bet);
+            return;
+        }
 
         uint256 fee = uint256(bet.wager) * bet.edgeBps / BPS;
         uint256 stake = bet.wager - fee;
@@ -144,9 +164,10 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         }
 
         if (fee != 0) {
-            treasury.depositFee{value: fee}(bet.collection);
-            if (address(points) != address(0)) {
-                try points.creditFee(bet.player, fee) {} catch {}
+            // points follow what reached the buyback budget, not the project's share of the fee
+            uint256 toBudget = treasury.depositFee{value: fee}(bet.collection);
+            if (address(points) != address(0) && toBudget != 0) {
+                try points.creditFee(bet.player, toBudget) {} catch {}
             }
         }
         emit BetSettled(requestId, bet.player, won, roll, payout, fee);
@@ -159,7 +180,11 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         uint256 readyAt = bet.placedAt + REFUND_TIMEOUT;
         if (block.timestamp < readyAt) revert TooEarly(readyAt);
         delete bets[requestId];
+        reserved -= bet.exposure;
+        _refund(requestId, bet);
+    }
 
+    function _refund(uint256 requestId, Bet memory bet) private {
         bankroll += bet.exposure;
         emit BetRefunded(requestId, bet.player, bet.wager);
         (bool ok,) = bet.player.call{value: bet.wager, gas: PAYOUT_GAS}("");
@@ -216,6 +241,7 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     }
 
     function setPoints(IPoints points_) external onlyOwner {
+        if (address(points_) != address(0) && address(points_).code.length == 0) revert NotAContract();
         points = points_;
         emit PointsSet(address(points_));
     }
