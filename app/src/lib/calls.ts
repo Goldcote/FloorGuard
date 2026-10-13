@@ -4,9 +4,12 @@ import type { Abi, Address } from "viem";
 import {
   buybackEngineAbi,
   erc721Abi,
+  gamesAbi,
   marketplaceAbi,
+  mockRandomnessAbi,
   pointsAbi,
   predictionMarketAbi,
+  treasuryAbi,
   vaultAbi,
   vaultRaffleAbi,
 } from "../generated/abis";
@@ -155,4 +158,52 @@ export const claimRaffleCall = (d: Deployment, raffleId: bigint): Call => ({
   abi: vaultRaffleAbi,
   functionName: "claim",
   args: [raffleId],
+});
+
+// ---------------------------------------------------------------- treasury
+
+/** Withdraw the project fee shares accrued to the caller. */
+export const claimProjectShareCall = (d: Deployment): Call => ({
+  address: d.treasury,
+  abi: treasuryAbi,
+  functionName: "claimProjectShare",
+  args: [],
+});
+
+// ---------------------------------------------------------------- games
+
+/** Bet `wager` on a roll with a `chanceBps` chance of winning; the edge funds `collection`'s buybacks. */
+export const playCall = (d: Deployment, collection: Address, chanceBps: number, wager: bigint): Call => ({
+  address: d.games,
+  abi: gamesAbi,
+  functionName: "play",
+  args: [collection, BigInt(chanceBps)],
+  value: wager,
+});
+
+export const refundBetCall = (d: Deployment, requestId: bigint): Call => ({
+  address: d.games,
+  abi: gamesAbi,
+  functionName: "refund",
+  args: [requestId],
+});
+
+/** Collect winnings or refunds that could not be sent directly. */
+export const withdrawGamesCall = (d: Deployment): Call => ({
+  address: d.games,
+  abi: gamesAbi,
+  functionName: "withdraw",
+  args: [],
+});
+
+/**
+ * LOCAL CHAINS ONLY. Settles a bet through test/mocks/MockRandomness.sol, where whoever calls
+ * `fulfill` picks the random word. On public networks the provider is Chainlink VRF and this
+ * function does not exist.
+ */
+export const mockFulfillCall = (d: Deployment, requestId: bigint, randomWord: bigint): Call => ({
+  address: d.gamesRandomness,
+  abi: mockRandomnessAbi,
+  functionName: "fulfill",
+  args: [requestId, randomWord],
 });

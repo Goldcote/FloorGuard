@@ -4,6 +4,7 @@ import { useIsDeployed, useProtocol } from "./hooks";
 import { decodeError } from "./lib/errors";
 import { parseAddress } from "./lib/parse";
 import { FloorBid } from "./tabs/FloorBid";
+import { Games } from "./tabs/Games";
 import { Marketplace } from "./tabs/Marketplace";
 import { Overview } from "./tabs/Overview";
 import { Predictions } from "./tabs/Predictions";
@@ -12,10 +13,10 @@ import { Vault } from "./tabs/Vault";
 import { TxPanel } from "./tx";
 import { Addr, Card, Field } from "./ui";
 
-const TABS = ["Overview", "Marketplace", "Floor bid", "Predictions", "Vault", "Raffles"] as const;
+const TABS = ["Overview", "Marketplace", "Floor bid", "Predictions", "Games", "Vault", "Raffles"] as const;
 type Tab = (typeof TABS)[number];
 /** Tabs that act on the collection chosen in the collection bar. */
-const COLLECTION_TABS: readonly Tab[] = ["Overview", "Marketplace", "Floor bid"];
+const COLLECTION_TABS: readonly Tab[] = ["Overview", "Marketplace", "Floor bid", "Games"];
 
 function Wallet() {
   const chains = useChains();
@@ -139,6 +140,7 @@ export function App() {
             {tab === "Marketplace" && <Marketplace collection={collection!} />}
             {tab === "Floor bid" && <FloorBid collection={collection!} />}
             {tab === "Predictions" && <Predictions />}
+            {tab === "Games" && <Games collection={collection!} />}
             {tab === "Vault" && <Vault />}
             {tab === "Raffles" && <Raffles />}
           </>

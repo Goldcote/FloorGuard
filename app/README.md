@@ -36,7 +36,8 @@ npm run dev    # http://localhost:5173
 
 In the wallet, add the network `http://127.0.0.1:8545` (chain id 31337) and import anvil's account #0.
 After seeding it owns demo tokens 1-10, has an open collection offer and a token offer, a funded floor
-bid and an open prediction market. Import account #1 as well to act as a second party.
+bid and an open prediction market, and the Games contract has a 50 ETH bankroll with the demo collection
+enabled. Import account #1 as well to act as a second party.
 
 Things to know on a local chain:
 
@@ -45,8 +46,39 @@ Things to know on a local chain:
   `cast rpc evm_increaseTime <seconds>` then `cast rpc evm_mine` to move time forward.
 - Restarting anvil wipes the chain. Deploy and seed again; the app shows "No contracts at the recorded
   addresses" until you do. Also reset the wallet's nonce/activity data for the account.
-- Unlocking vault holdings by governance, sending them to a raffle and fulfilling the mock randomness
-  are owner or test actions with no button in the app. Use `cast send`, as in `test/anvil.test.ts`.
+- Unlocking vault holdings by governance, sending them to a raffle, fulfilling a raffle draw's mock
+  randomness and setting a collection's project share are owner or test actions with no button in the
+  app. Use `cast send`, as in `test/anvil.test.ts`.
+
+## Games tab
+
+Dice and coinflip against the house bankroll (`Games.sol`), backing the selected collection: the edge on
+every wager is a protocol fee for that collection. The tab shows the bankroll, the edge, the exposure
+limit and the largest wager it allows at the chosen chance, quotes the payout and fee live from
+`Games.quote`, and lists the connected account's bets from `BetPlaced` / `BetSettled` / `BetRefunded`
+logs (pending, won, lost, refundable, refunded).
+
+> Games of chance are regulated or prohibited in many places. Check the law that applies to you before
+> playing, deploying or operating this.
+
+A bet settles when the randomness provider answers. On public networks that is Chainlink VRF. On anvil
+it is `test/mocks/MockRandomness.sol`, which answers only when someone calls `fulfill`, so on chain
+31337 (and only there) each pending bet has a dashed button, "Local only: settle with mock randomness".
+It calls `MockRandomness.fulfill` with a 256-bit word from `crypto.getRandomValues`. Whoever calls
+`fulfill` chooses the word, so this is not a fair game; it exists to exercise the flow locally. A bet
+left unsettled for a day shows a Refund button (`cast rpc evm_increaseTime 86400` to get there), and
+winnings that could not be delivered show a Withdraw button.
+
+## Project fee share
+
+The Treasury can pay part of a collection's protocol fees to the NFT project
+(`Treasury.projectShareOf`). Overview shows the recipient and percentage, and a Claim button when the
+connected account has a balance in `Treasury.owedTo`. The seed sets no share; to try it locally:
+
+```sh
+cast send <treasury> "setProjectShare(address,address,uint16)" <collection> <recipient> 2000 \
+  --rpc-url local --unlocked --from 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+```
 
 ## Syncing ABIs and addresses
 
@@ -57,7 +89,8 @@ npm run sync             # rewrite src/generated/
 npm run sync -- --check  # write nothing, exit 1 if src/generated/ is out of date
 ```
 
-- `abis.ts`: the ABIs from `../out/<Name>.sol/<Name>.json` as `as const` TypeScript, plus `errorsAbi`,
+- `abis.ts`: the ABIs from `../out/<Name>.sol/<Name>.json` as `as const` TypeScript (the protocol
+  contracts, OpenZeppelin's ERC721, and `MockRandomness` for the local-only settle button), plus `errorsAbi`,
   every custom error of every contract (used to decode reverts that bubble up from a nested contract).
   It is checked in so the app builds without Foundry. If the Foundry artifacts are missing, the script
   leaves the existing file alone. Run `forge build` and then `npm run sync` whenever a contract changes.
@@ -73,7 +106,7 @@ Deploy with `script/Deploy.s.sol` (see its header for the VRF environment variab
 | Variable | Purpose |
 | --- | --- |
 | `VITE_BASE_SEPOLIA_RPC_URL` | RPC endpoint. Defaults to the chain's public RPC. |
-| `VITE_LOGS_FROM_BLOCK` | First block to scan for Marketplace logs. Set it to the deployment block: public RPCs refuse wide `eth_getLogs` ranges. If the log query fails the app falls back to reading the most recent 200 offer ids directly. |
+| `VITE_LOGS_FROM_BLOCK` | First block to scan for Marketplace and Games logs. Set it to the deployment block: public RPCs refuse wide `eth_getLogs` ranges. If the log query fails, the offer list falls back to reading the most recent 200 offer ids directly; the bet list has no fallback (bets cannot be enumerated on-chain) and shows an error. |
 | `VITE_ANVIL_RPC_URL` | Local node URL. Defaults to `http://127.0.0.1:8545`. |
 
 ## Checks
@@ -100,6 +133,6 @@ src/lib/calls.ts             every transaction the UI sends, as plain builders
 src/lib/errors.ts            custom error -> readable message
 src/hooks.ts                 react-query wrappers around lib/reads.ts (5 s polling)
 src/tx.tsx                   transaction runner: simulate, sign, wait, with pending/success/error panel
-src/tabs/                    Overview, Marketplace, Floor bid, Predictions, Vault, Raffles
+src/tabs/                    Overview, Marketplace, Floor bid, Predictions, Games, Vault, Raffles
 test/anvil.test.ts           integration test against anvil
 ```

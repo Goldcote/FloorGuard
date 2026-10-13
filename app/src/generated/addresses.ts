@@ -10,9 +10,11 @@ export type Deployment = {
   predictionMarket: Address;
   points: Address;
   vaultRaffle: Address;
+  games: Address;
   salesFloorOracle: Address;
   pushFloorOracle: Address;
   randomness: Address;
+  gamesRandomness: Address;
   owner: Address;
   demoCollection?: Address;
 };
@@ -27,10 +29,12 @@ export const deployments: Partial<Record<number, Deployment>> = {
     "predictionMarket": "0x0165878A594ca255338adfa4d48449f69242Eb8F",
     "points": "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853",
     "vaultRaffle": "0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6",
+    "games": "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318",
     "salesFloorOracle": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
     "pushFloorOracle": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
-    "randomness": "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318",
+    "randomness": "0x610178dA211FEF7D417bC0e6FeD39F05609AD788",
+    "gamesRandomness": "0x610178dA211FEF7D417bC0e6FeD39F05609AD788",
     "owner": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-    "demoCollection": "0x322813Fd9A801c5507c9de605d63CEA4f2CE6c44"
+    "demoCollection": "0x09635F643e140090A9A8Dcd712eD6285858ceBef"
   }
 };
