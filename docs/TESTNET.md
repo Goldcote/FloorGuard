@@ -1,8 +1,8 @@
 # Deploying to a testnet
 
 These steps deploy FloorGuard to Base Sepolia. The deployment has been simulated
-against Base Sepolia (about 16.7 million gas at the time, before the newest
-contracts were added) but has not been
+against Base Sepolia (about 30 million gas for all contracts, four randomness
+adapters and a timelock) but has not been
 broadcast: no testnet deployment exists yet.
 
 The Chainlink values below were read from Chainlink's
