@@ -22,8 +22,9 @@ In dice and slots the stake that remains after the edge is played at exactly
 fair odds: a dice win pays `stake / chance`, and the slots table (50x at 0.2%,
 10x at 1%, 5x at 4%, 2x at 15%, 1x at 30%) averages exactly 1x. A test sums the
 table over all 10,000 rolls to confirm it. The edge is not kept by an operator:
-it goes to the Treasury as buyback budget, unless the owner has set a share of
-it to stay in the games bankroll. The owner also sets the price limits at which
+half of it goes to the Treasury as buyback budget and half stays in the games
+bankroll, to pay for the risk the bankroll carries. The owner can change that
+split. The owner also sets the price limits at which
 that budget is spent.
 
 The edge that applies to a bet is stored with the bet when it is placed. Fees

@@ -46,8 +46,9 @@ flowchart LR
 4. **Prediction markets.** Anyone can bet on a collection's floor going up or
    down. 3% of winnings funds buybacks.
 5. **Games.** Dice, coinflip and slots against a house bankroll, and a pooled
-   lottery per collection. The 2% edge on every wager and 5% of every lottery
-   pot fund buybacks for the collection the player backs.
+   lottery per collection. Half of the 2% edge on every wager and 5% of every
+   lottery pot fund buybacks for the collection the player backs; the other half
+   of the edge stays in the games bankroll.
 6. **Ticket raffles.** Anyone can raffle an NFT for paid tickets; 5% of ticket
    revenue funds buybacks.
 7. **IP licensing.** Licences to use the artwork of NFTs held in the Vault, with

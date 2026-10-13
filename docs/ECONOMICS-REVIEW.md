@@ -41,7 +41,7 @@ and describes the code as it was then. Since then:
 | 5. Dead band, shorter betting, fresh start price | Done (2%, a tenth of the duration, one hour) |
 | 6. Cooldown limit; doc wording | Done |
 | 7. Timeouts that do not reward withholding | Not done; FAIRNESS.md now states the limitation |
-| 8. Bankroll keeps part of the edge | Available as `bankrollShareBps`, off by default |
+| 8. Bankroll keeps part of the edge | Done: `bankrollShareBps` is half by default |
 | 9. Guardian that can only lower or pause | Done |
 | 10. Curve rises only while funded | Done, through a Treasury notice to the engine |
 | 11–13 | Not done |

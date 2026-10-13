@@ -76,6 +76,9 @@ abstract contract Base is Test {
 
         games = new Games(gov, treasury, randomness);
         games.setPoints(points);
+        // The game tests check the maths with the whole edge going to buybacks. The bankroll's default
+        // half share of the edge is tested in Regressions.
+        games.setRiskParams(100, 0);
         points.setRate(address(games), POINTS_RATE);
 
         ticketRaffle = new TicketRaffle(gov, treasury, randomness);

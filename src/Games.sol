@@ -8,8 +8,8 @@ import {ITreasury, IPoints, IRandomnessProvider, IRandomnessConsumer} from "./in
 /// @title Games
 /// @notice Dice and slots against a house bankroll. In dice the player picks a chance of winning between
 ///         1% and 95%; a coinflip is a 50% roll. Slots pay a fixed table of multiples from one roll. An edge is taken from every wager and paid to the Treasury as
-///         a fee for the collection the player chose to back. The rest of the wager is played at fair
-///         odds, so the bankroll has no expected gain or loss: all of the house's take funds buybacks.
+///         a fee for the collection the player chose to back, less the share the bankroll keeps (half by
+///         default) to pay for the risk it carries. The rest of the wager is played at fair odds.
 /// @dev The house's side of every open bet is set aside when the bet is placed, so the contract can
 ///      always pay every outcome. Operating games of chance is regulated or prohibited in many places.
 contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
@@ -49,8 +49,8 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     ///         could stake a large part of the bankroll for a small exposure.
     uint256 public maxWagerBps = 100;
     /// @notice The share of each edge the bankroll keeps, to pay for the risk it carries. The rest goes
-    ///         to the Treasury. Zero by default: the whole edge funds buybacks.
-    uint256 public bankrollShareBps;
+    ///         to the Treasury as buyback budget. Half by default.
+    uint256 public bankrollShareBps = 5_000;
     mapping(address collection => bool) public isSupported;
 
     /// @notice House funds not set aside for open bets.

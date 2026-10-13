@@ -62,9 +62,9 @@ professional audit.
   applies to `VaultRaffle`, where the chance of a prize is earned by paying
   fees, and to `PredictionMarket`, which takes bets on a price reported by a
   party the operator appoints. The
-  bankroll carries variance: a run of player wins can shrink it. By default it
-  earns nothing for that risk, whoever funds it cannot take it back, and its
-  typical path is downward. On Ethereum mainnet a randomness request can cost
+  bankroll carries variance: a run of player wins can shrink it. It keeps
+  half of the edge by default to pay for that risk, but whoever funds it cannot
+  take it back, and a long run of player wins can still exhaust it. On Ethereum mainnet a randomness request can cost
   many times the fee on a small wager: set `minBet` so the fee covers it. The fairness of
   every bet rests on the randomness provider.
 - **Shared randomness subscription.** The deploy script puts all four randomness

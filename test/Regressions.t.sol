@@ -731,6 +731,7 @@ contract RegressionsTest is Base {
     /// The owner can let the bankroll keep part of the edge to pay for the risk it carries.
     function test_bankrollCanKeepAShareOfTheEdge() public {
         games.fundBankroll{value: 100 ether}();
+        assertEq(new Games(gov, treasury, randomness).bankrollShareBps(), 5_000); // the default
         vm.prank(gov);
         games.setRiskParams(100, 5_000);
         vm.prank(alice);

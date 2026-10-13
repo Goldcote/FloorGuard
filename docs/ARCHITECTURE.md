@@ -14,7 +14,7 @@ code are right. The differences are listed at the end.
 | `BuybackEngine` | Quotes a standing bid per collection that rises until a holder sells into it. Pays from the collection's budget and sends the NFT to the Vault. |
 | `Vault` | Locks bought NFTs. Unlock needs 180 days and a floor at 130% of the purchase price. Then raffle, relock or Dutch auction. |
 | `PredictionMarket` | Pooled higher/lower bets on a collection's floor. 3% fee on winnings to the Treasury. |
-| `Games` | Dice, coinflip and slots against a house bankroll. The edge on each wager goes to the Treasury. |
+| `Games` | Dice, coinflip and slots against a house bankroll. Half of the edge on each wager goes to the Treasury; the bankroll keeps the other half. |
 | `Lottery` | A pooled ETH lottery per collection. 5% of each pot goes to the Treasury. |
 | `TicketRaffle` | Anyone raffles an NFT for paid tickets. 5% of ticket revenue goes to the Treasury. |
 | `IPLicenseManager` | Sells time-limited licences for NFTs held in the Vault. Licence fees go to the Treasury. |
@@ -222,14 +222,16 @@ the betting period is kept short.
 `Games` has two games on one bankroll. In dice the player picks a chance of
 winning from 1% to 95%, and a coinflip is a 50% roll. Slots pay a fixed table
 from one roll: 50x at 0.2%, 10x at 1%, 5x at 4%, 2x at 15% and 1x at 30%, which
-averages exactly 1x the stake. The edge (default 2%) is taken from the wager and
-paid to the Treasury as a fee for the collection the player chose to back. The
-rest is played at fair odds against the house bankroll, so the bankroll has no expected gain or loss and, by default, the whole house
-take funds buybacks. The bankroll therefore earns nothing for the risk it
-carries, cannot be withdrawn by whoever funded it, and its typical path is
-downward even though its average is flat. The owner can let the bankroll keep a
-share of the edge (`bankrollShareBps`) to pay for that risk, at the cost of the
-same share of the games' contribution to buybacks.
+averages exactly 1x the stake. The edge (default 2%) is taken from the wager. Half of it is paid to the
+Treasury as a fee for the collection the player chose to back, and half stays in
+the bankroll. The
+rest is played at fair odds against the house bankroll, so the stake itself gives the bankroll no expected gain or loss. The bankroll
+keeps a share of the edge (`bankrollShareBps`, half by default) to pay for the
+risk it carries; the other half goes to the Treasury as buyback budget. With
+the share set to zero the whole edge funds buybacks, but the bankroll then
+earns nothing, and its typical path is downward even though its average is
+flat. Whoever funds the bankroll cannot withdraw it: it can only leave to
+winners or to the Treasury.
 
 The house's side of each bet is set aside when the bet is placed, so every
 outcome can always be paid. One wager can be at most 1% of the free bankroll, one bet can risk at most 1% of
