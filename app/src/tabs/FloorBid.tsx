@@ -6,10 +6,10 @@ import type { Address } from "viem";
 import { approveCall, sellCall } from "../lib/calls";
 import { useChainTime, useProtocol, useRead } from "../hooks";
 import { bps, dateTime, duration, eth } from "../lib/format";
-import { parsePercentBps, parseUint } from "../lib/parse";
-import { readFloorBid, readOverview, readTokenState, withSlippage, type FloorBid as Bid } from "../lib/reads";
+import { parseTolerance, parseUint, TOLERANCE_HINT } from "../lib/parse";
+import { HoldingStatus, readFloorBid, readHoldings, readOverview, readTokenState, withSlippage, type FloorBid as Bid } from "../lib/reads";
 import { href } from "../routes";
-import { useTx } from "../tx";
+import { ReviewAgain, useTx } from "../tx";
 import { ActionButton, Badge, Field, PageHead, Panel, QueryView } from "../ui";
 import { BID_STATE_TEXT, BidChart, bidState, useLiveNow } from "../viz/charts";
 import { bidAt, fillsCovered, maxFillCooldown, payableBid, toEth, unlockPrice } from "../viz/curves";
@@ -95,10 +95,12 @@ export function FloorBid({ collection }: { collection: Address }) {
   const overview = useRead(["overview", collection, user], (c, dep) => readOverview(c, dep, collection, user));
   const [tokenText, setTokenText] = useState("");
   const [slippageText, setSlippageText] = useState("1");
-  const [sold, setSold] = useState<{ tokenId: bigint; before: number }>();
+  /** The last sale made here. `price` is what the vault recorded for it; the demo reads it from its own history instead. */
+  const [sold, setSold] = useState<{ tokenId: bigint; before: number; price?: bigint }>();
 
   const tokenId = parseUint(tokenText);
-  const slippageBps = parsePercentBps(slippageText);
+  const slippage = parseTolerance(slippageText);
+  const slippageBps = slippage?.bps;
   const history = bidHistory(demo);
   const owned = ownedTokens(demo);
   const floor = overview.data?.salesFloor.ok ? overview.data.salesFloor.price : undefined;
@@ -108,7 +110,12 @@ export function FloorBid({ collection }: { collection: Address }) {
 
   const sell = () => {
     if (!client || !d || !user || tokenId === undefined || slippageBps === undefined || !query.data) return;
+    // The quote and the minimum are fixed now, from the figure on screen, and are what the review
+    // shows. A bid re-read after confirming must not move the minimum: someone selling first would
+    // otherwise lower what this sale accepts.
     const quoted = query.data.currentBid;
+    const minPrice = withSlippage(quoted, slippageBps);
+    const sale = sellCall(d, collection, tokenId, minPrice);
     void run(
       `Sell token #${tokenId} into the floor bid`,
       async (send) => {
@@ -119,17 +126,25 @@ export function FloorBid({ collection }: { collection: Address }) {
         }
         // Re-read the bid after the approval: it moves with time and drops when someone else sells.
         const { currentBid } = await readFloorBid(client, d, collection);
-        await send("Sell", sellCall(d, collection, tokenId, withSlippage(currentBid, slippageBps)));
-        setSold({ tokenId, before: history.events.length });
+        if (currentBid < minPrice) throw new ReviewAgain(`The bid is now ${eth(currentBid)} ETH, below the minimum of ${eth(minPrice)} ETH you reviewed.`);
+        await send("Sell", sale);
+        // On a chain the app keeps no history of fills: what was paid is read from the holding the sale created.
+        const holding = demo ? undefined : (await readHoldings(client, d)).holdings.find((h) => h.tokenId === tokenId && h.status === HoldingStatus.Locked && h.collection.toLowerCase() === collection.toLowerCase());
+        setSold({ tokenId, before: history.events.length, price: holding?.purchasePrice });
         setTokenText("");
       },
       [
         `You sell token #${tokenId} to the protocol at the live bid, about ${eth(quoted)} ETH, paid from the collection's buyback budget. No fee is taken.`,
-        `The sale is rejected if the bid has dropped more than ${slippageText}% by the time it is mined.`,
+        `You receive at least ${eth(minPrice, 18)} ETH: that minimum (${slippageText}% under the quote) is sent with the sale, which is rejected if the bid is lower when it is mined.`,
+        "If the bid is already below that minimum when you confirm, nothing is sent and you are asked to review again.",
         "The token goes to the vault and is locked there; this cannot be undone.",
         "If the buyback engine is not yet approved for this token, an approval transaction comes first.",
       ],
       {
+        plan: [
+          { step: "Approve buyback engine (only if it is not approved for this token yet)", call: approveCall(collection, d.buybackEngine, tokenId) },
+          { step: "Sell", call: sale },
+        ],
         preview: (
           <div className="swap-preview">
             <div className="swap-side">
@@ -199,7 +214,7 @@ export function FloorBid({ collection }: { collection: Address }) {
                   <div>
                     <dt>Minimum bid</dt>
                     <dd>{eth(bid.minBid, 4)} ETH</dd>
-                    <dd className="muted small">no buyback below this, however thin the budget</dd>
+                    <dd className="muted small">a share of the base; no buyback below this, however thin the budget</dd>
                   </div>
                   <div>
                     <dt>Pause between sales</dt>
@@ -229,9 +244,10 @@ export function FloorBid({ collection }: { collection: Address }) {
                       <input className="narrow" inputMode="numeric" value={tokenText} onChange={(e) => setTokenText(e.target.value)} />
                     </Field>
                     <Field label="Slippage (%)">
-                      <input className="narrow" inputMode="decimal" value={slippageText} onChange={(e) => setSlippageText(e.target.value)} />
+                      <input className="narrow" inputMode="decimal" value={slippageText} onChange={(e) => setSlippageText(e.target.value)} aria-invalid={slippage === undefined} />
                     </Field>
                   </div>
+                  {slippage?.warning && <p className="notice">{slippage.warning}</p>}
                   <dl className="sell-sum">
                     <div>
                       <dt>You receive</dt>
@@ -265,17 +281,18 @@ export function FloorBid({ collection }: { collection: Address }) {
                           ? "There is no active bid for this collection"
                           : bid.currentBid === 0n || bid.currentBid < bid.minBid
                             ? "The budget holds less than the minimum bid, so there is nothing to bid with"
-                            : (tokenId === undefined || slippageBps === undefined) && "Choose a token and a slippage"
+                            : (tokenId === undefined || slippageBps === undefined) && `Choose a token and a slippage. ${TOLERANCE_HINT}`
                     }
                   >
                     {tokenId !== undefined ? `Sell #${tokenId} at ` : "Sell at "}
                     <LivePayable bid={bid} clock={clock} digits={4} /> ETH
                   </ActionButton>
                   <p className="muted small">The engine is approved for the token first if it is not already. The sale cannot be undone.</p>
-                  {sold && history.events.length > sold.before && lastFill?.kind === "fill" && (
+                  {sold && (sold.price !== undefined || (history.events.length > sold.before && lastFill?.kind === "fill")) && (
                     <div className="callout good sold-note" role="status">
                       <p>
-                        Sold. Token #{sold.tokenId.toString()} went to the vault for {eth(lastFill.price, 5)} ETH, and the curve restarted {bps(bid.stepDownBps)} lower.
+                        Sold. Token #{sold.tokenId.toString()} went to the vault for {eth(sold.price ?? (lastFill?.kind === "fill" ? lastFill.price : 0n), 5)} ETH, and the curve restarted{" "}
+                        {bps(bid.stepDownBps)} lower.
                       </p>
                       <a className="btn secondary small" href={href("/vault/holdings")}>
                         See it in the vault

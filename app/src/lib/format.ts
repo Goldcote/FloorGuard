@@ -43,6 +43,11 @@ export function points(amount: bigint): string {
   return eth(amount, 2);
 }
 
+/** In the demo every amount is play money: "ETH" in a result line or a dialog reads "play ETH". */
+export function playMoney(text: string): string {
+  return text.replace(/(?<!play )\bETH\b/g, "play ETH");
+}
+
 /** Basis points as a percentage string. */
 export function bps(value: bigint | number): string {
   return `${Number(value) / 100}%`;

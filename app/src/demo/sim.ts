@@ -11,7 +11,7 @@ import type { Address, Client, Hash } from "viem";
 import type { Deployment } from "../generated/addresses";
 import type { Call } from "../lib/calls";
 import { BPS, diceQuote, gameExposure, recomputeBet, slotsExposure, splitPot } from "../lib/gameMath";
-import { houseGain, previewDeposit, previewRedeem, type HouseEvent, type HouseState } from "../lib/house";
+import { depositWithinSpread, houseGain, lastHolderBlocked, previewDeposit, previewRedeem, redeemRequestShares, redeemWithinSpread, type HouseEvent, type HouseRequest, type HouseState } from "../lib/houseMath";
 import type * as R from "../lib/reads";
 
 /** Simulated seconds per real second: a simulated day passes in 2.4 real minutes. */
@@ -58,7 +58,8 @@ export const isDemo = (client: unknown): boolean => (client as { demo?: boolean 
 // ---------------------------------------------------------------- state
 
 type Offer = Omit<R.Offer, "filled"> & { filled: number };
-type Bet = R.GameBet & { player: Address; edgeBps: bigint; placedAt: number; kept?: bigint };
+/** `seq`: the bet's number in the order bets were placed (`Games.placedCount` when it was placed). */
+type Bet = R.GameBet & { player: Address; edgeBps: bigint; placedAt: number; kept?: bigint; seq: number };
 type Entry = { buyer: Address; count: number };
 type Round = Omit<R.LotteryRound, "userPaid" | "userTickets" | "pot" | "prize"> & { entries: Entry[]; ticket?: bigint };
 type Raffle = Omit<R.TicketRaffle, "userPaid" | "userTickets"> & { entries: Entry[]; ticket?: bigint };
@@ -93,6 +94,17 @@ type State = {
   /** Shares in the games bankroll: all of them, and the visitor's. */
   totalShares: bigint;
   userShares: bigint;
+  /** The visitor's requests that wait for open bets (`Games.pendingDepositOf` / `pendingRedeemOf`), with the bet number at request time. */
+  pendingDeposit?: { amount: bigint; seq: number };
+  pendingRedeem?: { shares: bigint; seq: number };
+  /** `Games.placedCount`: bets placed so far. */
+  placedCount: number;
+  /** `Games.betsResumeAt`: no bet before this; betting pauses for ten minutes after any refund. */
+  betsResumeAt: number;
+  /** `VaultRaffle.nextDrawAt`: no draw before this, an hour after any draw ends. */
+  nextDrawAt: number;
+  /** `Vault.unlockFloorOf`: the floor seen when a holding unlocked on its own. */
+  unlockFloor: Map<bigint, bigint>;
   houseEvents: HouseEvent[];
   /** When the bid curve restarted because money reached a budget that could not cover it, and the base it restarted from. */
   restarts: { time: number; base: bigint }[];
@@ -106,8 +118,10 @@ const MIN_BET = milli(0.001);
 const PROJECT_SHARE = 1_000n;
 const POINTS_PER_ETH = 2_500n;
 const INITIAL_BID_BASE = milli(0.9);
-/** `BuybackEngine.minBidOf`: no buyback below this. `configureBid` sets it to a tenth of the base. */
-const MIN_BID = INITIAL_BID_BASE / 10n;
+/** `BuybackEngine.minBidBpsOf`: no buyback below this share of the current base (the contract's default, a tenth). */
+const MIN_BID_BPS = 1_000n;
+/** `BuybackEngine.minBidOf`: base * bps / 10000. It follows the base down and up. */
+const minBid = () => (s.bid.basePrice * MIN_BID_BPS) / BPS;
 /** How long before the demo starts its seeded bid curve began to climb, in simulated seconds. */
 const BID_HEAD_START = (DAY * 4) / 5;
 /** `Games.maxWagerBps`: one wager is at most this share of the free bankroll. */
@@ -155,7 +169,17 @@ const wei = (v: bigint) => {
   return `${text} ETH`;
 };
 
+/**
+ * For tests: while on, the simulated randomness provider answers nothing, so bets stay open (and can
+ * be refunded after `Games.REFUND_TIMEOUT`). The demo itself never turns it on.
+ */
+let withhold = false;
+export function demoWithholdRandomness(on: boolean) {
+  withhold = on;
+}
+
 export function resetDemo() {
+  withhold = false;
   startedReal = Date.now();
   seed = 0x5f100d;
   const now = T0;
@@ -192,11 +216,17 @@ export function resetDemo() {
     openWagers: 0n,
     totalShares: 0n,
     userShares: 0n,
+    placedCount: 0,
+    betsResumeAt: 0,
+    nextDrawAt: 0,
+    unlockFloor: new Map(),
     houseEvents: [],
   };
   // the seed: the house was funded with 50 ETH by a simulated depositor, who holds every share
   s.bankroll = 0n;
-  houseDeposit(50n * ETH, false);
+  s.totalShares = previewDeposit(houseFunds(), 50n * ETH);
+  s.bankroll = 50n * ETH;
+  houseEvent({ kind: "deposit", amount: 50n * ETH, shares: s.totalShares });
   for (let id = 1n; id <= 6n; id++) s.owner.set(id, DEMO_USER);
   for (let id = 7n; id <= 12n; id++) s.owner.set(id, id % 2n ? NPC_A : NPC_B);
   s.owner.set(20n, DEMO_DEPLOYMENT.vault);
@@ -307,6 +337,16 @@ function auctionPrice(a: NonNullable<R.Holding["auction"]>, now = demoNow()): bi
   price -= ((price / 2n) * BigInt(elapsed % DAY)) / BigInt(DAY);
   return price > a.endPrice ? price : a.endPrice;
 }
+/** `Vault._checkAuctionable`: the end of the half-life in which the price reaches the reserve, plus a day's rest there. */
+function restartableAt(a: { startPrice: bigint; endPrice: bigint; startTime: number }): number {
+  let price = a.startPrice;
+  let halvings = 0;
+  while (price > a.endPrice && halvings < 128) {
+    price >>= 1n;
+    halvings++;
+  }
+  return a.startTime + halvings * DAY + DAY;
+}
 const ticketsOf = (entries: Entry[], who: Address) => entries.filter((e) => e.buyer === who).reduce((n, e) => n + e.count, 0);
 function holderOf(entries: Entry[], ticket: number): Address {
   let upTo = 0;
@@ -335,21 +375,70 @@ type NewHouseEvent = HouseEvent extends infer E ? (E extends unknown ? Omit<E, "
 function houseEvent(event: NewHouseEvent) {
   s.houseEvents.push({ ...event, order: s.houseEvents.length, time: demoNow() } as HouseEvent);
 }
-/** `Games.deposit`: mint shares priced as if the house wins every open bet. */
-function houseDeposit(amount: bigint, fromUser: boolean, minShares = 0n): bigint {
-  if (amount === 0n) fail("Enter an amount to deposit.");
-  const shares = previewDeposit(houseFunds(), amount);
-  if (shares === 0n || shares < minShares) fail("The share price moved past your limit between the preview and the transaction. Nothing was done; try again.");
+/** `Games.isClosedThrough`: every bet numbered below `seq` has been settled. */
+const closedThrough = (seq: number) => !s.bets.some((bet) => bet.status === "pending" && bet.seq < seq);
+const stillOpenBefore = (seq: number) => s.bets.filter((bet) => bet.status === "pending" && bet.seq < seq).length;
+const SLIPPAGE = "Carrying this out right now would give up more against fair value than the limit you set, because bets are open. Nothing was done; wait for a quieter moment.";
+/** `Games.REFUND_TIMEOUT`: an unanswered bet can be refunded after this long. */
+const REFUND_TIMEOUT = 6 * 3_600;
+/** `Games.MAX_OPEN_WAGERS_BPS`: all wagers in play may be at most this share of the house's funds. */
+const MAX_OPEN_WAGERS_BPS = 2_000n;
+/** `Games.REFUND_PAUSE`: after any refund no bet is accepted for this long. */
+const REFUND_PAUSE = 600;
+const STILL_OPEN = "Not yet: a bet that was open when you made the request has not finished (or you hold every share and bets are open).";
+const checkSpread = (maxSpreadBps: bigint) => {
+  if (maxSpreadBps > BPS) fail("Invalid parameters.");
+};
+/**
+ * `Games._executeDeposit`: turn the visitor's pending deposit into shares, priced as if the house
+ * wins every bet open right now, if every bet that was open when it was requested has closed and
+ * that gives up no more than `maxSpreadBps` against fair value. `strict` is `executeDeposit`: it
+ * refuses where `deposit` just leaves the request pending.
+ */
+function executeDeposit(maxSpreadBps: bigint, strict: boolean): bigint {
+  checkSpread(maxSpreadBps);
+  const pending = s.pendingDeposit;
+  if (!pending) return strict ? fail("You have no pending request of that kind.") : 0n;
+  if (!closedThrough(pending.seq)) return strict ? fail(STILL_OPEN) : 0n;
+  if (!depositWithinSpread(houseFunds(), pending.amount, maxSpreadBps)) return strict ? fail(SLIPPAGE) : 0n;
+  const shares = previewDeposit(houseFunds(), pending.amount);
   s.totalShares += shares;
-  if (fromUser) s.userShares += shares;
-  s.bankroll += amount;
-  houseEvent({ kind: "deposit", amount, shares });
+  s.userShares += shares;
+  s.bankroll += pending.amount;
+  houseEvent({ kind: "deposit", amount: pending.amount, shares });
+  s.pendingDeposit = undefined;
+  log("Games", "/play/house", `Deposit of ${wei(pending.amount)} into the house carried out`, DEMO_USER);
   return shares;
 }
+/**
+ * `Games._executeRedeem`: redeem the visitor's pending shares for their part of the free bankroll
+ * right now (as if the house loses every open bet), in full or not at all, if that gives up no
+ * more than `maxSpreadBps` against their fair value.
+ */
+function executeRedeem(maxSpreadBps: bigint, strict: boolean): bigint {
+  checkSpread(maxSpreadBps);
+  const pending = s.pendingRedeem;
+  if (!pending) return strict ? fail("You have no pending request of that kind.") : 0n;
+  if (!closedThrough(pending.seq)) return strict ? fail(STILL_OPEN) : 0n;
+  const shares = pending.shares > s.userShares ? s.userShares : pending.shares;
+  if (lastHolderBlocked(houseFunds(), shares)) return strict ? fail(STILL_OPEN) : 0n;
+  if (!redeemWithinSpread(houseFunds(), shares, maxSpreadBps)) return strict ? fail(SLIPPAGE) : 0n;
+  const assets = previewRedeem(houseFunds(), shares);
+  s.pendingRedeem = undefined;
+  s.userShares -= shares;
+  s.totalShares -= shares;
+  s.bankroll -= assets;
+  s.balance += assets;
+  houseEvent({ kind: "redeem", amount: assets, shares });
+  log("Games", "/play/house", `Redeemed house shares for ${wei(assets)}`, DEMO_USER);
+  // (the contract's return value is the ETH paid; a redemption worth nothing still burns its shares)
+  return assets === 0n ? 1n : assets;
+}
+const requestView = (amount: bigint, seq: number): HouseRequest => ({ amount, ready: closedThrough(seq), waitingFor: stillOpenBefore(seq) });
 
 function floorBid(): R.FloorBid {
   const bid = currentBid();
-  return { budget: s.budget, currentBid: bid, curvePrice: curvePrice(), minBid: MIN_BID, isFillable: bid !== 0n && bid >= MIN_BID, active: true, ...s.bid, fillCooldown: 0, nextFillAt: 0 };
+  return { budget: s.budget, currentBid: bid, curvePrice: curvePrice(), minBid: minBid(), isFillable: bid !== 0n && bid >= minBid(), active: true, ...s.bid, fillCooldown: 0, nextFillAt: 0 };
 }
 function holdingsNow(): R.Holding[] {
   return [...s.holdings]
@@ -410,11 +499,11 @@ export const demoReads = {
       maxStartPriceAge: MAX_START_PRICE_AGE,
     };
   },
-  holdings: (): R.VaultState => ({ holdings: holdingsNow(), holdingCount: BigInt(s.holdings.length), owner: DEMO_DEPLOYMENT.owner, governanceWindow: 30 * DAY, auctionStartMultiple: 16, auctionHalfLife: DAY }),
-  raffles: (): R.Raffles => ({ raffles: [...s.vaultRaffles].reverse(), raffleCount: BigInt(s.vaultRaffles.length), totalPoints: s.points.active + s.points.others, nextDrawAt: 0, drawInFlight: s.vaultRaffles.some((r) => r.status === 2), minPointsToDraw: MIN_POINTS_TO_DRAW }),
-  games: (): R.GamesState => ({ bankroll: s.bankroll, reserved: s.reserved, maxTotalExposureBps: 2_000n, edgeBps: EDGE, minBet: MIN_BET, maxExposureBps: 100n, maxWagerBps: MAX_WAGER_BPS, maxWager: (s.bankroll * MAX_WAGER_BPS) / BPS, bankrollShareBps: BANKROLL_SHARE, supported: true, refundTimeout: DAY, userOwed: 0n }),
+  holdings: (): R.VaultState => ({ holdings: holdingsNow(), holdingCount: BigInt(s.holdings.length), owner: DEMO_DEPLOYMENT.owner, governanceWindow: 30 * DAY, auctionStartMultiple: 16, auctionHalfLife: DAY, auctionRestartDwell: DAY }),
+  raffles: (): R.Raffles => ({ raffles: [...s.vaultRaffles].reverse(), raffleCount: BigInt(s.vaultRaffles.length), totalPoints: s.points.active + s.points.others, nextDrawAt: s.nextDrawAt, drawInFlight: s.vaultRaffles.some((r) => r.status === 2), minPointsToDraw: MIN_POINTS_TO_DRAW }),
+  games: (): R.GamesState => ({ bankroll: s.bankroll, reserved: s.reserved, openWagers: s.openWagers, maxOpenWagersBps: MAX_OPEN_WAGERS_BPS, betsResumeAt: s.betsResumeAt, maxTotalExposureBps: 2_000n, edgeBps: EDGE, minBet: MIN_BET, maxExposureBps: 100n, maxWagerBps: MAX_WAGER_BPS, maxWager: (s.bankroll * MAX_WAGER_BPS) / BPS, bankrollShareBps: BANKROLL_SHARE, supported: true, refundTimeout: REFUND_TIMEOUT, userOwed: 0n }),
   gameQuote: (wager: bigint, chanceBps: number): R.GameQuote => diceQuote(wager, chanceBps, EDGE),
-  userBets: (): R.GameBet[] => [...s.bets].reverse().map(({ player: _p, edgeBps: _e, placedAt: _t, kept: _k, ...bet }) => bet),
+  userBets: (): R.GameBet[] => [...s.bets].reverse().map(({ player: _p, edgeBps: _e, placedAt: _t, kept: _k, seq: _s, ...bet }) => bet),
   ticketRaffles: (): R.TicketRaffles => ({
     raffles: [...s.raffles].reverse().map(raffleView), raffleCount: BigInt(s.raffles.length), minPot: MIN_POT, feeBps: POT_FEE,
     minDuration: 3_600, maxDuration: 30 * DAY, drawTimeout: DAY, abortDelay: 7 * DAY, collectionSupported: true, userOwed: s.raffleOwed,
@@ -433,14 +522,19 @@ export const demoReads = {
     const all = [...s.rounds].reverse().map(roundView);
     return { config: { ticketPrice: milli(0.01), duration: DAY, active: true }, current: all[0], past: all.slice(1), minPot: MIN_POT, feeBps: POT_FEE, drawTimeout: DAY, abortDelay: 7 * DAY, userOwed: s.lotteryOwed };
   },
-  house: (): HouseState => ({ ...houseFunds(), bankrollShareBps: BANKROLL_SHARE, edgeBps: EDGE, maxExposureBps: 100n, maxTotalExposureBps: 2_000n, userShares: s.userShares }),
+  house: (): HouseState => ({
+    ...houseFunds(), bankrollShareBps: BANKROLL_SHARE, edgeBps: EDGE, maxExposureBps: 100n, maxTotalExposureBps: 2_000n,
+    totalPendingDeposits: s.pendingDeposit?.amount ?? 0n, openBets: s.bets.filter((bet) => bet.status === "pending").length, userShares: s.userShares,
+    pendingDeposit: s.pendingDeposit && requestView(s.pendingDeposit.amount, s.pendingDeposit.seq),
+    pendingRedeem: s.pendingRedeem && requestView(s.pendingRedeem.shares, s.pendingRedeem.seq),
+  }),
   houseEvents: (): HouseEvent[] => [...s.houseEvents],
   points: (): R.PointsBalance => ({ active: s.points.active, pending: s.points.pending }),
   activity: (): R.ActivityItem[] => s.activity.slice(0, 12),
   fairness: (): R.FairnessStatus => ({
-    sources: (["Games", "Lottery", "Ticket raffles", "Vault raffles"] as const).map((module) => ({ module, provider: DEMO_DEPLOYMENT.randomness, isMock: true })),
-    anyMock: true, gamesOwner: DEMO_DEPLOYMENT.owner, ownerIsContract: false,
-    games: { edgeBps: EDGE, minBet: MIN_BET, maxExposureBps: 100n, maxTotalExposureBps: 2_000n, refundTimeout: DAY },
+    sources: (["Games", "Lottery", "Ticket raffles", "Vault raffles"] as const).map((module) => ({ module, provider: DEMO_DEPLOYMENT.randomness, kind: "mock" as const, isMock: true })),
+    anyMock: true, anyUnknown: false, gamesOwner: DEMO_DEPLOYMENT.owner, ownerIsContract: false,
+    games: { edgeBps: EDGE, minBet: MIN_BET, maxExposureBps: 100n, maxTotalExposureBps: 2_000n, refundTimeout: REFUND_TIMEOUT, maxWagerBps: MAX_WAGER_BPS, bankrollShareBps: BANKROLL_SHARE },
     lottery: { feeBps: POT_FEE, minPot: MIN_POT }, ticketRaffle: { feeBps: POT_FEE, minPot: MIN_POT },
   }),
   betProof(requestId: bigint): R.BetProof | undefined {
@@ -481,19 +575,28 @@ function settleBet(bet: Bet) {
 function placeBet(kind: Bet["kind"], wager: bigint, chanceBps: number) {
   if (wager < MIN_BET) fail(`The minimum bet is ${wei(MIN_BET)}.`);
   if (kind === "dice" && (chanceBps < 100 || chanceBps > 9_500)) fail("The chance of winning must be between 1% and 95%.");
+  if (demoNow() < s.betsResumeAt) fail(`Betting is paused for a few minutes after a refund; it resumes in ${s.betsResumeAt - demoNow()} seconds.`);
   const maxWager = (s.bankroll * MAX_WAGER_BPS) / BPS;
   if (wager > maxWager) fail(`The largest wager is ${wei(maxWager)} right now (${Number(MAX_WAGER_BPS) / 100}% of the bankroll); ${wei(wager)} is above it.`);
   const exposure = kind === "slots" ? slotsExposure(wager, EDGE) : gameExposure(wager, chanceBps, EDGE);
   const limit = (s.bankroll * 100n) / BPS;
   if (exposure > limit) fail(`This bet would put ${wei(exposure)} of the bankroll at risk; the limit per bet is ${wei(limit)}. Lower the wager or raise the chance.`);
+  // `Games.MAX_TOTAL_EXPOSURE_BPS`: all open bets together may reserve at most 20% of the house's funds
+  const totalLimit = ((s.bankroll + s.reserved) * 2_000n) / BPS;
+  if (s.reserved + exposure > totalLimit) fail(`Too many open bets: this one would bring the house's total at risk to ${wei(s.reserved + exposure)}; the limit is ${wei(totalLimit)}. Lower the wager or wait for open bets to settle.`);
+  // `Games.MAX_OPEN_WAGERS_BPS`: all wagers in play together may be at most 20% of the house's funds
+  const wagerLimit = ((s.bankroll + s.reserved) * MAX_OPEN_WAGERS_BPS) / BPS;
+  if (s.openWagers + wager > wagerLimit) fail(`Too much is in play already: this wager would bring the open wagers to ${wei(s.openWagers + wager)}; the limit is ${wei(wagerLimit)}. Lower the wager or wait for open bets to settle.`);
   pay(wager);
   s.bankroll -= exposure;
   s.reserved += exposure;
   s.openWagers += wager;
-  const bet: Bet = { requestId: s.nextRequest++, collection: DEMO_COLLECTION, wager, kind, chanceBps, status: "pending", refundableAt: demoNow() + DAY, player: DEMO_USER, edgeBps: EDGE, placedAt: demoNow() };
+  const bet: Bet = { seq: s.placedCount++, requestId: s.nextRequest++, collection: DEMO_COLLECTION, wager, kind, chanceBps, status: "pending", refundableAt: demoNow() + REFUND_TIMEOUT, player: DEMO_USER, edgeBps: EDGE, placedAt: demoNow() };
   s.bets.push(bet);
   log("Games", kind === "slots" ? "/play/slots" : "/play/dice", kind === "slots" ? `Slots spin of ${wei(wager)}` : `Dice bet of ${wei(wager)} at ${chanceBps / 100}%`, DEMO_USER);
-  later(kind === "slots" ? 1_700 : 1_300, () => settleBet(bet));
+  later(kind === "slots" ? 1_700 : 1_300, () => {
+    if (!withhold && bet.status === "pending") settleBet(bet);
+  });
 }
 function draw(item: Round | Raffle, onWon: (winner: Address) => void) {
   item.status = 2;
@@ -556,7 +659,7 @@ const handlers: Record<string, Handler> = {
     if (s.owner.get(id) !== DEMO_USER) fail(`You do not own token #${id}.`);
     const price = currentBid();
     // a bid below the collection's minimum is not a bid: it would buy a token for dust
-    if (price === 0n || price < MIN_BID) fail(price === 0n ? "There is nothing to bid with: the collection's buyback budget is empty." : `There is nothing to bid with: the budget can pay ${wei(price)}, below the collection's minimum bid of ${wei(MIN_BID)}.`);
+    if (price === 0n || price < minBid()) fail(price === 0n ? "There is nothing to bid with: the collection's buyback budget is empty." : `There is nothing to bid with: the budget can pay ${wei(price)}, below the collection's minimum bid of ${wei(minBid())}.`);
     if (price < (minPrice as bigint)) fail(`The floor bid is now ${wei(price)}, below your minimum of ${wei(minPrice as bigint)}.`);
     const now = demoNow();
     s.budget -= price;
@@ -578,6 +681,9 @@ const handlers: Record<string, Handler> = {
     if (demoNow() < h.lockedUntil || salesFloor() < (h.purchasePrice * 13_000n) / BPS) {
       fail("Unlock conditions are not met: the lock must have ended and the floor must be at least 130% of the purchase price.");
     }
+    // `Vault.unlock` remembers the floor seen now, capped at 16 times the unlock price
+    const cap = ((h.purchasePrice * 13_000n) / BPS) * 16n;
+    s.unlockFloor.set(h.id, salesFloor() > cap ? cap : salesFloor());
     h.status = 2;
     h.unlockedAt = demoNow();
   },
@@ -586,16 +692,20 @@ const handlers: Record<string, Handler> = {
     const now = demoNow();
     // `Vault.startAuction`: the owner at once, anyone 30 days after unlocking; and anyone can restart
     // an oracle-priced auction whose price has reached its reserve without a buyer.
-    const restart = !!h && h.status === 3 && !!h.auction && !h.auction.ownerPriced && auctionPrice(h.auction, now) <= h.auction.endPrice;
+    // an oracle-priced auction that has rested at its reserve for a day without a buyer.
+    const restart = !!h && h.status === 3 && !!h.auction && !h.auction.ownerPriced && now >= restartableAt(h.auction);
     if (!h || !(restart || (h.status === 2 && now >= h.unlockedAt + 30 * DAY))) {
-      fail(h?.status === 3 ? "This auction can be restarted only once its price has reached the reserve." : "Only the owner can start this auction yet; anyone can 30 days after the holding unlocked.");
+      fail(h?.status === 3 ? "The auction is still running: it can be restarted only once its price has rested at the reserve for a day." : "Only the owner can start this auction yet; anyone can 30 days after the holding unlocked.");
     }
     // the reserve is the higher of the floor and 130% of the purchase price; it opens at 16 times that
     const unlockAt = (h.purchasePrice * 13_000n) / BPS;
     const reserve = salesFloor() > unlockAt ? salesFloor() : unlockAt;
+    // ...or at 16 times the floor seen when the holding unlocked on its own, if that is higher
+    const seen = s.unlockFloor.get(h.id) ?? 0n;
+    const opening = 16n * (seen > reserve ? seen : reserve);
     h.status = 3;
-    h.auction = { startPrice: 16n * reserve, endPrice: reserve, startTime: now, currentPrice: 0n, atReserve: false, ownerPriced: false };
-    log("Floor bid", "/vault/holdings", `Auction for vault holding #${vaultId} ${restart ? "restarted" : "started"} at ${wei(16n * reserve)}`, DEMO_USER);
+    h.auction = { startPrice: opening, endPrice: reserve, startTime: now, currentPrice: 0n, atReserve: false, ownerPriced: false };
+    log("Floor bid", "/vault/holdings", `Auction for vault holding #${vaultId} ${restart ? "restarted" : "started"} at ${wei(opening)}`, DEMO_USER);
   },
   buy([vaultId, count], value) {
     // Vault.buy(vaultId) and TicketRaffle.buy(raffleId, count) share a name; the address tells them apart.
@@ -692,27 +802,54 @@ const handlers: Record<string, Handler> = {
 /** Handlers of functions whose name exists on more than one contract, keyed by contract address. */
 const byContract: Record<string, Record<string, Handler>> = {
   [DEMO_DEPLOYMENT.games]: {
-    deposit([minShares], value) {
+    /** `Games.refund`: return the wager of a bet whose randomness never arrived; betting then pauses. */
+    refund([requestId]) {
+      const bet = s.bets.find((b) => b.requestId === requestId && b.status === "pending") ?? fail("This bet does not exist or is already settled or refunded.");
+      if (demoNow() < bet.placedAt + REFUND_TIMEOUT) fail("Too early: a bet can be refunded six hours after it was placed.");
+      const exposure = bet.kind === "slots" ? slotsExposure(bet.wager, bet.edgeBps) : gameExposure(bet.wager, bet.chanceBps, bet.edgeBps);
+      s.reserved -= exposure;
+      s.openWagers -= bet.wager;
+      s.bankroll += exposure;
+      s.balance += bet.wager;
+      s.betsResumeAt = demoNow() + REFUND_PAUSE;
+      Object.assign(bet, { status: "refunded", refundableAt: undefined });
+    },
+    // Deposits and redemptions are requests (`Games.deposit` and friends): carried out at once when
+    // no bet is open; otherwise once every bet that was open when they were made has closed, and
+    // only while that gives up no more than the caller's `maxSpreadBps` against fair value.
+    deposit([maxSpreadBps], value) {
+      checkSpread(maxSpreadBps as bigint);
+      if (value === 0n) fail("Enter an amount to deposit.");
       pay(value);
-      houseDeposit(value, true, minShares as bigint);
-      log("Games", "/play/house", `Deposit of ${wei(value)} into the house`, DEMO_USER);
+      s.pendingDeposit = { amount: (s.pendingDeposit?.amount ?? 0n) + value, seq: s.placedCount };
+      // not ready, or too costly right now: the request simply stays pending
+      if (executeDeposit(maxSpreadBps as bigint, false) === 0n) log("Games", "/play/house", `Deposit of ${wei(value)} into the house requested`, DEMO_USER);
     },
     fundBankroll(_args, value) {
-      pay(value);
-      houseDeposit(value, true);
+      byContract[DEMO_DEPLOYMENT.games].deposit([0n], value);
     },
-    redeem([shares, minAssets]) {
+    executeDeposit([maxSpreadBps]) {
+      executeDeposit(maxSpreadBps as bigint, true);
+    },
+    cancelDeposit() {
+      if (!s.pendingDeposit) fail("You have no pending request of that kind.");
+      s.balance += s.pendingDeposit.amount;
+      s.pendingDeposit = undefined;
+    },
+    redeem([shares, maxSpreadBps]) {
+      checkSpread(maxSpreadBps as bigint);
       const amount = shares as bigint;
       if (amount === 0n || amount > s.userShares) fail("You do not hold that many shares in the house.");
-      // priced as if the house loses every open bet: only the free bankroll is shared out
-      const assets = previewRedeem(houseFunds(), amount);
-      if (assets < (minAssets as bigint)) fail("The share price moved past your limit between the preview and the transaction. Nothing was done; try again.");
-      s.userShares -= amount;
-      s.totalShares -= amount;
-      s.bankroll -= assets;
-      s.balance += assets;
-      houseEvent({ kind: "redeem", amount: assets, shares: amount });
-      log("Games", "/play/house", `Redeemed house shares for ${wei(assets)}`, DEMO_USER);
+      // a remainder too small to ever be redeemed is taken along
+      s.pendingRedeem = { shares: redeemRequestShares(s.userShares, amount), seq: s.placedCount };
+      executeRedeem(maxSpreadBps as bigint, false);
+    },
+    executeRedeem([maxSpreadBps]) {
+      executeRedeem(maxSpreadBps as bigint, true);
+    },
+    cancelRedeem() {
+      if (!s.pendingRedeem) fail("You have no pending request of that kind.");
+      s.pendingRedeem = undefined;
     },
   },
   [DEMO_DEPLOYMENT.lottery]: {
@@ -761,7 +898,7 @@ const byContract: Record<string, Record<string, Handler>> = {
     create([, tokenId, ticketPrice, minTickets, maxTickets, duration]) {
       const id = tokenId as bigint;
       if (s.owner.get(id) !== DEMO_USER) fail(`You do not own token #${id}.`);
-      if (Number(maxTickets) < 1 || Number(minTickets) > Number(maxTickets) || (ticketPrice as bigint) === 0n) fail("Invalid parameters.");
+      if (Number(maxTickets) < 1 || Number(minTickets) > Number(maxTickets) || (ticketPrice as bigint) === 0n || Number(duration) < 3_600 || Number(duration) > 30 * DAY) fail("Invalid parameters.");
       s.owner.set(id, DEMO_DEPLOYMENT.ticketRaffle);
       s.raffles.push({ id: BigInt(s.raffles.length + 1), creator: DEMO_USER, collection: DEMO_COLLECTION, tokenId: id, ticketPrice: ticketPrice as bigint, minTickets: Number(minTickets), maxTickets: Number(maxTickets), ticketsSold: 0, endTime: demoNow() + Number(duration), requestedAt: 0, status: 1, winner: ZERO, feeBps: POT_FEE, minPot: MIN_POT, nftReturned: false, entries: [] });
       log("Ticket raffle", "/play/ticket-raffles", `Raffle #${s.raffles.length} opened for token #${id} at ${wei(ticketPrice as bigint)} a ticket`, DEMO_USER);
@@ -789,6 +926,8 @@ const byContract: Record<string, Record<string, Handler>> = {
       const r = s.raffles.find((x) => x.id === id) ?? fail("This raffle does not exist.");
       if (r.status !== 1) fail("This raffle is not open.");
       if (demoNow() < r.endTime && r.ticketsSold < r.maxTickets) fail("The raffle is still running: it can be closed once its time is up or it has sold out.");
+      // a raffle that sold out early has ended now
+      if (demoNow() < r.endTime) r.endTime = demoNow();
       if (r.ticketsSold === 0 || r.ticketsSold < r.minTickets || r.ticketPrice * BigInt(r.ticketsSold) < r.minPot || demoNow() >= r.endTime + 7 * DAY) return void (r.status = 5);
       draw(r, () => undefined);
     },
@@ -825,6 +964,8 @@ const byContract: Record<string, Record<string, Handler>> = {
       const r = s.vaultRaffles.find((x) => x.id === id) ?? fail("This raffle does not exist.");
       if (r.status !== 1) fail("This raffle is not open.");
       if (demoNow() < r.drawAfter) fail("Too early: the announce period has not passed.");
+      if (demoNow() < s.nextDrawAt) fail("Too early: no draw within an hour of the previous one.");
+      if (s.vaultRaffles.some((x) => x.status === 2)) fail("Another raffle's draw is in flight. Wait for it to complete or be reset.");
       const activated = s.points.active + s.points.others;
       if (activated < MIN_POINTS_TO_DRAW) fail(`Only ${wei(activated).replace(" ETH", "")} points are activated; a draw needs at least ${wei(MIN_POINTS_TO_DRAW).replace(" ETH", "")}.`);
       r.status = 2;
@@ -835,6 +976,8 @@ const byContract: Record<string, Record<string, Handler>> = {
         const point = (BigInt(randomInt(1_000_000)) * total) / 1_000_000n;
         r.winner = point < s.points.active ? DEMO_USER : NPC_A;
         r.status = 3;
+        // leave a window for points to be activated before the next raffle is drawn
+        s.nextDrawAt = demoNow() + 3_600;
         if (r.winner === DEMO_USER) s.points.active = (s.points.active * 2_000n) / BPS;
       });
     },

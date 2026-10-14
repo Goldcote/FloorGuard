@@ -1,6 +1,6 @@
+import { LOCAL_CHAIN_ID, LOCAL_ENABLED } from "../local";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { Address } from "viem";
-import { anvil } from "wagmi/chains";
 import { Countdown, DRAW_REVEAL_MS, DrawTapeView, flash, observeReveal, ParticleLayer, percent, revealElapsed, ShareRing, TokenEmblem, useParticles, useRevealClock, type TapePhase } from "../fx";
 import { useChainTime, useProtocol, useRead } from "../hooks";
 import {
@@ -22,7 +22,7 @@ import { bps, dateTime, duration, eth } from "../lib/format";
 import { parseEth, parseUint, randomWord } from "../lib/parse";
 import { abortableAt, readDrawProof, readTicketRaffles, readTokenState, TICKET_RAFFLE_STATUS_NAMES, TicketRaffleStatus as S, ticketRaffleWouldRefund, type TicketRaffle, type TicketRaffles as RafflesState } from "../lib/reads";
 import { sound } from "../lib/sound";
-import { useTx } from "../tx";
+import { useTx, single } from "../tx";
 import { ActionButton, Addr, Badge, Card, Empty, Field, QueryView } from "../ui";
 import { LOGS_FROM_BLOCK } from "../wagmi";
 import { PlayNotices } from "./gamesShared";
@@ -66,9 +66,9 @@ function RaffleCard({ r, t }: { r: TicketRaffle; t: RafflesState }) {
   const prize = useRef<HTMLDivElement>(null);
   const [countText, setCountText] = useState("1");
   useRevealClock();
-  const isLocal = chainId === anvil.id;
+  const isLocal = chainId === LOCAL_CHAIN_ID;
   const isMe = (address: Address) => !!user && address.toLowerCase() === user.toLowerCase();
-  const act = (title: string, step: string, call: Call, details: string[]) => void run(title, (send) => send(step, call), details);
+  const act = (title: string, step: string, call: Call, details: string[]) => void run(title, single(step, call), details);
 
   const key = r.id.toString();
   const selling = r.status === S.Open && now < r.endTime && r.ticketsSold < r.maxTickets;
@@ -199,10 +199,10 @@ function RaffleCard({ r, t }: { r: TicketRaffle; t: RafflesState }) {
                     : `Ticket ${proof.ticket} wins token #${r.tokenId}.`}
             </p>
             {revealed && (
-              <p className="draw-winner">
+              <div className="draw-winner">
                 Winner: <Addr address={r.winner} /> {isMe(r.winner) && <span className="badge badge-gold">You</span>}
                 {r.status === S.Won && " (prize not delivered yet: settle)"} <VerifyButton kind="ticketRaffle" id={r.id} ticketPrice={r.ticketPrice} feeBps={r.feeBps} />
-              </p>
+              </div>
             )}
           </div>
         )}
@@ -264,7 +264,7 @@ function RaffleCard({ r, t }: { r: TicketRaffle; t: RafflesState }) {
               {abortAt !== undefined && now < abortAt && <>; if none arrives, refunds can be opened from {dateTime(abortAt)}</>}
             </span>
           )}
-          {r.status === S.Drawing && isLocal && r.requestId !== undefined && (
+          {LOCAL_ENABLED && r.status === S.Drawing && isLocal && r.requestId !== undefined && (
             <ActionButton
               className="secondary local"
               onClick={() =>
@@ -338,17 +338,23 @@ export function TicketRaffles({ collection }: { collection: Address }) {
   const create = () => {
     const { tokenId, price, min, max, seconds } = input;
     if (!client || !d || !user || tokenId === undefined || price === undefined) return;
+    const creation = createTicketRaffleCall(d, collection, tokenId, price, min, max, BigInt(seconds));
     void run(`Raffle token #${tokenId}`, async (send) => {
       const token = await readTokenState(client, collection, tokenId, d.ticketRaffle);
       if (!isMe(token.owner)) throw new Error(`You do not own token #${tokenId}.`);
       if (!token.approved) await send("Approve raffle contract", approveCall(collection, d.ticketRaffle, tokenId));
-      await send("Create raffle", createTicketRaffleCall(d, collection, tokenId, price, min, max, BigInt(seconds)));
+      await send("Create raffle", creation);
     }, [
       `Token #${tokenId} moves from your wallet into escrow in the raffle contract for ${duration(seconds)}.`,
       `Up to ${max} tickets are sold at ${eth(price)} ETH. If at least ${min} sell (and the pot reaches the minimum), a random ticket wins the token and you can withdraw the ticket revenue less the platform fee.`,
       "Otherwise buyers are refunded and you take the token back. You can cancel while no ticket has been sold.",
       "If the raffle contract is not yet approved for this token, an approval transaction comes first.",
-    ]);
+    ], {
+      plan: [
+        { step: "Approve raffle contract (only if it is not approved for this token yet)", call: approveCall(collection, d.ticketRaffle, tokenId) },
+        { step: "Create raffle", call: creation },
+      ],
+    });
   };
 
   return (
@@ -362,7 +368,7 @@ export function TicketRaffles({ collection }: { collection: Address }) {
                 <p>
                   <strong>{eth(t.userOwed)} ETH</strong> of raffle revenue is waiting for you.
                 </p>
-                <ActionButton onClick={() => d && void run("Withdraw raffle revenue", (send) => send("Withdraw", withdrawTicketRaffleCall(d)), [`You receive ${eth(t.userOwed!)} ETH of ticket revenue from the raffle contract.`])}>
+                <ActionButton onClick={() => d && void run("Withdraw raffle revenue", single("Withdraw", withdrawTicketRaffleCall(d)), [`You receive ${eth(t.userOwed!)} ETH of ticket revenue from the raffle contract.`])}>
                   Withdraw
                 </ActionButton>
               </div>

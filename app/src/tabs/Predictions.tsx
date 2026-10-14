@@ -7,7 +7,7 @@ import { bps, dateTime, duration, eth } from "../lib/format";
 import { parseEth } from "../lib/parse";
 import { impliedMultiple, Outcome, OUTCOME_NAMES, readMarkets, type Market, type Markets } from "../lib/reads";
 import { sound } from "../lib/sound";
-import { useTx } from "../tx";
+import { useTx, single } from "../tx";
 import { ActionButton, Addr, Badge, Card, Empty, Field, QueryView } from "../ui";
 
 /** How long the rope takes to snap to the winning side once a market resolves. The same every time. */
@@ -129,7 +129,7 @@ function MarketStage({ m, t }: { m: Market; t: Markets }) {
   const bet = (higher: boolean) => {
     if (!amount || !d) return;
     sound.stake();
-    void run(`Bet ${eth(amount)} ETH on ${higher ? "higher" : "lower"} (market #${m.id})`, (send) => send("Place bet", placeBetCall(d, m.id, higher, amount)), [
+    void run(`Bet ${eth(amount)} ETH on ${higher ? "higher" : "lower"} (market #${m.id})`, single("Place bet", placeBetCall(d, m.id, higher, amount)), [
       `${eth(amount)} ETH moves from your wallet into the ${higher ? "higher" : "lower"} pool of market #${m.id}.`,
       `If the floor at resolution is ${higher ? `at least ${eth(highAt)}` : `at most ${eth(lowAt)}`} ETH, you get it back plus a share of the other pool, less the ${bps(m.feeBps)} fee on winnings.`,
       band > 0n ? `If the floor ends within ${bps(band)} of the ${eth(m.startPrice)} ETH start price, the market is void and everyone is refunded.` : "If the price is unchanged, the market is void and everyone is refunded.",
@@ -138,12 +138,12 @@ function MarketStage({ m, t }: { m: Market; t: Markets }) {
   };
   const resolve = () =>
     d &&
-    void run(`Resolve market #${m.id}`, (send) => send("Resolve", resolveMarketCall(d, m.id)), [
+    void run(`Resolve market #${m.id}`, single("Resolve", resolveMarketCall(d, m.id)), [
       "Settles the market against the oracle's floor price. Anyone may do this; you pay only the transaction fee.",
     ]);
   const doClaim = () =>
     d &&
-    void run(`Claim from market #${m.id}`, (send) => send("Claim", claimMarketCall(d, m.id)), [
+    void run(`Claim from market #${m.id}`, single("Claim", claimMarketCall(d, m.id)), [
       m.outcome === Outcome.Void
         ? "The market was voided: you receive your whole stake back."
         : "You receive your winning stake plus its share of the losing pool, less the fee on winnings. A losing stake pays nothing.",
@@ -258,7 +258,7 @@ export function Predictions({ collection }: { collection: Address }) {
   const bettingSeconds = Math.round(Number(newMarket.bettingHours) * 3_600);
   const durationSeconds = Math.round(Number(newMarket.durationHours) * 3_600);
   const create = () =>
-    void run(`Create a ${newMarket.durationHours}h market`, (send) => send("Create market", createMarketCall(d!, collection, BigInt(bettingSeconds), BigInt(durationSeconds))), [
+    void run(`Create a ${newMarket.durationHours}h market`, single("Create market", createMarketCall(d!, collection, BigInt(bettingSeconds), BigInt(durationSeconds))), [
       `Opens a market on the selected collection: betting for ${duration(bettingSeconds)}, settled ${duration(durationSeconds)} from now.`,
       "The oracle's current floor becomes the start price. No ETH is sent; you pay only the transaction fee.",
     ]);

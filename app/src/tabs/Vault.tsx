@@ -4,9 +4,9 @@ import type { Address } from "viem";
 import { buyCall, startAuctionCall, unlockCall } from "../lib/calls";
 import { useChainTime, useProtocol, useRead } from "../hooks";
 import { dateTime, duration, eth } from "../lib/format";
-import { auctionReachesReserveAt, HoldingStatus, MAX_ITEMS, readAuctionPrice, readHoldings, readLicensing, type Holding, type HoldingLicense } from "../lib/reads";
+import { auctionReachesReserveAt, auctionRestartableAt, HoldingStatus, MAX_ITEMS, readAuctionPrice, readHoldings, readLicensing, type Holding, type HoldingLicense } from "../lib/reads";
 import { href } from "../routes";
-import { useTx } from "../tx";
+import { ReviewAgain, useTx, single } from "../tx";
 import { ActionButton, Addr, Empty, PageHead, Panel, QueryView, Time } from "../ui";
 import { AuctionChart, useLiveNow } from "../viz/charts";
 import { auctionPriceAt, toEth, unlockPrice } from "../viz/curves";
@@ -35,35 +35,43 @@ export function Vault() {
   const licenceOf = new Map<string, HoldingLicense>((licensing.data?.holdings ?? []).map((l) => [l.holding.id.toString(), l]));
 
   const unlock = (h: Holding) =>
-    void run(`Unlock vault holding #${h.id}`, (send) => send("Unlock", unlockCall(d!, h.id)), [
+    void run(`Unlock vault holding #${h.id}`, single("Unlock", unlockCall(d!, h.id)), [
       "Marks the holding as unlocked, so the owner can auction or raffle it. No ETH is sent; you pay only the transaction fee.",
     ]);
   const startAuction = (h: Holding) =>
-    void run(`Start auction for holding #${h.id}`, (send) => send("Start auction", startAuctionCall(d!, h.id)), [
+    void run(`Start auction for holding #${h.id}`, single("Start auction", startAuctionCall(d!, h.id)), [
       "Starts a falling-price auction for this token far above its reserve, halving every day down to the reserve.",
       "No ETH is sent; you pay only the transaction fee.",
     ]);
-  const buy = (h: Holding) =>
+  const buy = (h: Holding) => {
+    if (!client || !d || !h.auction) return;
+    // The most this purchase may cost is fixed now, at the price on screen, and it is what the
+    // review shows. An auction can be restarted at 16 times its reserve between the review and the
+    // transaction: the purchase must then stop, not pay the new price.
+    const maxPrice = h.auction.currentPrice;
+    const call = buyCall(d, h.id, maxPrice);
     void run(
       `Catch vault holding #${h.id}`,
       async (send) => {
-        // The price only falls, so the price read now always covers the price at inclusion; the
-        // contract refunds the difference (see buyCall for why it sends one wei more).
-        const price = await readAuctionPrice(client!, d!, h.id);
-        await send(`Buy at ${eth(price)} ETH`, buyCall(d!, h.id, price));
+        const price = await readAuctionPrice(client, d, h.id);
+        if (price > maxPrice) throw new ReviewAgain(`The auction price is now ${eth(price)} ETH, above the ${eth(maxPrice)} ETH you reviewed (the auction was restarted).`);
+        // Exactly the reviewed maximum is sent; the contract keeps the price at inclusion and refunds the rest.
+        await send(`Buy for at most ${eth(maxPrice)} ETH`, call);
       },
       [
-        `You buy token #${h.tokenId} at the auction's current price${h.auction ? `, about ${eth(h.auction.currentPrice)} ETH` : ""}.`,
-        "The price keeps falling: you pay the price at the moment the transaction is mined, and anything sent above it is refunded.",
+        `You buy token #${h.tokenId} and pay at most ${eth(maxPrice, 18)} ETH. That amount is sent with the transaction.`,
+        "The price keeps falling: you pay the price at the moment the transaction is mined, and the difference is refunded to you in the same transaction.",
+        "If the price is higher than that maximum when you confirm, nothing is sent and you are asked to review again.",
         "The payment goes to the collection's buyback budget and the token comes to you.",
       ],
       {
+        plan: [{ step: "Buy", call }],
         preview: (
           <div className="swap-preview">
             <div className="swap-side">
-              <strong className="swap-amount">{h.auction ? eth(h.auction.currentPrice, 5) : "–"} ETH</strong>
+              <strong className="swap-amount">{eth(maxPrice, 5)} ETH</strong>
               <span>
-                from you, or less
+                from you at most, likely less
                 <small>to the collection's budget</small>
               </span>
             </div>
@@ -81,6 +89,7 @@ export function Vault() {
         ),
       },
     );
+  };
 
   return (
     <>
@@ -89,7 +98,7 @@ export function Vault() {
         auction or a raffle.
       </PageHead>
       <QueryView query={query} lines={6}>
-        {({ holdings, holdingCount, owner, governanceWindow, auctionStartMultiple, auctionHalfLife }) => {
+        {({ holdings, holdingCount, owner, governanceWindow, auctionStartMultiple, auctionHalfLife, auctionRestartDwell }) => {
           const isOwner = !!user && user.toLowerCase() === owner.toLowerCase();
           const auctions = holdings.filter((h) => h.status === HoldingStatus.Auction && h.auction);
           const counts = { locked: 0, unlocked: 0, auction: 0, released: 0 };
@@ -120,9 +129,10 @@ export function Vault() {
                   {auctions.map((h) => {
                     const a = h.auction!;
                     const reserveAt = auctionReachesReserveAt(a, auctionHalfLife);
-                    // An unsold auction can be restarted once its price sits at the reserve; one the
+                    // An unsold auction can be restarted once it has rested at the reserve for a day; one the
                     // owner priced by hand only by the owner.
-                    const canRestart = a.atReserve && (!a.ownerPriced || isOwner);
+                    const restartAt = auctionRestartableAt(a, auctionHalfLife, auctionRestartDwell);
+                    const canRestart = now >= restartAt && (!a.ownerPriced || isOwner);
                     return (
                       <article key={h.id.toString()} className={a.atReserve ? "auction-catch at-reserve" : "auction-catch"}>
                         <header className="catch-head">
@@ -149,7 +159,13 @@ export function Vault() {
                             <p className="muted small">
                               Opened at {eth(a.startPrice, 4)} ETH and halves every {duration(auctionHalfLife)}.{" "}
                               {a.atReserve ? (
-                                "It has reached the reserve and waits there, unsold."
+                                now >= restartAt ? (
+                                  "It has reached the reserve and waits there, unsold."
+                                ) : (
+                                  <>
+                                    It has reached the reserve and rests there; it can be restarted <Time at={restartAt} now={now} />.
+                                  </>
+                                )
                               ) : (
                                 <>
                                   It reaches the {eth(a.endPrice, 4)} ETH reserve <Time at={reserveAt} now={now} />.
@@ -257,7 +273,7 @@ export function Vault() {
                   gets there it stays locked unless the owner releases it. After unlocking, the owner can auction, raffle or relock it; anyone can start the
                   auction once the governance window of {duration(governanceWindow)} has passed. An auction opens at {auctionStartMultiple} times its reserve
                   (or the floor at unlock, if higher) and halves every {duration(auctionHalfLife)} until it reaches the reserve, which is the highest of the
-                  floor, 130% of the purchase price and an owner-set minimum. An unsold auction can be restarted once its price sits at the reserve.
+                  floor, 130% of the purchase price and an owner-set minimum. An unsold auction can be restarted once it has rested at the reserve for {duration(auctionRestartDwell)}.
                   Auctions start far above the market on purpose and fall until someone buys. Proceeds return to the buyback budget; selling one token
                   brings in about enough to buy one back.
                 </p>

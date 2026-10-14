@@ -5,7 +5,8 @@ import { getMode, modeWasChosen, setMode, useMode } from "./demo/mode";
 import { DEMO_CHAIN_ID, demoReads, resetDemo } from "./demo/sim";
 import { DICE_REVEAL_MS, SLOTS_REVEAL_MS } from "./fx/gameviz";
 import { observeReveal, useRevealClock } from "./fx/reveal";
-import { deployments } from "./generated/addresses";
+import { deployments } from "./deployments";
+import { LOCAL_CHAIN_ID, LOCAL_ENABLED } from "./local";
 import { useDemoSync, useIsDeployed, useProtocol, useRead } from "./hooks";
 import { decodeError } from "./lib/errors";
 import { eth, points as formatPoints } from "./lib/format";
@@ -149,10 +150,11 @@ export function App() {
   // First visit with no choice made: if a local chain with a deployment answers, start live;
   // otherwise stay in the demo, which needs nothing.
   useEffect(() => {
-    if (modeWasChosen()) return;
-    const local = deployments[31337];
+    // Local development only (see local.ts): a production build never asks a loopback address anything.
+    if (!LOCAL_ENABLED || modeWasChosen()) return;
+    const local = deployments[LOCAL_CHAIN_ID];
     if (!local) return;
-    const client = config.getClient({ chainId: 31337 });
+    const client = config.getClient({ chainId: LOCAL_CHAIN_ID });
     void client
       .request({ method: "eth_getCode", params: [local.marketplace, "latest"] })
       .then((code) => {
@@ -190,7 +192,7 @@ export function App() {
         </p>
         <p className="muted">
           Addresses are read from <code>deployments/{chainId}.json</code> in the repository root. Deploy with{" "}
-          <code>script/Deploy.s.sol</code>, run <code>npm run sync</code> in <code>app/</code>, then reload. Or pick
+          <code>script/Deploy.s.sol</code>, run <code>npm run sync</code> in <code>app/</code> (with <code>-- --local</code> for a local chain), then reload. Or pick
           another chain, or try the demo.
         </p>
         <button type="button" className="btn" onClick={() => setMode("demo")}>
@@ -219,10 +221,12 @@ export function App() {
           A deployment is recorded for chain <strong>{chainId}</strong>, but there is no contract code at those
           addresses on the node the app is talking to.
         </p>
-        <p className="muted">
-          On a local chain this usually means anvil was restarted. Run <code>script/Deploy.s.sol</code> (and{" "}
-          <code>script/SeedLocal.s.sol</code>) again, then <code>npm run sync</code>.
-        </p>
+        {LOCAL_ENABLED && (
+          <p className="muted">
+            On a local chain this usually means anvil was restarted. Run <code>script/Deploy.s.sol</code> (and{" "}
+            <code>script/SeedLocal.s.sol</code>) again, then <code>npm run sync -- --local</code>.
+          </p>
+        )}
       </Card>
     );
   } else if (route.needsCollection && !collection) {

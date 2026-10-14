@@ -1376,6 +1376,32 @@ export const buybackEngineAbi = [
   },
   {
     "type": "function",
+    "name": "DEFAULT_MIN_BID_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MIN_BASE_PRICE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "acceptOwnership",
     "inputs": [],
     "outputs": [],
@@ -1601,6 +1627,25 @@ export const buybackEngineAbi = [
   },
   {
     "type": "function",
+    "name": "minBidBpsOf",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "minBidOf",
     "inputs": [
       {
@@ -1752,7 +1797,7 @@ export const buybackEngineAbi = [
         "internalType": "address"
       },
       {
-        "name": "minBid",
+        "name": "minBidBps",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1979,7 +2024,7 @@ export const buybackEngineAbi = [
         "internalType": "address"
       },
       {
-        "name": "minBid",
+        "name": "minBidBps",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
@@ -2173,6 +2218,19 @@ export const vaultAbi = [
   {
     "type": "function",
     "name": "AUCTION_HALF_LIFE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "AUCTION_RESTART_DWELL",
     "inputs": [],
     "outputs": [
       {
@@ -5326,6 +5384,19 @@ export const gamesAbi = [
   },
   {
     "type": "function",
+    "name": "MAX_OPEN_WAGERS_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MAX_TOTAL_EXPOSURE_BPS",
     "inputs": [],
     "outputs": [
@@ -5340,6 +5411,19 @@ export const gamesAbi = [
   {
     "type": "function",
     "name": "MIN_CHANCE_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "REFUND_PAUSE",
     "inputs": [],
     "outputs": [
       {
@@ -5393,6 +5477,19 @@ export const gamesAbi = [
     "type": "function",
     "name": "acceptOwnership",
     "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "advanceClosed",
+    "inputs": [
+      {
+        "name": "steps",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
     "outputs": [],
     "stateMutability": "nonpayable"
   },
@@ -5473,10 +5570,50 @@ export const gamesAbi = [
   },
   {
     "type": "function",
+    "name": "betsResumeAt",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "cancelDeposit",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "cancelRedeem",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "closedThrough",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "deposit",
     "inputs": [
       {
-        "name": "minShares",
+        "name": "maxSpreadBps",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -5492,6 +5629,25 @@ export const gamesAbi = [
   },
   {
     "type": "function",
+    "name": "depositSeqOf",
+    "inputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "edgeBps",
     "inputs": [],
     "outputs": [
@@ -5502,6 +5658,49 @@ export const gamesAbi = [
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "executeDeposit",
+    "inputs": [
+      {
+        "name": "maxSpreadBps",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "shares",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "executeRedeem",
+    "inputs": [
+      {
+        "name": "maxSpreadBps",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "to",
+        "type": "address",
+        "internalType": "address payable"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "assets",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -5533,6 +5732,25 @@ export const gamesAbi = [
       }
     ],
     "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "isClosedThrough",
+    "inputs": [
+      {
+        "name": "seq",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -5652,6 +5870,25 @@ export const gamesAbi = [
   },
   {
     "type": "function",
+    "name": "pendingDepositOf",
+    "inputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "pendingOwner",
     "inputs": [],
     "outputs": [
@@ -5659,6 +5896,38 @@ export const gamesAbi = [
         "name": "",
         "type": "address",
         "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "pendingRedeemOf",
+    "inputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "placedCount",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -5790,7 +6059,7 @@ export const gamesAbi = [
         "internalType": "uint256"
       },
       {
-        "name": "minAssets",
+        "name": "maxSpreadBps",
         "type": "uint256",
         "internalType": "uint256"
       },
@@ -5811,12 +6080,44 @@ export const gamesAbi = [
   },
   {
     "type": "function",
+    "name": "redeemSeqOf",
+    "inputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "refund",
     "inputs": [
       {
         "name": "requestId",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "refundMany",
+    "inputs": [
+      {
+        "name": "requestIds",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
       }
     ],
     "outputs": [],
@@ -5929,6 +6230,25 @@ export const gamesAbi = [
   },
   {
     "type": "function",
+    "name": "shareValue",
+    "inputs": [
+      {
+        "name": "shares",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "sharesOf",
     "inputs": [
       {
@@ -5983,6 +6303,19 @@ export const gamesAbi = [
       }
     ],
     "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "totalPendingDeposits",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -6212,6 +6545,44 @@ export const gamesAbi = [
   },
   {
     "type": "event",
+    "name": "DepositCancelled",
+    "inputs": [
+      {
+        "name": "from",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "DepositRequested",
+    "inputs": [
+      {
+        "name": "from",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "OwnershipTransferStarted",
     "inputs": [
       {
@@ -6301,6 +6672,38 @@ export const gamesAbi = [
   },
   {
     "type": "event",
+    "name": "RedeemCancelled",
+    "inputs": [
+      {
+        "name": "from",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "RedeemRequested",
+    "inputs": [
+      {
+        "name": "from",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "shares",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "RiskParamsSet",
     "inputs": [
       {
@@ -6340,6 +6743,22 @@ export const gamesAbi = [
   {
     "type": "error",
     "name": "BetTooSmall",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BetsPaused",
+    "inputs": [
+      {
+        "name": "until",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "BetsStillOpen",
     "inputs": []
   },
   {
@@ -6386,6 +6805,11 @@ export const gamesAbi = [
   {
     "type": "error",
     "name": "NothingOwed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NothingPending",
     "inputs": []
   },
   {
@@ -6439,6 +6863,22 @@ export const gamesAbi = [
   {
     "type": "error",
     "name": "TotalExposureTooHigh",
+    "inputs": [
+      {
+        "name": "total",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "limit",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "TotalWagersTooHigh",
     "inputs": [
       {
         "name": "total",
@@ -10533,6 +10973,22 @@ export const errorsAbi = [
   },
   {
     "type": "error",
+    "name": "BetsPaused",
+    "inputs": [
+      {
+        "name": "until",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "BetsStillOpen",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "BettingClosed",
     "inputs": []
   },
@@ -10873,6 +11329,11 @@ export const errorsAbi = [
   },
   {
     "type": "error",
+    "name": "NothingPending",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NothingToBid",
     "inputs": []
   },
@@ -11090,6 +11551,22 @@ export const errorsAbi = [
   {
     "type": "error",
     "name": "TotalExposureTooHigh",
+    "inputs": [
+      {
+        "name": "total",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "limit",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "TotalWagersTooHigh",
     "inputs": [
       {
         "name": "total",

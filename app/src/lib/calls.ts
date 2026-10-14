@@ -137,20 +137,18 @@ export const startAuctionCall = (d: Deployment, vaultId: bigint): Call => ({
 });
 
 /**
- * `price` is the auction price just read. It only falls, and the contract refunds any excess, so the
- * value sent always covers the price at inclusion.
- *
- * One wei is added on purpose. With exactly `price`, gas is estimated at the moment of the read, when
- * nothing is refunded; by the time the transaction is mined the price has dropped, the refund
- * transfer runs after all, and the transaction can run out of gas. One wei of excess makes the
- * estimate include the refund.
+ * Buy an auctioned holding, sending `maxPrice`: the most the buyer has agreed to pay. The contract
+ * charges the price at inclusion and refunds the rest; if the price is above `maxPrice` by then (an
+ * auction that was restarted, for example) it reverts with `PriceNotMet`. The value is exactly what
+ * the review showed, never more. (The refund makes the transaction cost more gas than a node
+ * estimates for the moment of asking; lib/gas.ts adds the margin.)
  */
-export const buyCall = (d: Deployment, vaultId: bigint, price: bigint): Call => ({
+export const buyCall = (d: Deployment, vaultId: bigint, maxPrice: bigint): Call => ({
   address: d.vault,
   abi: vaultAbi,
   functionName: "buy",
   args: [vaultId],
-  value: price + 1n,
+  value: maxPrice,
 });
 
 // ---------------------------------------------------------------- points
@@ -312,19 +310,27 @@ export const withdrawLotteryCall = (d: Deployment): Call => lotteryCall(d, "with
 
 // ---------------------------------------------------------------- the house
 
-/** `Games.deposit`: fund the bankroll for shares. `minShares` rejects a worse price than previewed. */
-export const depositHouseCall = (d: Deployment, amount: bigint, minShares: bigint): Call => ({
-  address: d.games,
-  abi: gamesAbi,
-  functionName: "deposit",
-  args: [minShares],
-  value: amount,
-});
+const gamesCall = (d: Deployment, functionName: string, args: readonly unknown[], value?: bigint): Call => ({ address: d.games, abi: gamesAbi, functionName, args, value });
 
-/** `Games.redeem`: burn shares for their part of the free bankroll, paid to `to`. */
-export const redeemHouseCall = (d: Deployment, shares: bigint, minAssets: bigint, to: Address): Call => ({
-  address: d.games,
-  abi: gamesAbi,
-  functionName: "redeem",
-  args: [shares, minAssets, to],
-});
+/**
+ * `Games.deposit`: ask to fund the bankroll for shares. Carried out at once if no bet from before is
+ * open and it would give up no more than `maxSpreadBps` against fair value; otherwise the ETH waits
+ * (and can be cancelled) until `executeDeposit`. `maxSpreadBps` is the most the caller will give up
+ * because other bets are open, in basis points.
+ */
+export const depositHouseCall = (d: Deployment, amount: bigint, maxSpreadBps: bigint): Call => gamesCall(d, "deposit", [maxSpreadBps], amount);
+/** `Games.executeDeposit`: turn the caller's pending deposit into shares now, giving up at most `maxSpreadBps`. */
+export const executeDepositHouseCall = (d: Deployment, maxSpreadBps: bigint): Call => gamesCall(d, "executeDeposit", [maxSpreadBps]);
+/** `Games.cancelDeposit`: take a pending deposit back. */
+export const cancelDepositHouseCall = (d: Deployment): Call => gamesCall(d, "cancelDeposit", []);
+
+/**
+ * `Games.redeem`: ask to redeem shares (replacing any earlier request), paid to `to`. Carried out at
+ * once if no bet from before is open and it would give up no more than `maxSpreadBps`; otherwise
+ * the shares stay at risk until `executeRedeem`.
+ */
+export const redeemHouseCall = (d: Deployment, shares: bigint, maxSpreadBps: bigint, to: Address): Call => gamesCall(d, "redeem", [shares, maxSpreadBps, to]);
+/** `Games.executeRedeem`: carry out the caller's pending redemption now, giving up at most `maxSpreadBps`. */
+export const executeRedeemHouseCall = (d: Deployment, maxSpreadBps: bigint, to: Address): Call => gamesCall(d, "executeRedeem", [maxSpreadBps, to]);
+/** `Games.cancelRedeem`: withdraw a pending redemption request. */
+export const cancelRedeemHouseCall = (d: Deployment): Call => gamesCall(d, "cancelRedeem", []);

@@ -4,7 +4,7 @@ import { requestLicenseCall } from "../lib/calls";
 import { dateTime, duration, eth } from "../lib/format";
 import { HoldingStatus, LICENSE_TIER_PROBE, readLicensing } from "../lib/reads";
 import { href, useRouteParam } from "../routes";
-import { useTx } from "../tx";
+import { useTx, single } from "../tx";
 import { ActionButton, Addr, Badge, Empty, Field, Notice, PageHead, Panel, QueryView } from "../ui";
 import { StatePlate, TokenTile } from "../viz/parts";
 
@@ -42,7 +42,7 @@ export function Licences() {
             if (!d || !selected || !tier) return;
             void run(
               `Request a tier ${tier.tier} licence on holding #${selected.holding.id}`,
-              (send) => send("Request licence", requestLicenseCall(d, selected.holding.id, tier.tier, scope, tier.price)),
+              single("Request licence", requestLicenseCall(d, selected.holding.id, tier.tier, scope, tier.price)),
               [
                 tier.price === 0n ? "This tier is free; you pay only the transaction fee." : `You pay ${eth(tier.price)} ETH, which goes to the collection's buyback budget. It is not refundable.`,
                 `Records a tier ${tier.tier} licence for ${duration(tier.duration)} on vault holding #${selected.holding.id}, with your intended-use text stored publicly on-chain.`,

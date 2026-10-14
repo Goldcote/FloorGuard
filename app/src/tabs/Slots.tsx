@@ -19,13 +19,13 @@ import {
   type ResultTone,
   type RevealPhase,
 } from "../fx";
-import { useProtocol } from "../hooks";
+import { useChainTime, useMoney, useProtocol } from "../hooks";
 import { spinCall } from "../lib/calls";
-import { bps, eth } from "../lib/format";
+import { bps, duration, eth } from "../lib/format";
 import { parseEth } from "../lib/parse";
 import { maxSlotsWager, recomputeBet, SLOT_SYMBOLS, SLOTS_PAY_TABLE, slotsMultiplier, type GameBet, type SlotSymbol } from "../lib/reads";
 import { sound } from "../lib/sound";
-import { useTx } from "../tx";
+import { useTx, single } from "../tx";
 import { ActionButton, Card, QueryView } from "../ui";
 import { BetList, betPhase, edgeSplit, GAMES_NOTICE, HouseStats, OwedRow, PlayNotices, SessionNet, useGames, usePlacing, WagerControl, wagerBlocked } from "./gamesShared";
 
@@ -175,6 +175,7 @@ const COUNT_MS: Record<ResultTone, number> = { loss: 0, returned: 0, win: 800, b
  */
 export function Machine({ bet, placing = false, refused = false, particles: shared, children }: { bet: GameBet | undefined; placing?: boolean; refused?: boolean; particles?: ParticleController; children?: ReactNode }) {
   const { chainId } = useProtocol();
+  const money = useMoney();
   // Used on its own (the landing page shows one), the machine brings its own particle layer.
   const own = useParticles();
   const particles = shared ?? own;
@@ -291,8 +292,8 @@ export function Machine({ bet, placing = false, refused = false, particles: shar
                   : tone === "loss"
                     ? "No prize."
                     : tone === "returned"
-                      ? `Stake returned: ${eth(payout)} ETH back of ${eth(bet.wager)} ETH wagered.`
-                      : `${multiple}× the stake: ${eth(payout)} ETH paid.`}
+                      ? money(`Stake returned: ${eth(payout)} ETH back of ${eth(bet.wager)} ETH wagered.`)
+                      : money(`${multiple}× the stake: ${eth(payout)} ETH paid.`)}
         {tone && <span className="lcd-roll"> Roll {settledRoll}</span>}
       </p>
       {children}
@@ -350,6 +351,7 @@ function PayTable({ stake, hit, roll }: { stake: bigint | undefined; hit: number
           );
         })}
       </ol>
+      <p className="muted small">Amounts are for the stake at the edge in force when the spin is mined.</p>
       <RollBand roll={roll} />
       <p className="muted small">
         One random roll from 0 to 9999 decides the prize, as a multiple of the stake after the fee. The symbols are only
@@ -368,6 +370,7 @@ declare global {
 
 export function Slots({ collection }: { collection: Address }) {
   const { deployment: d, demo, chainId } = useProtocol();
+  const now = useChainTime();
   const { run } = useTx();
   const [wagerText, setWagerText] = useState("0.01");
   const { games, bets } = useGames(collection);
@@ -404,18 +407,18 @@ export function Slots({ collection }: { collection: Address }) {
           const maxWager = maxSlotsWager(g);
           const fee = wager !== undefined ? (wager * g.edgeBps) / 10_000n : 0n;
           const stake = wager !== undefined ? wager - fee : undefined;
-          const blocked = wagerBlocked(g, wager, maxWager);
+          const blocked = wagerBlocked(g, wager, maxWager, "", now);
           const spin = async () => {
             if (!d || wager === undefined || stake === undefined || busy) return;
             setPreview(undefined);
             sound.lever();
             if (demo) begin();
-            await run(`Spin the slots for ${eth(wager)} ETH`, (send) => send("Spin", spinCall(d, collection, wager)), [
+            await run(`Spin the slots for ${eth(wager)} ETH`, single("Spin", spinCall(d, collection, wager)), [
               `You pay ${eth(wager)} ETH now.`,
               `${eth(fee)} ETH of it is the fee (the ${bps(g.edgeBps)} edge): ${edgeSplit(g)}.`,
-              `The remaining ${eth(stake)} ETH is your stake. The prize is 0, 1, 2, 5, 10 or 50 times the stake: at most ${eth(stake * 50n)} ETH.`,
+              `The remaining ${eth(stake)} ETH is your stake, at the edge in force when the spin is mined (${bps(g.edgeBps)} now; the owner can change it for later spins). The prize is 0, 1, 2, 5, 10 or 50 times the stake: at most ${eth(stake * 50n)} ETH.`,
               "About half of all spins (49.8%) pay nothing.",
-              "The result arrives with the randomness provider's answer. If none arrives within a day, the spin can be refunded.",
+              `The result arrives with the randomness provider's answer. If none arrives within ${duration(g.refundTimeout)}, the spin can be refunded.`,
             ], { quickInDemo: true });
             end();
           };

@@ -6,13 +6,13 @@
 // Nothing is fetched, nothing is real money, and no activity is invented.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { FloorLine } from "../brand";
-import { setMode } from "../demo/mode";
+import { setMode, useMode } from "../demo/mode";
 import { demoReads } from "../demo/sim";
 import { eth } from "../lib/format";
 import { href } from "../routes";
 import { FairnessWalk } from "../viz/FairnessWalk";
 import { Flywheel, type FlyData, type FlyFlow, type FlyHandle, type FlyNode } from "../viz/Flywheel";
-import { advance, catchAuction, initialModel, modelAuctionPrice, modelBid, modelCurve, modelLock, raffle, RULES, sellIntoBid, setDay, setFloor, startAuction, trade, unlock, wager, type FlowEvent, type Model } from "../viz/flywheelModel";
+import { advance, catchAuction, initialModel, modelAuctionPrice, modelBid, modelCurve, modelLock, modelMinBid, raffle, RULES, sellIntoBid, setDay, setFloor, startAuction, trade, unlock, wager, type FlowEvent, type Model } from "../viz/flywheelModel";
 import { HeroScene } from "../viz/HeroScene";
 import { useDemoTick, useInView, useReducedMotion, useWidth } from "../viz/motion";
 import { PriceLockGauge, Shackle, TimeLockDial } from "../viz/parts";
@@ -32,6 +32,7 @@ function Hero() {
   const lastText = useRef(0);
   const [passed, setPassed] = useState(false);
   const overview = demoReads.overview();
+  const live = useMode() === "live";
 
   // Scroll parallax: the copy lifts away a little faster than the scene.
   useEffect(() => {
@@ -114,6 +115,7 @@ function Hero() {
           </div>
         </dl>
         <p className="hero-caption small">
+          {live && <strong>You are in Live mode, but everything on this page is a simulation: these figures are the demo's, not the chain's. </strong>}
           {passed ? (
             <>
               The demo bid has passed the last sales floor. In the demo, you are the holder who can{" "}
@@ -273,8 +275,8 @@ function Story() {
   const bid = modelBid(model);
   const curve = modelCurve(model);
   const bidLine =
-    model.budget < RULES.minBid
-      ? `The budget holds less than the minimum bid of ${RULES.minBid} ETH, so there is no buyback.`
+    model.budget < modelMinBid(model)
+      ? `The budget holds less than the minimum bid of ${modelMinBid(model).toFixed(3)} ETH, so there is no buyback.`
       : model.budget < curve
         ? `The curve is at ${curve.toFixed(4)} ETH; the budget can pay ${f3(model.budget)}, so the bid is ${f3(bid)} ETH.`
         : `The curve is at ${curve.toFixed(4)} ETH${curve >= RULES.maxBid ? ", its cap," : ""} and the budget covers it, so the bid is ${bid.toFixed(4)} ETH.`;
@@ -298,7 +300,7 @@ function Story() {
     curve,
     bidBase: model.bidBase,
     bidCap: RULES.maxBid,
-    minBid: RULES.minBid,
+    minBid: modelMinBid(model),
     tiles: model.holdings.filter((h) => h.status === "locked" || h.status === "unlocked" || h.status === "auction").map((h) => ({ key: String(h.id), state: h.status as "locked" | "unlocked" | "auction" })),
     auction: onAuction?.auction ? { price: auctionPrice!, reserve: onAuction.auction.reserve, progress: Math.min(1, (model.day - onAuction.auction.startDay) / 4) } : undefined,
   };
@@ -763,8 +765,8 @@ function Status() {
             </table>
           </div>
           <p className="muted small">
-            Also: Slither static analysis with no actionable medium or high finding, and every write flow of the web app clicked through with a
-            local test account. No Critical finding was reported in any pass; the four High findings were fixed with regression tests. Five
+            Also: Slither static analysis with no actionable medium or high finding, and every write flow of the web app clicked through on a
+            local chain with one of its test accounts. No Critical finding was reported in any pass; the four High findings were fixed with regression tests. Five
             Medium findings are accepted and documented rather than fixed. The economics review found the buying to be modest (about one token
             bought for every fifty traded) and led to the budget-limited bid. The contract test suite had 271 tests at the time of the record.
           </p>

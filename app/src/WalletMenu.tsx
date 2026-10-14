@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { useAccount, useChainId, useChains, useConnect, useDisconnect, useSwitchChain, type Connector } from "wagmi";
-import { anvil } from "wagmi/chains";
+import { useAccount, useChainId, useChains, useConfig, useConnect, useDisconnect, useSwitchChain, type Connector } from "wagmi";
 import { shortAddress } from "./lib/format";
-import { LOCAL_WALLET_ID, RABBY_RDNS, walletErrorMessage, walletOptions } from "./lib/wallets";
+import { duplicatedRdns, LOCAL_WALLET_ID, walletErrorMessage, walletOptions } from "./lib/wallets";
+import { isLocalChain, LOCAL_CHAIN_ID, LOCAL_ENABLED } from "./local";
 import { getLocalAccountIndex, LOCAL_ACCOUNT_COUNT, selectLocalAccount } from "./localWallet";
 import { Addr, Modal } from "./ui";
 
@@ -18,14 +18,15 @@ function WalletIcon({ connector }: { connector: Pick<Connector, "icon" | "name">
 }
 
 /**
- * Ids of announced wallets whose provider is really Rabby (Rabby can present itself as MetaMask).
- * Wallets set an `isRabby` flag on their provider; that is the only way to tell from the page.
+ * Which announced wallets have a provider that itself reports `isRabby`, keyed by connector id. That
+ * flag is the only way to tell from the page: a connector whose id is not Rabby's but whose provider
+ * says it is, is Rabby presenting itself as another wallet.
  */
-function useImpersonators(connectors: readonly Connector[]): ReadonlySet<string> {
+function useRabbyProviders(connectors: readonly Connector[]): ReadonlySet<string> {
   const [ids, setIds] = useState<ReadonlySet<string>>(new Set());
   useEffect(() => {
     let cancelled = false;
-    const announced = connectors.filter((c) => c.type === "injected" && c.id !== "injected" && c.id !== RABBY_RDNS);
+    const announced = connectors.filter((c) => c.type === "injected" && c.id !== "injected");
     void Promise.all(
       announced.map(async (connector) => {
         try {
@@ -45,6 +46,20 @@ function useImpersonators(connectors: readonly Connector[]): ReadonlySet<string>
   return ids;
 }
 
+/** The rdns values that more than one wallet announced on this page. wagmi lists only the first of each. */
+function useDuplicatedRdns(): ReadonlySet<string> {
+  const config = useConfig();
+  const [duplicated, setDuplicated] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    const store = config._internal.mipd;
+    if (!store) return;
+    const update = () => setDuplicated(duplicatedRdns(store.getProviders()));
+    update();
+    return store.subscribe(update);
+  }, [config]);
+  return duplicated;
+}
+
 /** The app's chain selector. Choosing a chain also asks a connected wallet to switch to it. */
 export function ChainSelect() {
   const chains = useChains();
@@ -56,7 +71,7 @@ export function ChainSelect() {
 
   const choose = async (target: number) => {
     // The local test account exists only on anvil and cannot switch, so it is disconnected first.
-    if (usingLocal && target !== anvil.id) await disconnectAsync();
+    if (usingLocal && target !== LOCAL_CHAIN_ID) await disconnectAsync();
     switchChain({ chainId: target as typeof chainId });
   };
   return (
@@ -80,10 +95,12 @@ export function WalletMenu() {
   const [open, setOpen] = useState(false);
   const [localIndex, setLocalIndex] = useState(getLocalAccountIndex());
 
-  const impersonators = useImpersonators(connectors);
+  const rabbyProviders = useRabbyProviders(connectors);
+  const duplicated = useDuplicatedRdns();
   const options = useMemo(
-    () => walletOptions(connectors, { impersonators, localChain: chainId === anvil.id }),
-    [connectors, impersonators, chainId],
+    // the same set serves both ways: a Rabby-flagged provider under Rabby's id is verified, under any other id it is an impersonation
+    () => walletOptions(connectors, { impersonators: rabbyProviders, verifiedRabby: rabbyProviders, duplicated, localChain: isLocalChain(chainId) }),
+    [connectors, rabbyProviders, duplicated, chainId],
   );
   const usingLocal = account.connector?.id === LOCAL_WALLET_ID;
   const chainName = (id: number | undefined) => chains.find((c) => c.id === id)?.name ?? `chain ${id}`;
@@ -91,7 +108,7 @@ export function WalletMenu() {
 
   // Leaving anvil by any route disconnects the local test account.
   useEffect(() => {
-    if (usingLocal && chainId !== anvil.id) disconnect();
+    if (usingLocal && chainId !== LOCAL_CHAIN_ID) disconnect();
   }, [usingLocal, chainId, disconnect]);
   // Close the menu once a connection succeeds.
   useEffect(() => {
@@ -105,8 +122,8 @@ export function WalletMenu() {
     setLocalIndex(index);
     selectLocalAccount(index);
   };
-  const localSelect = (
-    <select value={localIndex} onChange={(e) => chooseLocal(Number(e.target.value))} aria-label="Local test account">
+  const localSelect = !LOCAL_ENABLED ? null : (
+    <select value={localIndex} onChange={(e) => chooseLocal(Number(e.target.value))} aria-label="Test account">
       {Array.from({ length: LOCAL_ACCOUNT_COUNT }, (_, i) => (
         <option key={i} value={i}>
           anvil #{i}
@@ -119,18 +136,26 @@ export function WalletMenu() {
   const group = (name: "installed" | "other") =>
     options
       .filter((option) => option.group === name)
-      .map(({ connector, label }) => (
-        <button
-          key={connector.uid}
-          type="button"
-          className="wallet-option"
-          disabled={isPending}
-          onClick={() => connect({ connector, chainId }, { onSuccess: () => setOpen(false) })}
-        >
-          <WalletIcon connector={connector} />
-          <span>{label}</span>
-          {isPending && variables?.connector === connector && <span className="muted small">Check your wallet…</span>}
-        </button>
+      .map(({ connector, label, rdns, warning }) => (
+        <div key={connector.uid}>
+          <button
+            type="button"
+            className="wallet-option"
+            disabled={isPending}
+            onClick={() => connect({ connector, chainId }, { onSuccess: () => setOpen(false) })}
+          >
+            <WalletIcon connector={connector} />
+            <span>{label}</span>
+            {/* the identity the wallet declared for itself; like its name and icon, it is not verified */}
+            {rdns && <code className="muted small">{rdns}</code>}
+            {isPending && variables?.connector === connector && <span className="muted small">Check your wallet…</span>}
+          </button>
+          {warning && (
+            <p className="error small" role="alert">
+              {warning}
+            </p>
+          )}
+        </div>
       ));
   const local = options.find((option) => option.group === "local");
 
@@ -139,7 +164,7 @@ export function WalletMenu() {
       {account.isConnected && account.address && account.connector ? (
         <button type="button" className={wrongChain ? "wallet-button warn" : "wallet-button"} onClick={() => setOpen(true)}>
           <WalletIcon connector={account.connector} />
-          <span className="wallet-name">{usingLocal ? `Test #${localIndex}` : account.connector.name}</span>
+          <span className="wallet-name">{LOCAL_ENABLED && usingLocal ? `Test #${localIndex}` : account.connector.name}</span>
           <code>{shortAddress(account.address)}</code>
           {wrongChain && <span className="badge badge-warn">Wrong chain</span>}
         </button>
@@ -154,10 +179,10 @@ export function WalletMenu() {
           <div className="wallet-menu">
             <div className="wallet-row">
               <WalletIcon connector={account.connector} />
-              <strong>{usingLocal ? "Local test account" : account.connector.name}</strong>
+              <strong>{LOCAL_ENABLED && usingLocal ? "Local test account" : account.connector.name}</strong>
               <Addr address={account.address} />
             </div>
-            {usingLocal && (
+            {LOCAL_ENABLED && usingLocal && (
               <label className="field">
                 <span>Local development only: which of anvil's unlocked accounts to act as</span>
                 {localSelect}
@@ -205,6 +230,7 @@ export function WalletMenu() {
               <>
                 <h3>Installed wallets</h3>
                 <div className="wallet-list">{group("installed")}</div>
+                <p className="muted small">The name, icon and identifier are what each wallet says about itself; the page cannot verify them.</p>
               </>
             ) : (
               <p className="muted">No browser wallet was detected on this page.</p>
@@ -215,7 +241,7 @@ export function WalletMenu() {
                 <div className="wallet-list">{group("other")}</div>
               </>
             )}
-            {local && (
+            {LOCAL_ENABLED && local && (
               <>
                 <h3>Local development</h3>
                 <div className="wallet-local">

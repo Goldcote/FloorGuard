@@ -18,9 +18,12 @@ export const RULES = {
   growthPerDay: 0.1,
   stepDown: 0.15,
   maxBid: 1.5,
-  /** No buyback below this: a tenth of the starting base, as `configureBid` sets it. */
-  minBid: 0.09,
+  /** No buyback below this share of the curve's base (`BuybackEngine.minBidBpsOf`, a tenth by default). */
+  minBidShare: 0.1,
 } as const;
+
+/** The minimum bid: a tenth of the base the curve is climbing from. */
+export const modelMinBid = (m: Pick<Model, "bidBase">): number => m.bidBase * RULES.minBidShare;
 
 export type ModelHolding = {
   id: number;
@@ -116,7 +119,7 @@ export function wager(m: Model, amount: number): Result {
  */
 export function sellIntoBid(m: Model): Result {
   const price = modelBid(m);
-  if (price < RULES.minBid) return refuse(m, `There is nothing to bid with: the budget holds less than the minimum bid of ${RULES.minBid} ETH. Fees have to come in first.`);
+  if (price < modelMinBid(m)) return refuse(m, `There is nothing to bid with: the budget holds less than the minimum bid of ${modelMinBid(m).toFixed(3)} ETH. Fees have to come in first.`);
   const id = m.holdings.length + 1;
   return ok(
     {

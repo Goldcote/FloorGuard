@@ -1,8 +1,8 @@
 // Every on-chain read the UI makes, as plain async functions over a viem client. The React hooks in
 // hooks.ts are thin react-query wrappers around these, and test/reads.anvil.test.ts calls the same
 // functions against a local anvil chain.
-import { formatEther, parseAbi, type Address, type Client, type Hash } from "viem";
-import { getBlock, getCode, getContractEvents, readContract } from "viem/actions";
+import { BaseError, ContractFunctionRevertedError, ContractFunctionZeroDataError, formatEther, parseAbi, type Address, type Client, type Hash } from "viem";
+import { getBlock, getCode, readContract } from "viem/actions";
 import {
   buybackEngineAbi,
   erc721Abi,
@@ -24,6 +24,8 @@ import type { Deployment } from "../generated/addresses";
 import { demoReads, isDemo } from "../demo/sim";
 import { decodeError } from "./errors";
 import { gameExposure, slotsExposure, SLOTS_MAX_MULTIPLIER } from "./gameMath";
+import { feesSentToTreasury } from "./house";
+import { getEvents } from "./logs";
 
 export * from "./gameMath";
 
@@ -94,7 +96,7 @@ export type FloorBid = {
   currentBid: bigint;
   /** Where the bid curve stands, whatever the budget can pay. */
   curvePrice: bigint;
-  /** No buyback below this: a bid under it cannot be sold into (`BuybackEngine.minBidOf`). */
+  /** No buyback below this: a bid under it cannot be sold into (`BuybackEngine.minBidOf`, a share of the base, a tenth by default). */
   minBid: bigint;
   isFillable: boolean;
   active: boolean;
@@ -242,10 +244,13 @@ export type OpenOffers = {
 /**
  * Open offers, newest first. Candidate ids come from OfferMade / OfferCancelled / OfferAccepted logs;
  * `offers(id)` is then the source of truth for what is still open (a filled or cancelled offer is
- * deleted, so its `remaining` reads 0). If the RPC refuses the log query (public RPCs cap the block
- * range) the most recent ids are scanned instead.
+ * deleted, so its `remaining` reads 0). Cancelled and fully filled offers are dropped before the
+ * newest `MAX_ITEMS` candidates are read, so they cannot crowd open ones out. The connected
+ * account's own offers are found through the indexed offerer topic and are always included, so
+ * nobody can push someone's Cancel button out of view by making many offers. If the RPC refuses
+ * the log query the most recent ids are scanned instead.
  */
-export async function readOpenOffers(client: Client, d: Deployment, fromBlock = 0n): Promise<OpenOffers> {
+export async function readOpenOffers(client: Client, d: Deployment, fromBlock = 0n, user?: Address): Promise<OpenOffers> {
   if (isDemo(client)) return demoReads.openOffers();
   const market = { address: d.marketplace, abi: marketplaceAbi } as const;
   const feeBpsPromise = readContract(client, { ...market, functionName: "feeBps" });
@@ -254,16 +259,20 @@ export async function readOpenOffers(client: Client, d: Deployment, fromBlock = 
   let source: OpenOffers["source"] = "logs";
   const filled = new Map<bigint, number>();
   try {
-    const logs = await getContractEvents(client, { ...market, fromBlock, toBlock: "latest" });
-    const made = new Set<bigint>();
-    for (const log of logs) {
-      if (log.eventName === "OfferMade") made.add(log.args.offerId!);
-      else if (log.eventName === "OfferCancelled") made.delete(log.args.offerId!);
-      else if (log.eventName === "OfferAccepted") {
-        filled.set(log.args.offerId!, (filled.get(log.args.offerId!) ?? 0) + 1);
-      }
-    }
-    ids = [...made].sort((a, b) => (a < b ? 1 : -1));
+    const range = { fromBlock, toBlock: "latest", strict: true } as const;
+    const [made, cancelled, accepted, mine] = await Promise.all([
+      getEvents(client, { ...market, eventName: "OfferMade", ...range }),
+      getEvents(client, { ...market, eventName: "OfferCancelled", ...range }),
+      getEvents(client, { ...market, eventName: "OfferAccepted", ...range }),
+      user ? getEvents(client, { ...market, eventName: "OfferMade", args: { offerer: user }, ...range }) : [],
+    ]);
+    for (const log of accepted) filled.set(log.args.offerId, (filled.get(log.args.offerId) ?? 0) + 1);
+    const gone = new Set(cancelled.map((log) => log.args.offerId));
+    const open = (log: (typeof made)[number]) => !gone.has(log.args.offerId) && BigInt(filled.get(log.args.offerId) ?? 0) < log.args.quantity;
+    const newestFirst = (a: bigint, b: bigint) => (a < b ? 1 : -1);
+    const candidates = made.filter(open).map((log) => log.args.offerId).sort(newestFirst).slice(0, MAX_ITEMS);
+    const own = mine.filter(open).map((log) => log.args.offerId);
+    ids = [...new Set([...candidates, ...own])].sort(newestFirst);
   } catch {
     source = "scan";
     ids = recentIds(await readContract(client, { ...market, functionName: "offerCount" }));
@@ -450,7 +459,7 @@ export type Holding = {
     endPrice: bigint;
     startTime: number;
     currentPrice: bigint;
-    /** The price has reached the reserve; only then can an unsold auction be restarted. */
+    /** The price has reached the reserve. An unsold auction can be restarted once it has rested there (see `auctionRestartableAt`). */
     atReserve: boolean;
     /** The owner set the prices by hand; only the owner may restart such an auction. */
     ownerPriced: boolean;
@@ -477,6 +486,20 @@ export function auctionReachesReserveAt(auction: { startPrice: bigint; endPrice:
   return auction.startTime + periods * halfLife + Number(seconds);
 }
 
+/**
+ * When an unsold auction can be restarted (`Vault._checkAuctionable`): once it has rested at its
+ * reserve for `dwell` seconds, counted from the end of the half-life in which its price got there.
+ */
+export function auctionRestartableAt(auction: { startPrice: bigint; endPrice: bigint; startTime: number }, halfLife: number, dwell: number): number {
+  let price = auction.startPrice;
+  let halvings = 0;
+  while (price > auction.endPrice && halvings < 128) {
+    price >>= 1n;
+    halvings++;
+  }
+  return auction.startTime + halvings * halfLife + dwell;
+}
+
 export type VaultState = {
   holdings: Holding[];
   holdingCount: bigint;
@@ -487,17 +510,36 @@ export type VaultState = {
   auctionStartMultiple: number;
   /** ...and its price halves every this many seconds until it reaches the reserve. */
   auctionHalfLife: number;
+  /** An unsold auction rests at its reserve for this many seconds before it can be restarted. */
+  auctionRestartDwell: number;
 };
 
-export async function readHoldings(client: Client, d: Deployment): Promise<VaultState> {
-  if (isDemo(client)) return demoReads.holdings();
+const holdingsInFlight = new WeakMap<Client, Map<string, Promise<VaultState>>>();
+
+/**
+ * The vault's holdings. Several things on one page need them (the vault, the overview, the
+ * licences): reads that are asked for while one is already on its way share its answer.
+ */
+export function readHoldings(client: Client, d: Deployment): Promise<VaultState> {
+  if (isDemo(client)) return Promise.resolve(demoReads.holdings());
+  const perClient = holdingsInFlight.get(client) ?? new Map<string, Promise<VaultState>>();
+  holdingsInFlight.set(client, perClient);
+  const running = perClient.get(d.vault);
+  if (running) return running;
+  const read = fetchHoldings(client, d).finally(() => perClient.delete(d.vault));
+  perClient.set(d.vault, read);
+  return read;
+}
+
+async function fetchHoldings(client: Client, d: Deployment): Promise<VaultState> {
   const vault = { address: d.vault, abi: vaultAbi } as const;
-  const [holdingCount, owner, governanceWindow, auctionStartMultiple, auctionHalfLife] = await Promise.all([
+  const [holdingCount, owner, governanceWindow, auctionStartMultiple, auctionHalfLife, auctionRestartDwell] = await Promise.all([
     readContract(client, { ...vault, functionName: "holdingCount" }),
     readContract(client, { ...vault, functionName: "owner" }),
     readContract(client, { ...vault, functionName: "GOVERNANCE_WINDOW" }),
     readContract(client, { ...vault, functionName: "AUCTION_START_MULTIPLE" }),
     readContract(client, { ...vault, functionName: "AUCTION_HALF_LIFE" }),
+    readContract(client, { ...vault, functionName: "AUCTION_RESTART_DWELL" }),
   ]);
   const holdings = await Promise.all(
     recentIds(holdingCount).map(async (id): Promise<Holding> => {
@@ -526,6 +568,7 @@ export async function readHoldings(client: Client, d: Deployment): Promise<Vault
     governanceWindow: Number(governanceWindow),
     auctionStartMultiple: Number(auctionStartMultiple),
     auctionHalfLife: Number(auctionHalfLife),
+    auctionRestartDwell: Number(auctionRestartDwell),
   };
 }
 
@@ -550,7 +593,7 @@ export type Raffles = {
   raffles: Raffle[];
   raffleCount: bigint;
   totalPoints: bigint;
-  /** After any draw is reset, no raffle can be drawn before this time (0 when no cooldown applies). */
+  /** After any draw ends, with a winner or a reset, no raffle can be drawn before this time (0 before the first). */
   nextDrawAt: number;
   /** A draw is in flight; no other raffle can be drawn until it completes or is reset. */
   drawInFlight: boolean;
@@ -604,6 +647,12 @@ export type GamesState = {
   maxWager: bigint;
   /** The share of each edge the bankroll keeps; the rest goes to the Treasury (`Games.bankrollShareBps`). */
   bankrollShareBps: bigint;
+  /** Players' wagers on the open bets. */
+  openWagers: bigint;
+  /** The most that may be in play at once, as a share of `bankroll + reserved` (`Games.MAX_OPEN_WAGERS_BPS`). */
+  maxOpenWagersBps: bigint;
+  /** No bet is accepted before this time: betting pauses for a few minutes after any refund (0: never paused). */
+  betsResumeAt: number;
   /** Whether bets can back the given collection. */
   supported: boolean;
   /** Seconds after which an unsettled bet can be refunded. */
@@ -615,7 +664,7 @@ export type GamesState = {
 export async function readGames(client: Client, d: Deployment, collection: Address, user?: Address): Promise<GamesState> {
   if (isDemo(client)) return demoReads.games();
   const games = { address: d.games, abi: gamesAbi } as const;
-  const [bankroll, reserved, maxTotalExposureBps, edgeBps, minBet, maxExposureBps, maxWagerBps, bankrollShareBps, supported, refundTimeout, userOwed] = await Promise.all([
+  const [bankroll, reserved, maxTotalExposureBps, edgeBps, minBet, maxExposureBps, maxWagerBps, bankrollShareBps, supported, refundTimeout, userOwed, openWagers, maxOpenWagersBps, betsResumeAt] = await Promise.all([
     readContract(client, { ...games, functionName: "bankroll" }),
     readContract(client, { ...games, functionName: "reserved" }),
     readContract(client, { ...games, functionName: "MAX_TOTAL_EXPOSURE_BPS" }),
@@ -627,10 +676,16 @@ export async function readGames(client: Client, d: Deployment, collection: Addre
     readContract(client, { ...games, functionName: "isSupported", args: [collection] }),
     readContract(client, { ...games, functionName: "REFUND_TIMEOUT" }),
     user ? readContract(client, { ...games, functionName: "owedTo", args: [user] }) : undefined,
+    readContract(client, { ...games, functionName: "openWagers" }),
+    readContract(client, { ...games, functionName: "MAX_OPEN_WAGERS_BPS" }),
+    readContract(client, { ...games, functionName: "betsResumeAt" }),
   ]);
   return {
     bankroll,
     reserved,
+    openWagers,
+    maxOpenWagersBps,
+    betsResumeAt: Number(betsResumeAt),
     maxTotalExposureBps,
     edgeBps,
     minBet,
@@ -665,34 +720,47 @@ export type GameLimits = {
   totalRoom: bigint;
   /** The exposure a new bet may add: the smaller of the two. */
   exposure: bigint;
+  /** Room left under the cap on all wagers in play: `(bankroll + reserved) * maxOpenWagersBps - openWagers`. Undefined when the state does not carry that cap. */
+  wagerRoom?: bigint;
 };
 
-/** The two exposure caps `Games.play` enforces, mirrored from the contract. */
-export function gameLimits(
-  state: Pick<GamesState, "bankroll" | "reserved" | "maxExposureBps" | "maxTotalExposureBps">,
-): GameLimits {
+type LimitState = Pick<GamesState, "bankroll" | "reserved" | "maxExposureBps" | "maxTotalExposureBps"> & { maxWagerBps?: bigint; openWagers?: bigint; maxOpenWagersBps?: bigint };
+
+/** The caps `Games._place` enforces, mirrored from the contract. */
+export function gameLimits(state: LimitState): GameLimits {
   const perBet = (state.bankroll * state.maxExposureBps) / BPS;
   const totalLimit = ((state.bankroll + state.reserved) * state.maxTotalExposureBps) / BPS;
   const totalRoom = totalLimit > state.reserved ? totalLimit - state.reserved : 0n;
-  return { perBet, totalRoom, exposure: perBet < totalRoom ? perBet : totalRoom };
-}
-
-/** `Games` also refuses a wager above `bankroll * maxWagerBps`, whatever its exposure. */
-function capWager(wager: bigint, state: { bankroll: bigint; maxWagerBps?: bigint }): bigint {
-  if (state.maxWagerBps === undefined) return wager;
-  const cap = (state.bankroll * state.maxWagerBps) / BPS;
-  return wager < cap ? wager : cap;
+  let wagerRoom: bigint | undefined;
+  if (state.openWagers !== undefined && state.maxOpenWagersBps !== undefined) {
+    const wagerLimit = ((state.bankroll + state.reserved) * state.maxOpenWagersBps) / BPS;
+    wagerRoom = wagerLimit > state.openWagers ? wagerLimit - state.openWagers : 0n;
+  }
+  return { perBet, totalRoom, exposure: perBet < totalRoom ? perBet : totalRoom, wagerRoom };
 }
 
 /**
- * Largest wager `Games.play` accepts at `chanceBps`: the one whose exposure just fits within both the
- * per-bet cap and the room left under the total-exposure cap. Undefined when the edge takes the whole
- * wager.
+ * `Games` also refuses a wager above `bankroll * maxWagerBps`, whatever its exposure, and one that
+ * would bring all wagers in play above their cap.
  */
-export function maxGameWager(
-  state: Pick<GamesState, "bankroll" | "reserved" | "maxExposureBps" | "maxTotalExposureBps" | "edgeBps"> & { maxWagerBps?: bigint },
-  chanceBps: number,
-): bigint | undefined {
+function capWager(wager: bigint, state: LimitState): bigint {
+  let capped = wager;
+  if (state.maxWagerBps !== undefined) {
+    const cap = (state.bankroll * state.maxWagerBps) / BPS;
+    if (cap < capped) capped = cap;
+  }
+  const { wagerRoom } = gameLimits(state);
+  if (wagerRoom !== undefined && wagerRoom < capped) capped = wagerRoom;
+  return capped;
+}
+
+/**
+ * Largest wager `Games.play` accepts at `chanceBps`: the smallest of four limits. The one whose
+ * exposure just fits within the per-bet cap and the room left under the total-exposure cap, the
+ * wager cap, and the room left under the cap on all wagers in play. Undefined when the edge takes
+ * the whole wager.
+ */
+export function maxGameWager(state: LimitState & Pick<GamesState, "edgeBps">, chanceBps: number): bigint | undefined {
   const chance = BigInt(chanceBps);
   if (state.edgeBps >= BPS || chance >= BPS) return undefined;
   const limit = gameLimits(state).exposure;
@@ -703,10 +771,8 @@ export function maxGameWager(
   return capWager(wager, state);
 }
 
-/** Largest wager `Games.spin` accepts: the one whose reserve fits both exposure caps. */
-export function maxSlotsWager(
-  state: Pick<GamesState, "bankroll" | "reserved" | "maxExposureBps" | "maxTotalExposureBps" | "edgeBps"> & { maxWagerBps?: bigint },
-): bigint | undefined {
+/** Largest wager `Games.spin` accepts: the one whose reserve fits both exposure caps, within the two wager caps. */
+export function maxSlotsWager(state: LimitState & Pick<GamesState, "edgeBps">): bigint | undefined {
   if (state.edgeBps >= BPS) return undefined;
   const limit = gameLimits(state).exposure;
   let wager = (limit * BPS) / ((SLOTS_MAX_MULTIPLIER - 1n) * (BPS - state.edgeBps));
@@ -732,7 +798,8 @@ export type GameBet = {
 };
 
 /**
- * The user's bets, newest first, from BetPlaced / BetSettled / BetRefunded logs filtered by player.
+ * The user's bets, newest first, from BetPlaced / BetSettled / BetRefunded logs filtered by the
+ * indexed player topic, so nobody else's bets can crowd them out.
  * Bets are keyed by randomness request id and cannot be enumerated on-chain, so there is no fallback
  * if the RPC refuses the log query.
  */
@@ -747,14 +814,14 @@ export async function readUserBets(
   const games = { address: d.games, abi: gamesAbi } as const;
   const range = { fromBlock, toBlock: "latest", args: { player: user }, strict: true } as const;
   const [placed, settled, refunded] = await Promise.all([
-    getContractEvents(client, { ...games, eventName: "BetPlaced", ...range }),
-    getContractEvents(client, { ...games, eventName: "BetSettled", ...range }),
-    getContractEvents(client, { ...games, eventName: "BetRefunded", ...range }),
+    getEvents(client, { ...games, eventName: "BetPlaced", ...range }),
+    getEvents(client, { ...games, eventName: "BetSettled", ...range }),
+    getEvents(client, { ...games, eventName: "BetRefunded", ...range }),
   ]);
   const settledById = new Map(settled.map((log) => [log.args.requestId, log.args]));
   const refundedIds = new Set(refunded.map((log) => log.args.requestId));
 
-  const bets = placed
+  const all = placed
     .map((log): GameBet => {
       const { requestId, collection, wager, chanceBps } = log.args;
       const base = { requestId, collection, wager, kind: chanceBps === 0n ? ("slots" as const) : ("dice" as const), chanceBps: Number(chanceBps) };
@@ -764,8 +831,10 @@ export async function readUserBets(
       }
       return { ...base, status: refundedIds.has(requestId) ? "refunded" : "pending" };
     })
-    .reverse()
-    .slice(0, MAX_ITEMS);
+    .reverse();
+  // The newest `MAX_ITEMS`, and every bet that is still open however old: its Refund control must
+  // not scroll out of reach.
+  const bets = all.filter((bet, i) => i < MAX_ITEMS || bet.status === "pending");
 
   // `placedAt` of the open bets gives the moment a refund becomes possible.
   await Promise.all(
@@ -1172,13 +1241,13 @@ export async function readActivity(
   let items: ActivityItem[];
   try {
     const [made, accepted, buybacks, bets, raffles, rounds, markets] = await Promise.all([
-      getContractEvents(client, { address: d.marketplace, abi: marketplaceAbi, eventName: "OfferMade", ...range }),
-      getContractEvents(client, { address: d.marketplace, abi: marketplaceAbi, eventName: "OfferAccepted", ...range }),
-      getContractEvents(client, { address: d.buybackEngine, abi: buybackEngineAbi, eventName: "Buyback", ...range }),
-      getContractEvents(client, { address: d.games, abi: gamesAbi, eventName: "BetPlaced", ...range }),
-      getContractEvents(client, { address: d.ticketRaffle, abi: ticketRaffleAbi, eventName: "RaffleCreated", ...range }),
-      getContractEvents(client, { address: d.lottery, abi: lotteryAbi, eventName: "RoundOpened", ...range }),
-      getContractEvents(client, { address: d.predictionMarket, abi: predictionMarketAbi, eventName: "MarketCreated", ...range }),
+      getEvents(client, { address: d.marketplace, abi: marketplaceAbi, eventName: "OfferMade", ...range }),
+      getEvents(client, { address: d.marketplace, abi: marketplaceAbi, eventName: "OfferAccepted", ...range }),
+      getEvents(client, { address: d.buybackEngine, abi: buybackEngineAbi, eventName: "Buyback", ...range }),
+      getEvents(client, { address: d.games, abi: gamesAbi, eventName: "BetPlaced", ...range }),
+      getEvents(client, { address: d.ticketRaffle, abi: ticketRaffleAbi, eventName: "RaffleCreated", ...range }),
+      getEvents(client, { address: d.lottery, abi: lotteryAbi, eventName: "RoundOpened", ...range }),
+      getEvents(client, { address: d.predictionMarket, abi: predictionMarketAbi, eventName: "MarketCreated", ...range }),
     ]);
     const key = (log: { blockNumber: bigint; logIndex: number }) => `${log.blockNumber}-${log.logIndex}`;
     items = [
@@ -1284,24 +1353,10 @@ export type BetProof = {
   settledTx: Hash;
 };
 
-/**
- * What the Games contract sent to the Treasury in one transaction: the `Deposited` amounts that came
- * from it, plus what was set aside for the project in the same transaction. Undefined if the node
- * will not return the logs.
- */
+/** What the Games contract sent to the Treasury in one transaction; undefined if the node will not return the logs. */
 async function feeSentToTreasury(client: Client, d: Deployment, blockNumber: bigint, tx: Hash): Promise<bigint | undefined> {
   try {
-    const treasury = { address: d.treasury, abi: treasuryAbi } as const;
-    const range = { fromBlock: blockNumber, toBlock: blockNumber, strict: true } as const;
-    const [deposited, accrued] = await Promise.all([
-      getContractEvents(client, { ...treasury, eventName: "Deposited", args: { from: d.games }, ...range }),
-      getContractEvents(client, { ...treasury, eventName: "ProjectShareAccrued", ...range }),
-    ]);
-    const mine = <T extends { transactionHash: Hash }>(logs: T[]) => logs.filter((log) => log.transactionHash === tx);
-    const toBudget = mine(deposited).reduce((sum, log) => sum + log.args.amount, 0n);
-    // a project's share is only accrued together with a fee deposit
-    const toProject = mine(deposited).length === 0 ? 0n : mine(accrued).reduce((sum, log) => sum + log.args.amount, 0n);
-    return toBudget + toProject;
+    return (await feesSentToTreasury(client, d, blockNumber, blockNumber)).get(tx) ?? 0n;
   } catch {
     return undefined;
   }
@@ -1313,8 +1368,8 @@ export async function readBetProof(client: Client, d: Deployment, requestId: big
   const games = { address: d.games, abi: gamesAbi } as const;
   const range = { fromBlock, toBlock: "latest", args: { requestId }, strict: true } as const;
   const [placed, settled] = await Promise.all([
-    getContractEvents(client, { ...games, eventName: "BetPlaced", ...range }),
-    getContractEvents(client, { ...games, eventName: "BetSettled", ...range }),
+    getEvents(client, { ...games, eventName: "BetPlaced", ...range }),
+    getEvents(client, { ...games, eventName: "BetSettled", ...range }),
   ]);
   if (placed.length === 0 || settled.length === 0) return undefined;
   const bet = placed[placed.length - 1];
@@ -1374,7 +1429,7 @@ export async function readDrawProof(
   const range = { fromBlock, toBlock: "latest", strict: true } as const;
   if (kind === "lottery") {
     const lottery = { address: d.lottery, abi: lotteryAbi } as const;
-    const logs = await getContractEvents(client, { ...lottery, eventName: "RoundWon", args: { roundId: id }, ...range });
+    const logs = await getEvents(client, { ...lottery, eventName: "RoundWon", args: { roundId: id }, ...range });
     const log = logs[logs.length - 1];
     if (!log) return undefined;
     const [round, ticketHolder] = await Promise.all([
@@ -1384,7 +1439,7 @@ export async function readDrawProof(
     return { ticketsSold: round[2], ticket: log.args.ticket, winner: log.args.winner, ticketHolder, drawTx: log.transactionHash };
   }
   const raffle = { address: d.ticketRaffle, abi: ticketRaffleAbi } as const;
-  const logs = await getContractEvents(client, { ...raffle, eventName: "WinnerDrawn", args: { raffleId: id }, ...range });
+  const logs = await getEvents(client, { ...raffle, eventName: "WinnerDrawn", args: { raffleId: id }, ...range });
   const log = logs[logs.length - 1];
   if (!log) return undefined;
   const [data, ticketHolder] = await Promise.all([
@@ -1398,20 +1453,26 @@ export type RandomnessSource = {
   module: "Games" | "Lottery" | "Ticket raffles" | "Vault raffles";
   provider: Address;
   /**
-   * True when the provider answers like test/mocks/MockRandomness.sol, where whoever calls `fulfill`
-   * picks the number. False only says it is not that mock, not that it is the Chainlink adapter.
+   * "mock": the provider answers like test/mocks/MockRandomness.sol, where whoever calls `fulfill`
+   * picks the number. "unknown": anything else. The app cannot tell the Chainlink adapter from
+   * another contract, so it never says more than that.
    */
+  kind: "mock" | "unknown";
+  /** `kind === "mock"`. */
   isMock: boolean;
 };
 
 export type FairnessStatus = {
   sources: RandomnessSource[];
   anyMock: boolean;
+  /** At least one provider is not the mock, i.e. is something this app cannot identify. */
+  anyUnknown: boolean;
   /** The owner of the Games contract, who can replace its randomness provider. */
   gamesOwner: Address;
   /** Whether that owner is a contract (a timelock or multisig could be) rather than a plain account. */
   ownerIsContract: boolean;
-  games: { edgeBps: bigint; minBet: bigint; maxExposureBps: bigint; maxTotalExposureBps: bigint; refundTimeout: number };
+  /** `maxWagerBps`: the largest wager as a share of the bankroll. `bankrollShareBps`: the part of each edge the bankroll keeps. */
+  games: { edgeBps: bigint; minBet: bigint; maxExposureBps: bigint; maxTotalExposureBps: bigint; refundTimeout: number; maxWagerBps: bigint; bankrollShareBps: bigint };
   lottery: { feeBps: bigint; minPot: bigint };
   ticketRaffle: { feeBps: bigint; minPot: bigint };
 };
@@ -1421,7 +1482,11 @@ async function isMockRandomness(client: Client, provider: Address): Promise<bool
     // Only the mock has this counter; the Chainlink adapter does not answer the call.
     await readContract(client, { address: provider, abi: mockRandomnessAbi, functionName: "lastRequestId" });
     return true;
-  } catch {
+  } catch (error) {
+    // The contract refused the call (a revert, or no such function): it is not the mock. Anything
+    // else is a read that failed, which says nothing about the provider and must not pass as an answer.
+    const refused = error instanceof BaseError && !!error.walk((e) => e instanceof ContractFunctionRevertedError || e instanceof ContractFunctionZeroDataError);
+    if (!refused) throw error;
     return false;
   }
 }
@@ -1432,7 +1497,7 @@ export async function readFairnessStatus(client: Client, d: Deployment): Promise
   const games = { address: d.games, abi: gamesAbi } as const;
   const lottery = { address: d.lottery, abi: lotteryAbi } as const;
   const ticketRaffle = { address: d.ticketRaffle, abi: ticketRaffleAbi } as const;
-  const [gamesRng, lotteryRng, ticketRng, vaultRng, gamesOwner, edgeBps, minBet, maxExposureBps, maxTotalExposureBps, refundTimeout, lotteryFee, lotteryMinPot, raffleFee, raffleMinPot] =
+  const [gamesRng, lotteryRng, ticketRng, vaultRng, gamesOwner, edgeBps, minBet, maxExposureBps, maxTotalExposureBps, refundTimeout, lotteryFee, lotteryMinPot, raffleFee, raffleMinPot, maxWagerBps, bankrollShareBps] =
     await Promise.all([
       readContract(client, { ...games, functionName: "randomness" }),
       readContract(client, { ...lottery, functionName: "randomness" }),
@@ -1448,6 +1513,8 @@ export async function readFairnessStatus(client: Client, d: Deployment): Promise
       readContract(client, { ...lottery, functionName: "minPot" }),
       readContract(client, { ...ticketRaffle, functionName: "feeBps" }),
       readContract(client, { ...ticketRaffle, functionName: "minPot" }),
+      readContract(client, { ...games, functionName: "maxWagerBps" }),
+      readContract(client, { ...games, functionName: "bankrollShareBps" }),
     ]);
   const providers = [
     ["Games", gamesRng],
@@ -1459,13 +1526,14 @@ export async function readFairnessStatus(client: Client, d: Deployment): Promise
     Promise.all(providers.map(([, provider]) => isMockRandomness(client, provider))),
     getCode(client, { address: gamesOwner }),
   ]);
-  const sources = providers.map(([module, provider], i) => ({ module, provider, isMock: mocks[i] }));
+  const sources = providers.map(([module, provider], i): RandomnessSource => ({ module, provider, kind: mocks[i] ? "mock" : "unknown", isMock: mocks[i] }));
   return {
     sources,
     anyMock: mocks.some(Boolean),
+    anyUnknown: mocks.some((mock) => !mock),
     gamesOwner,
     ownerIsContract: ownerCode !== undefined && ownerCode !== "0x",
-    games: { edgeBps, minBet, maxExposureBps, maxTotalExposureBps, refundTimeout: Number(refundTimeout) },
+    games: { edgeBps, minBet, maxExposureBps, maxTotalExposureBps, refundTimeout: Number(refundTimeout), maxWagerBps, bankrollShareBps },
     lottery: { feeBps: lotteryFee, minPot: lotteryMinPot },
     ticketRaffle: { feeBps: raffleFee, minPot: raffleMinPot },
   };

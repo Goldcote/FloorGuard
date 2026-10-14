@@ -66,8 +66,16 @@ export function localTestAccount(rpcUrl: string) {
             }
             return null;
           }
+          case "eth_sendTransaction":
+          case "eth_sign":
+          case "personal_sign":
+          case "eth_signTypedData_v4":
+            // The node signs with its own unlocked accounts. Make sure, every time, that it is
+            // still the local chain: never forward an unsigned request to anything else.
+            await assertLocalNode();
+            return nodeRequest(method, params);
           default:
-            // Everything else, including eth_sendTransaction, is answered by the node itself.
+            // Everything else is a read, answered by the node itself.
             return nodeRequest(method, params);
         }
       }) as EIP1193RequestFn,

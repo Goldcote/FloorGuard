@@ -1,17 +1,17 @@
 // Pieces shared by the Dice and Slots stages, which both play against the same house bankroll:
 // the bets query, the result clock (pending -> reveal -> outcome), the wager control, the session
 // total and the history.
+import { LOCAL_CHAIN_ID, LOCAL_ENABLED } from "../local";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Address } from "viem";
-import { anvil } from "wagmi/chains";
 import { AmountCount, DICE_REVEAL_MS, observeReveal, SLOTS_REVEAL_MS, useRevealClock, type RevealPhase } from "../fx";
-import { useChainTime, useProtocol, useRead } from "../hooks";
+import { useChainTime, useMoney, useProtocol, useRead } from "../hooks";
 import { mockFulfillCall, refundBetCall, withdrawGamesCall } from "../lib/calls";
-import { bps, dateTime, eth } from "../lib/format";
+import { bps, dateTime, duration, eth } from "../lib/format";
 import { parseEth, randomWord } from "../lib/parse";
 import { gameLimits, readGames, readUserBets, slotsMultiplier, type GameBet, type GamesState } from "../lib/reads";
 import { sound } from "../lib/sound";
-import { useTx } from "../tx";
+import { useTx, single } from "../tx";
 import { ActionButton, Addr, Badge, Card, Empty, Notice, QueryView, Stat } from "../ui";
 import { LOGS_FROM_BLOCK } from "../wagmi";
 import { RandomnessNotice, VerifyButton } from "./Verify";
@@ -132,8 +132,10 @@ export function WagerControl({ value, onChange, min, max, disabled, onEnter }: {
 }
 
 /** Why a wager cannot be placed right now, or false. */
-export function wagerBlocked(g: GamesState, wager: bigint | undefined, max: bigint | undefined, context = ""): string | false {
+export function wagerBlocked(g: GamesState, wager: bigint | undefined, max: bigint | undefined, context = "", now?: number): string | false {
   if (!g.supported) return "Games are not enabled for this collection";
+  // betting pauses for a few minutes after any refund (`Games.betsResumeAt`)
+  if (now !== undefined && now < g.betsResumeAt) return `Betting is paused after a refund; it resumes in ${duration(g.betsResumeAt - now)}`;
   if (wager === undefined) return "Enter a wager";
   if (wager < g.minBet) return `The minimum bet is ${eth(g.minBet)} ETH`;
   if (max !== undefined && wager > max) return `The maximum wager${context} is ${eth(max)} ETH`;
@@ -163,9 +165,11 @@ export function HouseStats({ g, maxWager, maxLabel }: { g: GamesState; maxWager:
       <Stat
         label={maxLabel}
         value={maxWager !== undefined ? `${eth(maxWager)} ETH` : "–"}
-        hint={`Minimum ${eth(g.minBet)} ETH. ${
-          limits.totalRoom < limits.perBet ? "Limited by the cap on all open bets together" : `One bet may risk ${bps(g.maxExposureBps)} of the bankroll`
-        }${g.maxWagerBps !== undefined ? `, and no wager may exceed ${bps(g.maxWagerBps)} of it` : ""}`}
+        hint={`Minimum ${eth(g.minBet)} ETH. The smallest of four limits: ${
+          limits.totalRoom < limits.perBet ? "the cap on what all open bets may put at risk" : `one bet may risk ${bps(g.maxExposureBps)} of the bankroll`
+        }; no wager may exceed ${bps(g.maxWagerBps)} of it; all wagers in play at most ${bps(g.maxOpenWagersBps)} of house funds${
+          limits.wagerRoom !== undefined ? ` (${eth(limits.wagerRoom)} ETH of room left)` : ""
+        }`}
       />
       <Stat
         label="Reserved for open bets"
@@ -189,7 +193,7 @@ export function OwedRow({ g }: { g: GamesState }) {
       </p>
       <ActionButton
         onClick={() =>
-          void run("Withdraw owed winnings", (send) => send("Withdraw", withdrawGamesCall(d)), [`You receive ${eth(owed)} ETH from the Games contract.`])
+          void run("Withdraw owed winnings", single("Withdraw", withdrawGamesCall(d)), [`You receive ${eth(owed)} ETH from the Games contract.`])
         }
       >
         Withdraw
@@ -276,6 +280,7 @@ function resultText(bet: GameBet): string {
 /** The last results as a row of pips, newest first: gold paid more than the wager, grey did not. */
 function RecentPips({ list }: { list: GameBet[] }) {
   const { chainId } = useProtocol();
+  const money = useMoney();
   const shown = list.filter((bet) => isSettled(bet) && betPhase(chainId, bet) === "done").slice(0, 28);
   if (shown.length === 0) return null;
   return (
@@ -283,7 +288,7 @@ function RecentPips({ list }: { list: GameBet[] }) {
       {shown.map((bet) => {
         const payout = bet.payout ?? 0n;
         const tone = payout > bet.wager ? "up" : payout > 0n ? "even" : "down";
-        const text = payout > bet.wager ? `paid ${eth(payout)} ETH on ${eth(bet.wager)}` : payout > 0n ? `stake back: ${eth(payout)} of ${eth(bet.wager)} ETH` : `lost ${eth(bet.wager)} ETH`;
+        const text = money(payout > bet.wager ? `paid ${eth(payout)} ETH on ${eth(bet.wager)}` : payout > 0n ? `stake back: ${eth(payout)} of ${eth(bet.wager)} ETH` : `lost ${eth(bet.wager)} ETH`);
         return (
           <li key={bet.requestId.toString()} className={`pip pip-${tone}`} title={`#${bet.requestId}: roll ${bet.roll}, ${text}`}>
             <span className="fx-sr">
@@ -301,17 +306,17 @@ export function BetList({ bets, kind, title }: { bets: ReturnType<typeof useGame
   const now = useChainTime();
   const { run } = useTx();
   useRevealClock();
-  const isLocal = chainId === anvil.id;
+  const isLocal = chainId === LOCAL_CHAIN_ID;
 
   const refund = (bet: GameBet) =>
-    void run(`Refund bet #${bet.requestId}`, (send) => send("Refund", refundBetCall(d!, bet.requestId)), [
+    void run(`Refund bet #${bet.requestId}`, single("Refund", refundBetCall(d!, bet.requestId)), [
       `The ${eth(bet.wager)} ETH wager returns to the account that placed the bet.`,
       "No fee is taken on a refunded bet.",
     ]);
   const settleLocally = (bet: GameBet) =>
     void run(
       `Settle bet #${bet.requestId} with mock randomness`,
-      (send) => send("Mock fulfil", mockFulfillCall(d!.gamesRandomness, bet.requestId, randomWord())),
+      single("Mock fulfil", mockFulfillCall(d!.gamesRandomness, bet.requestId, randomWord())),
       [
         "Local chain only: answers the bet's randomness request through the mock provider.",
         "The random word comes from this browser, so this is for testing, not a fair game.",
@@ -379,7 +384,7 @@ export function BetList({ bets, kind, title }: { bets: ReturnType<typeof useGame
                             <td className="actions">
                               {isSettled(bet) && !revealing && <VerifyButton kind="bet" requestId={bet.requestId} collection={bet.collection} />}
                               {refundable && <ActionButton onClick={() => refund(bet)}>Refund</ActionButton>}
-                              {bet.status === "pending" && isLocal && (
+                              {LOCAL_ENABLED && bet.status === "pending" && isLocal && (
                                 <ActionButton className="secondary local" onClick={() => settleLocally(bet)}>
                                   Local only: settle with mock randomness
                                 </ActionButton>

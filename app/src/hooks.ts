@@ -4,12 +4,16 @@ import type { Address, Client } from "viem";
 import { useAccount, useChainId, useClient } from "wagmi";
 import { useMode } from "./demo/mode";
 import { DEMO_CHAIN_ID, DEMO_CLIENT, DEMO_DEPLOYMENT, DEMO_USER, subscribeDemo } from "./demo/sim";
-import { deployments, type Deployment } from "./generated/addresses";
+import { deployments } from "./deployments";
+import type { Deployment } from "./generated/addresses";
+import { playMoney } from "./lib/format";
 import { readChainTime, readIsDeployed } from "./lib/reads";
 
 /** Root of every query key in the app; a confirmed transaction invalidates everything under it. */
 export const QUERY_ROOT = "floorguard";
-const REFRESH_MS = 5_000;
+/** How often reads are refreshed: about one block. Polling stops while the tab is hidden. */
+const REFRESH_MS: Record<number, number> = { 1: 12_000, 11155111: 12_000, 8453: 4_000, 84532: 4_000 };
+const DEFAULT_REFRESH_MS = 5_000;
 
 export type Protocol = {
   /** True in demo mode: everything below is the in-browser simulation. */
@@ -45,9 +49,17 @@ export function useRead<T>(
     queryFn: () => read(client!, deployment!),
     enabled: enabled && !!client && !!deployment,
     // The demo's clock runs fast, so its prices and countdowns are refreshed every second.
-    refetchInterval: demo ? 1_000 : REFRESH_MS,
+    refetchInterval: demo ? 1_000 : (REFRESH_MS[chainId] ?? DEFAULT_REFRESH_MS),
+    // a hidden tab asks for nothing; it catches up when it is shown again
+    refetchIntervalInBackground: false,
     retry: false,
   });
+}
+
+/** Labels amounts as play money in the demo ("play ETH"); leaves text alone on a chain. */
+export function useMoney(): (text: string) => string {
+  const { demo } = useProtocol();
+  return demo ? playMoney : (text) => text;
 }
 
 /** Latest block timestamp (simulated time in the demo). Falls back to the wall clock until it arrives. */

@@ -26,8 +26,12 @@ const MESSAGES: Record<string, (args: Args) => string> = {
   InactiveCollection: () => "This is not active for the collection (no floor bid, or no lottery, is configured).",
   InvalidConfig: () => "Invalid bid configuration.",
   InsufficientShares: () => "You do not hold that many shares in the house.",
-  SlippageExceeded: () => "The share price moved past your limit between the preview and the transaction. Nothing was done; try again.",
-  NothingToBid: () => "There is nothing to bid with: the collection's buyback budget is empty.",
+  SlippageExceeded: () => "Carrying this out right now would give up more against fair value than the limit you set, because bets are open. Nothing was done; wait for a quieter moment.",
+  TotalWagersTooHigh: ([total, limit]) => `Too much is in play already: this wager would bring the open wagers to ${wei(total)}; the limit is ${wei(limit)}. Lower the wager or wait for open bets to settle.`,
+  BetsPaused: ([until]) => `Betting is paused for a few minutes after a refund; it resumes ${when(until)}.`,
+  NothingToBid: () => "There is nothing to bid with: the collection's buyback budget holds less than the minimum bid.",
+  NothingPending: () => "You have no pending request of that kind.",
+  BetsStillOpen: () => "Not yet: a bet that was open when you made the request has not finished (or you hold every share and bets are open).",
   CooldownTooLong: ([max]) => `That pause between fills is too long: it must be at most ${max} seconds, so the bid cannot regrow past its last price before the next sale.`,
   NotTreasury: () => "Only the Treasury can call this.",
   NotGuardian: () => "Only the guardian or the owner can lower a bid.",
@@ -43,7 +47,7 @@ const MESSAGES: Record<string, (args: Args) => string> = {
     "Unlock conditions are not met: the lock must have ended and the floor must be at least 130% of the purchase price.",
   GovernanceWindowOpen: ([opensAt]) =>
     `Only the owner can start this auction until the governance window ends on ${when(opensAt)}.`,
-  AuctionRunning: () => "The auction is still running: it can be restarted only once its price has reached the reserve.",
+  AuctionRunning: () => "The auction is still running: it can be restarted only once its price has rested at the reserve for a day.",
   OwnerPricedAuction: () => "The owner set this auction's prices by hand, so only the owner can restart it.",
   NotAContract: () => "That address is not a contract.",
   InvalidLock: () => "Invalid lock time.",
@@ -126,6 +130,31 @@ export type DecodedError = {
   message: string;
 };
 
+/** Longest stretch of someone else's text the app shows. */
+const UNTRUSTED_LIMIT = 200;
+export const UNTRUSTED_PREFIX = "Message from the contract or node (untrusted): ";
+
+/**
+ * Text that came from a contract, an RPC node or a wallet, made safe to show: a revert reason or an
+ * RPC error can say anything, including "visit this site to fix it". Links are removed, the text is
+ * cut short, and it is labelled as not the app's own words.
+ */
+export function untrusted(text: string): string {
+  const cleaned = text
+    // anything that looks like a link, with or without a scheme
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, "[link removed]")
+    .replace(/\bwww\.\S+/gi, "[link removed]")
+    // a bare host with a path, whatever its ending
+    .replace(/\b[a-z0-9-]+(\.[a-z0-9-]+)+\/\S*/gi, "[link removed]")
+    .replace(/\b[a-z0-9-]+(\.[a-z0-9-]+)*\.(com|org|net|io|xyz|app|dev|finance|exchange|link|info|co|me|gg|eth)\b(\/\S*)?/gi, "[link removed]")
+    // control characters and runs of whitespace
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const cut = cleaned.length > UNTRUSTED_LIMIT ? `${cleaned.slice(0, UNTRUSTED_LIMIT)}…` : cleaned;
+  return `${UNTRUSTED_PREFIX}${cut || "(empty)"}`;
+}
+
 /** Turn anything thrown by viem / wagmi into a short readable message. */
 export function decodeError(error: unknown): DecodedError {
   if (error instanceof BaseError) {
@@ -138,15 +167,15 @@ export function decodeError(error: unknown): DecodedError {
       const args = (revert.data?.args ?? []) as Args;
       if (name && name !== "Error" && name !== "Panic") {
         const describe = MESSAGES[name];
-        // Unknown custom error: still show its name and arguments.
-        const message = describe ? describe(args) : `${name}(${args.map(String).join(", ")})`;
+        // Known custom error: the app's own words. Unknown: its name and arguments, as untrusted text.
+        const message = describe ? describe(args) : untrusted(`${name}(${args.map(String).join(", ")})`);
         return { name, args, message };
       }
-      if (revert.reason) return { message: `Reverted: ${revert.reason}` };
-      if (revert.signature) return { message: `Reverted with unknown error ${revert.signature}.` };
+      if (revert.reason) return { message: untrusted(`Reverted: ${revert.reason}`) };
+      if (revert.signature) return { message: `Reverted with unknown error ${revert.signature.slice(0, 10)}.` };
       return { message: "The transaction would revert (no reason given)." };
     }
-    return { message: error.shortMessage || error.message };
+    return { message: untrusted(error.shortMessage || error.message) };
   }
   if (error instanceof Error) {
     // wagmi's own errors are not viem BaseErrors but follow the same shape.
@@ -154,7 +183,9 @@ export function decodeError(error: unknown): DecodedError {
       return { message: "No browser wallet found. Install an injected wallet extension and reload." };
     }
     const short = (error as { shortMessage?: unknown }).shortMessage;
-    return { message: typeof short === "string" && short ? short : error.message };
+    // an error with a shortMessage came from a wallet or a node; a plain Error is the app's own
+    if (typeof short === "string" && short) return { message: untrusted(short) };
+    return { message: error.message };
   }
-  return { message: String(error) };
+  return { message: untrusted(String(error)) };
 }

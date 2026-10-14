@@ -8,7 +8,7 @@ import { claimProjectShareCall, flushPointsCall } from "../lib/calls";
 import { bps, dateTime, eth, points } from "../lib/format";
 import { HoldingStatus, readActivity, readHoldings, readOverview, type ActivityItem, type Floor, type Overview as OverviewData } from "../lib/reads";
 import { href } from "../routes";
-import { useTx } from "../tx";
+import { useTx, single } from "../tx";
 import { ActionButton, Addr, Badge, Empty, PageHead, Panel, QueryView, Time } from "../ui";
 import { BID_STATE_TEXT, bidState } from "../viz/charts";
 import { auctionEndsAt, toEth } from "../viz/curves";
@@ -281,7 +281,7 @@ export function Overview({ collection }: { collection: Address }) {
                                 className="small"
                                 onClick={() =>
                                   d &&
-                                  void run("Activate pending points", (send) => send("Activate points", flushPointsCall(d, user)), [
+                                  void run("Activate pending points", single("Activate points", flushPointsCall(d, user)), [
                                     `Moves your ${points(o.userPendingPoints!)} pending points into your active balance, so they count in vault raffles.`,
                                     "No ETH is sent; you pay only the transaction fee.",
                                   ])
@@ -307,7 +307,7 @@ export function Overview({ collection }: { collection: Address }) {
                             Accrued to your address as a project's fee recipient.
                             <ActionButton
                               className="small"
-                              onClick={() => d && void run("Claim project share", (send) => send("Claim", claimProjectShareCall(d)), [`You receive ${eth(o.userProjectShareOwed!)} ETH from the Treasury.`])}
+                              onClick={() => d && void run("Claim project share", single("Claim", claimProjectShareCall(d)), [`You receive ${eth(o.userProjectShareOwed!)} ETH from the Treasury.`])}
                             >
                               Claim
                             </ActionButton>

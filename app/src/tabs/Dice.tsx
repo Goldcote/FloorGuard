@@ -22,13 +22,13 @@ import {
   type ResultTone,
   type RevealPhase,
 } from "../fx";
-import { useProtocol, useRead } from "../hooks";
+import { useChainTime, useMoney, useProtocol, useRead } from "../hooks";
 import { playCall } from "../lib/calls";
-import { bps, eth } from "../lib/format";
+import { bps, duration, eth } from "../lib/format";
 import { parseEth } from "../lib/parse";
 import { maxGameWager, readGameQuote, recomputeBet, type GameBet } from "../lib/reads";
 import { sound } from "../lib/sound";
-import { useTx } from "../tx";
+import { useTx, single } from "../tx";
 import { ActionButton, Card, QueryView } from "../ui";
 import { BetList, betPhase, edgeSplit, GAMES_NOTICE, HouseStats, OwedRow, PlayNotices, SessionNet, useGames, usePlacing, WagerControl, wagerBlocked } from "./gamesShared";
 
@@ -257,6 +257,8 @@ function celebrate(tone: ResultTone, multiple: number, particles: ParticleContro
 
 export function Dice({ collection }: { collection: Address }) {
   const { deployment: d, demo, chainId } = useProtocol();
+  const now = useChainTime();
+  const money = useMoney();
   const { run } = useTx();
   const [mode, setMode] = useState<Mode>("dice");
   const [chanceChoice, setChance] = useState(50);
@@ -341,19 +343,19 @@ export function Dice({ collection }: { collection: Address }) {
         {(g) => {
           const maxWager = maxGameWager(g, chanceBps);
           const multiple = diceMultiple(chanceBps, g.edgeBps);
-          const blocked = wagerBlocked(g, wager, maxWager, ` at ${chancePercent}%`) || (!quote.data && "Loading the quote");
+          const blocked = wagerBlocked(g, wager, maxWager, ` at ${chancePercent}%`, now) || (!quote.data && "Loading the quote");
           const play = async () => {
             if (!d || wager === undefined || !quote.data || busy) return;
             const { payout, fee } = quote.data;
             setPreview(undefined);
             sound.stake();
             if (demo) begin();
-            await run(`Bet ${eth(wager)} ETH at ${chancePercent}%`, (send) => send("Play", playCall(d, collection, chanceBps, wager)), [
+            await run(`Bet ${eth(wager)} ETH at ${chancePercent}%`, single("Play", playCall(d, collection, chanceBps, wager)), [
               `You pay ${eth(wager)} ETH now.`,
               `${eth(fee)} ETH of it is the fee (the ${bps(g.edgeBps)} edge): ${edgeSplit(g)}.`,
-              `If the roll is below ${chanceBps} of 10000 (${chancePercent}%): you receive ${eth(payout)} ETH.`,
+              `If the roll is below ${chanceBps} of 10000 (${chancePercent}%): you receive ${eth(payout)} ETH, at the edge in force when the bet is mined (${bps(g.edgeBps)} now; the owner can change it for later bets).`,
               "Otherwise you receive nothing and the stake goes to the house bankroll.",
-              "The result arrives with the randomness provider's answer. If none arrives within a day, the bet can be refunded.",
+              `The result arrives with the randomness provider's answer. If none arrives within ${duration(g.refundTimeout)}, the bet can be refunded.`,
             ], { quickInDemo: true });
             end();
           };
@@ -415,9 +417,9 @@ export function Dice({ collection }: { collection: Address }) {
                           : !result
                             ? " "
                             : isWin
-                              ? `Rolled ${result.roll}, below ${result.chanceBps}: ${eth(result.payout ?? 0n)} ETH paid.`
+                              ? money(`Rolled ${result.roll}, below ${result.chanceBps}: ${eth(result.payout ?? 0n)} ETH paid.`)
                               : tone === "returned"
-                                ? `Rolled ${result.roll}, below ${result.chanceBps}: ${eth(result.payout ?? 0n)} ETH back of ${eth(result.wager)} ETH wagered.`
+                                ? money(`Rolled ${result.roll}, below ${result.chanceBps}: ${eth(result.payout ?? 0n)} ETH back of ${eth(result.wager)} ETH wagered.`)
                                 : `Rolled ${result.roll}. It needed to be below ${result.chanceBps}. No payout.`}
                   {result && mode === "dice" && <span className="lcd-roll"> die {dieFace(result.roll!)} = rolls {Math.ceil(((dieFace(result.roll!) - 1) * 10_000) / 6)}–{Math.ceil((dieFace(result.roll!) * 10_000) / 6) - 1}</span>}
                 </p>
@@ -442,7 +444,8 @@ export function Dice({ collection }: { collection: Address }) {
                 <dl className="cab-cost">
                   <div>
                     <dt>Win pays</dt>
-                    <dd>{wager === undefined ? "–" : quote.data ? `${eth(quote.data.payout)} ETH` : quote.isError ? "no quote" : "…"}</dd>
+                    <dd>{wager === undefined ? "–" : quote.data ? money(`${eth(quote.data.payout)} ETH`) : quote.isError ? "no quote" : "…"}</dd>
+                    <dd className="muted small">at the edge in force when the bet is mined</dd>
                   </div>
                   <div>
                     <dt>Chance</dt>

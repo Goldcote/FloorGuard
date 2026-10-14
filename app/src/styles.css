@@ -2595,6 +2595,44 @@ textarea:hover {
   background: var(--accent-soft);
 }
 
+/* What the wallet will be asked to sign: contract, function, value, approved spender. */
+.tx-calls {
+  margin: 0 0 var(--s3);
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+}
+
+.tx-calls .figure-label {
+  margin: 0 0 var(--s1);
+}
+
+.tx-call {
+  margin: 0;
+  padding: var(--s1) 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.tx-call:first-of-type {
+  border-top: none;
+}
+
+.tx-call > div {
+  display: grid;
+  grid-template-columns: 9.5em 1fr;
+  gap: var(--s2);
+}
+
+.tx-call dt {
+  color: var(--muted);
+}
+
+.tx-call dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .tx-context {
   padding: var(--s2) var(--s3);
   border-radius: var(--radius-sm);

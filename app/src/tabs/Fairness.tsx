@@ -26,7 +26,7 @@ function conditions(s: FairnessStatus, demo: boolean): { title: string; verdict:
         ? "This is the demo: results come from a pseudo-random generator in your browser."
         : s.anyMock
           ? "At least one module uses the local mock, where whoever settles picks the number."
-          : "No provider here is the local mock. That alone does not make it the Chainlink adapter: check each address yourself.",
+          : "This app cannot identify the providers here. It can only recognise the local mock, and these are not it: check each address yourself.",
     },
     {
       title: "The owner is behind a timelock",
@@ -98,7 +98,9 @@ export function Fairness() {
                 <Notice>Demo: this is a simulation in your browser. Its results come from a pseudo-random generator, not from a chain. Play money, not fair play.</Notice>
               ) : s.anyMock ? (
                 <Notice>Local mock randomness: whoever settles picks the number. Not fair, for testing only.</Notice>
-              ) : null}
+              ) : (
+                <Notice>The randomness providers of this deployment are unknown to this app: it cannot tell the Chainlink adapter from any other contract. Check each address below yourself.</Notice>
+              )}
               <p className="muted">The fairness claim holds only for a deployment where all four of these are true. None of them is true yet: nothing has been deployed to a public network.</p>
               <ol className="conditions">
                 {conditions(s, demo).map((c) => (
@@ -129,7 +131,7 @@ export function Fairness() {
                         <td>
                           <Addr address={source.provider} />
                         </td>
-                        <td>{source.isMock ? <Badge tone="bad">{demo ? "Simulated: not fair" : "Local mock: not fair"}</Badge> : <Badge tone="muted">Not the mock (verify it is the Chainlink adapter)</Badge>}</td>
+                        <td>{source.isMock ? <Badge tone="bad">{demo ? "Simulated: not fair" : "Local mock: not fair"}</Badge> : <Badge tone="warn">Unknown: this app cannot identify it</Badge>}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -185,7 +187,7 @@ export function Fairness() {
             transaction before it is included in a block.
           </p>
           <p>
-            An oracle can still withhold a number. A bet without an answer after a day is refunded, an unanswered draw can be reset and requested
+            An oracle can still withhold a number. A bet without an answer after some hours can be refunded (the exact time is shown above), an unanswered draw can be reset and requested
             again, and an answer that arrives after its deadline is ignored, so nobody can choose between a late result and a refund. That does not
             cover a party able to hold a result back for the whole day after seeing it: the oracle operator, or on a rollup the sequencer, can turn a
             result it dislikes into a refund or a redraw. The claim rests on neither of them colluding with a player.

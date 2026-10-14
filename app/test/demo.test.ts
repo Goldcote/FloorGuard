@@ -148,11 +148,13 @@ describe("demo simulator", () => {
     await write(playCall(d, DEMO_COLLECTION, 9_500, parseEther("0.5"))); // a 0.01 ETH edge: half stays in the bankroll, and 0.0045 of the rest reaches the budget
     await vi.advanceTimersByTimeAsync(2_000);
     const bid = demoReads.floorBid();
-    expect(bid.minBid).toBe(parseEther("0.09")); // a tenth of the base the curve was configured with
+    // BuybackEngine.minBidOf: a tenth of the base the curve stands at, so it follows the base down
+    expect(bid.minBid).toBe(bid.basePrice / 10n);
+    expect(bid.minBid).toBeLessThan(parseEther("0.09"));
     expect(bid.currentBid).toBe(parseEther("0.0045"));
     // below the minimum: the bid cannot be sold into
     expect(bid.isFillable).toBe(false);
-    await expect(write(sellCall(d, DEMO_COLLECTION, demoOwnedTokens()[0], 0n))).rejects.toThrow(/below the collection's minimum bid of 0\.09 ETH/);
+    await expect(write(sellCall(d, DEMO_COLLECTION, demoOwnedTokens()[0], 0n))).rejects.toThrow(/below the collection's minimum bid of 0\.08\d* ETH/);
   });
 
   it("floor bid: the curve restarts when money reaches a budget that could not cover it", async () => {
@@ -246,9 +248,13 @@ describe("demo simulator", () => {
 
   it("vault: an unsold auction can be restarted once its price sits at the reserve, and a locked holding stays locked", async () => {
     const before = demoReads.holdings().holdings.find((h) => h.auction)!;
-    await expect(write(startAuctionCall(d, before.id))).rejects.toThrow(/reached the reserve/);
-    await vi.advanceTimersByTimeAsync(200_000); // the seeded auction reaches its reserve within a simulated day
+    await expect(write(startAuctionCall(d, before.id))).rejects.toThrow(/rested at the reserve for a day/);
+    await vi.advanceTimersByTimeAsync(100_000); // the seeded auction reaches its reserve half a simulated day in...
     expect(demoReads.holdings().holdings.find((h) => h.id === before.id)!.auction).toMatchObject({ atReserve: true });
+    // ...and has to rest there for a day before anyone can restart it (Vault.AUCTION_RESTART_DWELL)
+    await expect(write(startAuctionCall(d, before.id))).rejects.toThrow(/rested at the reserve for a day/);
+    expect(demoReads.holdings().auctionRestartDwell).toBe(86_400);
+    await vi.advanceTimersByTimeAsync(120_000);
     await write(startAuctionCall(d, before.id));
     const after = demoReads.holdings().holdings.find((h) => h.id === before.id)!.auction!;
     // the floor is 1 ETH and the vault paid 0.8: the reserve is 130% of that, and it opens at 16 times it

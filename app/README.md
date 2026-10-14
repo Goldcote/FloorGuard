@@ -15,8 +15,15 @@ It has two modes, switched in the header:
   the prediction markets' dead band and short betting window, the games' wager cap and bankroll
   share, house shares, and the vault raffle's minimum of activated points. It is labelled
   "Demo: simulated, no real transactions, play money" on every page and is not fair play.
-- **Live**: a real chain through wagmi and viem. The only network requests are JSON-RPC calls to the
-  selected chain. There is no analytics, no CDN, no remote font or image, and no backend.
+- **Live**: a real chain through wagmi and viem. There is no analytics, no CDN, no remote font or
+  image, and no backend. What the browser contacts: the page's own origin (the bundle), and the
+  JSON-RPC endpoint of the selected chain, which is that chain's public RPC unless a
+  `VITE_<CHAIN>_RPC_URL` was set at build time. A connected browser wallet makes its own requests,
+  which are not the app's. With WalletConnect enabled at build time, its SDK contacts
+  WalletConnect/Reown servers. A link to a block explorer is only followed when clicked. CCIP-Read
+  is switched off, so a contract cannot make the app fetch a URL. A development build (and only a
+  development build, or one built with `VITE_ENABLE_LOCAL=1`) also talks to a local node on a
+  loopback address; see "Local development is not in a production build" below.
 
 The pages (hash routes, each a lazy chunk): `#/` landing · `#/app` overview · Trade (marketplace,
 floor bid) · Vault (holdings and auctions, licences, vault raffles) · Play (dice, slots, lottery,
@@ -40,9 +47,12 @@ What each of the non-game pages shows:
 - **Marketplace**: collection offers as a ladder (the protocol's own bid sits in it at its price),
   single-token offers, and a preview of who receives what before accepting or offering.
 - **The house** (`#/play/house`): the games bankroll (free, set aside for open bets, wagers in
-  play), the realised share price from events, your shares, and deposit and redeem with previews,
-  a tolerance and what redeeming with bets open leaves behind. It is not a yield product and does
-  not look like one.
+  play), the fair value of a share over time from events, and your shares. Deposits and
+  redemptions are requests: the page shows each one's state ("requested, waiting for N open bets to
+  finish", "ready", or "waiting for a quieter moment" when carrying it out now would give up more
+  against fair value than the limit you set), the fair value next to what carrying it out right
+  now gives, the spread between the two, and a "most I will give up" control (0.5% by default)
+  that the contract enforces. It is not a yield product and does not look like one.
 - **Fairness**: the request → proof → roll → payout walk, the rules with each game's expected
   return, and the live status of the four conditions the claim depends on.
 
@@ -54,7 +64,13 @@ What each of the non-game pages shows:
   The last wallet reconnects on reload.
 - **Local test account** (chain 31337 only): see below. It never reconnects by itself.
 - **Safe**: when the app runs inside an iframe (opened as a Safe App), wagmi's `safe` connector is
-  added. It talks to the parent Safe window by `postMessage`; it is not created otherwise.
+  added, restricted to `app.safe.global`. It talks to the parent Safe window by `postMessage`; it is
+  not created otherwise. Framed by any other origin the app refuses to render (`src/lib/frame.ts`):
+  it checks `location.ancestorOrigins`, or the referrer where a browser has none. That is a second
+  line only; the deployment must send the `frame-ancestors` header (see "Deploying" below).
+- Every wallet's name, icon and identifier (rdns) are what the wallet says about itself. The menu
+  shows the identifier next to the name, lists wallets alphabetically, puts Rabby first only when
+  its provider itself reports `isRabby`, and warns when two wallets announced the same identifier.
 - **WalletConnect** is off unless `VITE_WALLETCONNECT_PROJECT_ID` is set at build time. When enabled,
   using it loads the WalletConnect SDK (a separate chunk bundled with the app) which connects to
   WalletConnect/Reown's relay and API servers and may load its modal's assets from their servers.
@@ -102,7 +118,7 @@ Then start the app:
 ```sh
 cd app
 npm install
-npm run sync   # picks up deployments/31337.json and the current ABIs
+npm run sync -- --local   # the current ABIs, and deployments/31337.json into addresses.local.ts
 npm run dev    # http://localhost:5173
 ```
 
@@ -164,9 +180,9 @@ bet. They do not exist in a production build.
 Dice and coinflip against the house bankroll (`Games.sol`), backing the selected collection: half of the edge on
 every wager (by default; `bankrollShareBps` sets it) is a protocol fee for that collection and the
 bankroll keeps the rest. A wager can be at most `maxWager()`, 1% of the free bankroll by default. The tab shows the bankroll, the edge, the funds
-reserved for open bets and the largest wager allowed at the chosen chance. That maximum respects both
-caps the contract enforces: one bet may put at most 1% of the free bankroll at risk, and all open bets
-together at most 20% of the house funds. The tab quotes the payout and fee live from
+reserved for open bets and the largest wager allowed at the chosen chance. That maximum is the smallest of the four
+limits the contract enforces: the wager cap, one bet's exposure (1% of the free bankroll), all open
+bets' exposure together (20% of the house's funds) and all wagers in play together (also 20%). The tab quotes the payout and fee live from
 `Games.quote`, and lists the connected account's bets from `BetPlaced` / `BetSettled` / `BetRefunded`
 logs (pending, won, lost, refundable, refunded).
 
@@ -178,8 +194,9 @@ it is `test/mocks/MockRandomness.sol`, which answers only when someone calls `fu
 31337 (and only there) each pending bet has a dashed button, "Local only: settle with mock randomness".
 It calls `MockRandomness.fulfill` with a 256-bit word from `crypto.getRandomValues`. Whoever calls
 `fulfill` chooses the word, so this is not a fair game; it exists to exercise the flow locally. A bet
-left unsettled for a day shows a Refund button (`cast rpc evm_increaseTime 86400` to get there), and
-winnings that could not be delivered show a Withdraw button.
+left unsettled for six hours (`Games.REFUND_TIMEOUT`) shows a Refund button (`cast rpc evm_increaseTime 21600` to get
+there), and winnings that could not be delivered show a Withdraw button. After any refund betting is
+paused for ten minutes and the stages say when it resumes.
 
 ## Ticket raffles tab
 
@@ -227,7 +244,8 @@ cast send <treasury> "setProjectShare(address,address,uint16)" <collection> <rec
 `src/generated/` is produced by `scripts/sync-contracts.mjs`:
 
 ```sh
-npm run sync             # rewrite src/generated/
+npm run sync             # rewrite src/generated/abis.ts and addresses.ts (public chains only)
+npm run sync -- --local  # also write the local anvil chain to src/generated/addresses.local.ts
 npm run sync -- --check  # write nothing, exit 1 if src/generated/ is out of date
 ```
 
@@ -236,9 +254,22 @@ npm run sync -- --check  # write nothing, exit 1 if src/generated/ is out of dat
   every custom error of every contract (used to decode reverts that bubble up from a nested contract).
   It is checked in so the app builds without Foundry. If the Foundry artifacts are missing, the script
   leaves the existing file alone. Run `forge build` and then `npm run sync` whenever a contract changes.
-- `addresses.ts`: one entry per `../deployments/<chainId>.json`. `deployments/31337.json` is
-  git-ignored, so a fresh clone may have no local entry; the app then shows "No deployment found for
-  this chain" until you deploy and sync.
+- `addresses.ts`: one entry per `../deployments/<chainId>.json`, except the local chain. It is
+  checked in and never carries a local deployment.
+- `addresses.local.ts` (git-ignored, only with `--local`): the entry for chain 31337. Only a
+  development build, or one built with `VITE_ENABLE_LOCAL=1`, imports it. Without it the app shows
+  "No deployment found for this chain" on anvil until you deploy and run `npm run sync -- --local`.
+
+### Local development is not in a production build
+
+The anvil chain and its transport, the local test account, the first-visit probe of
+`127.0.0.1:8545`, the "Local only" mock-settle and mock-draw buttons and the local deployment's
+addresses all sit behind one build-time switch (`src/local.ts`): `import.meta.env.DEV`, or
+`VITE_ENABLE_LOCAL=1` for a production build that is meant for a local chain. A production build
+without the flag makes no request to a loopback address, its default chain is Ethereum, and
+`grep -ri "local test account" dist/` finds nothing. `VITE_ANVIL_RPC_URL` is refused unless it is a
+loopback address, and the local test account re-checks the node's chain id before it forwards a
+transaction.
 
 ## Base Sepolia
 
@@ -248,8 +279,55 @@ Deploy with `script/Deploy.s.sol` (see its header for the VRF environment variab
 | Variable | Purpose |
 | --- | --- |
 | `VITE_BASE_SEPOLIA_RPC_URL` | RPC endpoint. Defaults to the chain's public RPC. |
-| `VITE_LOGS_FROM_BLOCK` | First block to scan for Marketplace and Games logs. Set it to the deployment block: public RPCs refuse wide `eth_getLogs` ranges. If the log query fails, the offer list falls back to reading the most recent 200 offer ids directly; the bet list has no fallback (bets cannot be enumerated on-chain) and shows an error. |
-| `VITE_ANVIL_RPC_URL` | Local node URL. Defaults to `http://127.0.0.1:8545`. |
+| `VITE_LOGS_FROM_BLOCK` | First block to scan for event logs. Set it to the deployment block. Logs are read in windows (`VITE_LOGS_WINDOW` blocks, 9000 by default) and what was scanned is kept in memory, so a refresh only asks for the new blocks; a scan that would need more than 40 windows starts later instead and says so in the console. If the log query fails, the offer list falls back to reading the most recent 200 offer ids directly; the bet list has no fallback (bets cannot be enumerated on-chain) and shows an error. The connected account's own offers and open bets are always looked up by their indexed topic, so they cannot be crowded out of the lists. |
+| `VITE_LOGS_WINDOW` | Largest block range of one `eth_getLogs` request. |
+| `VITE_ANVIL_RPC_URL` | Local node URL, development only. Defaults to `http://127.0.0.1:8545`; anything but a loopback address is ignored. |
+| `VITE_ENABLE_LOCAL` | `1` keeps the local-development machinery in a production build. Leave it unset for anything public. |
+
+Reads made together go out as one multicall3 call on chains that have the contract (the public ones
+do; a bare anvil does not, and they are then sent one by one). Polling follows the chain's block
+time and stops while the tab is hidden.
+
+## Deploying
+
+The build uses relative asset URLs (`base: "./"`) and has no inline script or style, so it runs under
+a strict Content-Security-Policy without hashes. Serve it from a dedicated origin (never from a path
+of an IPFS gateway or any origin shared with other sites: everything on an origin shares its
+storage and its wallet permissions) with these headers, adding to `connect-src` only the RPC origins
+the build was configured with:
+
+```
+Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://<rpc-origin-1> https://<rpc-origin-2>; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'
+X-Content-Type-Options: nosniff
+Referrer-Policy: no-referrer
+Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()
+```
+
+- `frame-ancestors` cannot be set from a `<meta>` tag: it has to be this header. Use
+  `frame-ancestors https://app.safe.global` instead of `'none'` only if the app is to be opened as
+  a Safe App. The in-page check in `src/lib/frame.ts` is a fallback, not a replacement.
+- Wallet icons announced by browser wallets are `data:` URIs, hence `img-src data:`.
+- With WalletConnect enabled, its relay and API origins have to be added to `connect-src` (and its
+  modal's assets to the relevant directives); they are WalletConnect's, not this app's, and have
+  not been audited here.
+- Checklist before publishing a build: `VITE_ENABLE_LOCAL` unset; `VITE_LOGS_FROM_BLOCK` set to the
+  deployment block; RPC URLs set and listed in `connect-src`; `npm run sync -- --check` clean;
+  `grep -rE "127\.0\.0\.1|localhost:8545" dist/` and `grep -ri "local test account" dist/` empty;
+  the headers above verified on the live origin.
+
+## Reviewing a transaction
+
+Every action opens a review before anything is signed. It says in words what will happen, and
+shows, for each transaction the wallet will be asked to sign: the contract (by its name in the
+deployment, and its address), the function, the ETH value and, for an approval, the spender and the
+token. The same block is shown again while the wallet is open, so the two can be compared. Limits
+are fixed when the review opens, from the figures on screen, and are stated exactly: the most a
+vault purchase may cost (that amount is the value sent; the contract refunds the rest), the least a
+sale into the floor bid or into an offer may pay. If a re-read after confirming is worse than that
+limit, nothing is sent and the review has to be opened again. A review is cancelled if the
+connected account or the chain changes while it is open. Text that comes from a contract, a node or
+a wallet (a revert reason, an RPC error) is cut to 200 characters, stripped of links and labelled
+as untrusted.
 
 ## Checks
 
@@ -259,7 +337,10 @@ npm run build       # typecheck + production build into dist/
 npm test            # integration test, see below
 ```
 
-`npm test` runs seven files. `test/gameviz.test.ts` checks the pure functions behind the Play
+`npm test` runs nine files, one at a time (two of them share the local chain). `test/security.test.ts`
+covers the front end's defences (strict parsing, untrusted text, what a review shows, framing, the
+local-development gate, bounded log reads). `test/parity.anvil.test.ts` runs the same sequences
+through the demo simulator and through the chain and compares the numbers to the wei. `test/gameviz.test.ts` checks the pure functions behind the Play
 stages (`src/fx/gameviz.ts`). `test/fairness.test.ts` (payout recomputation), `test/wallets.test.ts`
 (wallet menu ordering), `test/demo.test.ts` (the demo simulator against the contracts' rules),
 `test/house.test.ts` (house share arithmetic against `Games.sol`'s formulas) and `test/viz.test.ts`
@@ -280,16 +361,23 @@ src/lib/reads.ts             every on-chain read, as plain functions over a viem
 src/lib/calls.ts             every transaction the UI sends, as plain builders
 src/lib/errors.ts            custom error -> readable message
 src/lib/gameMath.ts          fee, stake, dice payout, slots table, pot split: used by live and demo
-src/lib/house.ts             house shares: the contract's arithmetic, the reads, the history from events
+src/lib/house.ts             house shares: the reads, the connected account's requests, the history from events
+src/lib/houseMath.ts         house shares: the contract's arithmetic (prices, spreads, tolerance), pure
+src/lib/logs.ts              event logs in bounded windows, remembered between refreshes
+src/lib/gas.ts               the gas margin over a node's estimate, and why
+src/lib/review.ts            what a transaction is in the wallet's terms, for the review dialog
+src/lib/frame.ts             the framing guard; src/lib/loopback.ts which node may be the local chain
+src/local.ts                 the build-time switch for all local-development machinery
+src/deployments.ts           the deployments the build knows (public ones, plus local when enabled)
 src/viz/                     visualisations: curve maths, flywheel diagram, hero, charts, lock mechanisms
 src/fx/                      effects for the Play stages: motion, particles, counts, reveal clock (see its README)
 src/styles.css               tokens, base components and the shell; src/styles/ holds the page styles
 src/demo/                    demo mode: the in-browser simulated protocol and the mode switch
 src/routes.ts                hash routes; src/theme.ts light/dark; src/brand.tsx logo and floor line
 src/WalletMenu.tsx           wallet picker and chain selector; src/lib/wallets.ts its ordering rules
-src/hooks.ts                 react-query wrappers around lib/reads.ts (5 s polling; 1 s in the demo)
+src/hooks.ts                 react-query wrappers around lib/reads.ts (polling at block cadence, paused in hidden tabs; 1 s in the demo)
 src/tx.tsx                   transaction runner: review dialog, simulate, sign, wait, result
 src/localWallet.ts           local-only connector for anvil's unlocked accounts
 src/tabs/                    one file per page, plus Verify.tsx and gamesShared.tsx
-test/                        anvil integration test and six chain-free unit test files
+test/                        two anvil test files (integration, simulator parity) and seven chain-free unit test files
 ```

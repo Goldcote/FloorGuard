@@ -1,6 +1,6 @@
+import { LOCAL_CHAIN_ID, LOCAL_ENABLED } from "../local";
 import { useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
 import type { Address } from "viem";
-import { anvil } from "wagmi/chains";
 import {
   AmountCount,
   Countdown,
@@ -25,7 +25,7 @@ import { bps, dateTime, duration, eth } from "../lib/format";
 import { parseUint, randomWord } from "../lib/parse";
 import { abortableAt, lotteryWouldRefund, LOTTERY_STATUS_NAMES, LotteryStatus as S, readDrawProof, readLottery, type DrawProof, type LotteryRound, type LotteryState } from "../lib/reads";
 import { sound } from "../lib/sound";
-import { useTx } from "../tx";
+import { useTx, single } from "../tx";
 import { ActionButton, Addr, Badge, Card, Empty, QueryView, Time } from "../ui";
 import { LOGS_FROM_BLOCK } from "../wagmi";
 import { PlayNotices } from "./gamesShared";
@@ -59,7 +59,7 @@ function RoundActions({ round, state, big }: { round: LotteryRound; state: Lotte
         <ActionButton
           className={big ? "big" : undefined}
           onClick={() =>
-            void run(`Draw lottery round #${id}`, (send) => send("Draw", drawLotteryCall(d, id)), [
+            void run(`Draw lottery round #${id}`, single("Draw", drawLotteryCall(d, id)), [
               tooLate
                 ? "The round ended over a week ago without a draw, so this opens refunds instead of drawing."
                 : willRefund
@@ -78,13 +78,13 @@ function RoundActions({ round, state, big }: { round: LotteryRound; state: Lotte
           Waiting for randomness{abortAt !== undefined && <>; if none arrives, refunds can be opened from {dateTime(abortAt)}</>}
         </span>
       )}
-      {round.status === S.Drawing && chainId === anvil.id && round.requestId !== undefined && (
+      {LOCAL_ENABLED && round.status === S.Drawing && chainId === LOCAL_CHAIN_ID && round.requestId !== undefined && (
         <ActionButton
           className="secondary local"
           onClick={() =>
             void run(
               `Answer round #${id} draw with mock randomness`,
-              (send) => send("Mock fulfil", mockFulfillCall(d.lotteryRandomness, round.requestId!, randomWord())),
+              single("Mock fulfil", mockFulfillCall(d.lotteryRandomness, round.requestId!, randomWord())),
               ["Local chain only: answers the draw's randomness request through the mock provider.", "The random word comes from this browser, so this is for testing, not a fair draw."],
             )
           }
@@ -96,7 +96,7 @@ function RoundActions({ round, state, big }: { round: LotteryRound; state: Lotte
         <ActionButton
           className="secondary"
           onClick={() =>
-            void run(`Reset the draw of round #${id}`, (send) => send("Reset draw", resetLotteryDrawCall(d, id)), [
+            void run(`Reset the draw of round #${id}`, single("Reset draw", resetLotteryDrawCall(d, id)), [
               "No randomness arrived within a day. This reopens the round so the draw can be requested again.",
             ])
           }
@@ -108,7 +108,7 @@ function RoundActions({ round, state, big }: { round: LotteryRound; state: Lotte
         <ActionButton
           className="secondary"
           onClick={() =>
-            void run(`Abort lottery round #${id}`, (send) => send("Abort", abortLotteryCall(d, id)), [
+            void run(`Abort lottery round #${id}`, single("Abort", abortLotteryCall(d, id)), [
               "The round is still undrawn a week after its end. This turns it into refunds: every buyer can take back what they paid.",
             ])
           }
@@ -119,7 +119,7 @@ function RoundActions({ round, state, big }: { round: LotteryRound; state: Lotte
       {myRefund !== undefined && user && (
         <ActionButton
           onClick={() =>
-            void run(`Refund my tickets in round #${id}`, (send) => send("Refund", refundLotteryCall(d, id)), [`You receive ${eth(myRefund)} ETH back.`])
+            void run(`Refund my tickets in round #${id}`, single("Refund", refundLotteryCall(d, id)), [`You receive ${eth(myRefund)} ETH back.`])
           }
         >
           Refund {eth(myRefund)} ETH
@@ -251,7 +251,7 @@ function RoundStage({ round, t, collection, preview }: { round: LotteryRound; t:
     if (!d || count < 1) return;
     const cost = price * BigInt(count);
     sound.ticket();
-    void run(`Buy ${count} lottery ticket${count === 1 ? "" : "s"}`, (send) => send("Buy tickets", buyLotteryTicketsCall(d, collection, count, price)), [
+    void run(`Buy ${count} lottery ticket${count === 1 ? "" : "s"}`, single("Buy tickets", buyLotteryTicketsCall(d, collection, count, price)), [
       `You pay ${eth(cost)} ETH for ${count} ticket${count === 1 ? "" : "s"} at ${eth(price)} ETH each.`,
       selling ? `They join round #${round.id}, which ends ${dateTime(round.endTime)}.` : `The latest round has ended, so this opens a new round lasting ${duration(t.config.duration)}.`,
       `One random ticket wins the pot less ${bps(nextRoundFee)}, which goes to the collection's buyback budget.`,
@@ -299,10 +299,10 @@ function RoundStage({ round, t, collection, preview }: { round: LotteryRound; t:
                     : `Tickets are numbered 0 to ${Math.max(0, round.ticketsSold - 1)}. One of them will be drawn.`}
         </p>
         {revealed && (
-          <p className="draw-winner">
+          <div className="draw-winner">
             Winner: <Addr address={round.winner} /> {iWon && <span className="badge badge-gold">You</span>}{" "}
             <VerifyButton kind="lottery" id={round.id} ticketPrice={round.ticketPrice} feeBps={BigInt(round.feeBps)} />
-          </p>
+          </div>
         )}
         <div className="form-row center">
           <RoundActions round={round} state={t} big />
@@ -451,7 +451,7 @@ export function Lottery({ collection }: { collection: Address }) {
                   <p>
                     <strong>{eth(t.userOwed)} ETH</strong> of lottery winnings is waiting for you.
                   </p>
-                  <ActionButton onClick={() => void run("Withdraw lottery winnings", (send) => send("Withdraw", withdrawLotteryCall(d)), [`You receive ${eth(t.userOwed!)} ETH from the Lottery contract.`])}>
+                  <ActionButton onClick={() => void run("Withdraw lottery winnings", single("Withdraw", withdrawLotteryCall(d)), [`You receive ${eth(t.userOwed!)} ETH from the Lottery contract.`])}>
                     Withdraw
                   </ActionButton>
                 </div>
@@ -495,7 +495,7 @@ function FirstRound({ t, collection }: { t: LotteryState; collection: Address })
           className="big"
           onClick={() =>
             d &&
-            void run("Buy 1 lottery ticket", (send) => send("Buy tickets", buyLotteryTicketsCall(d, collection, 1, price)), [
+            void run("Buy 1 lottery ticket", single("Buy tickets", buyLotteryTicketsCall(d, collection, 1, price)), [
               `You pay ${eth(price)} ETH for 1 ticket.`,
               `This opens a new round lasting ${duration(t.config.duration)}.`,
               `One random ticket wins the pot less ${bps(t.feeBps)}, which goes to the collection's buyback budget.`,

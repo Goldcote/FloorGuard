@@ -1,5 +1,5 @@
+import { LOCAL_CHAIN_ID, LOCAL_ENABLED } from "../local";
 import { useEffect, useRef } from "react";
-import { anvil } from "wagmi/chains";
 import { Countdown, flash, observeReveal, ParticleLayer, ShareRing, TokenEmblem, useParticles, useRevealClock } from "../fx";
 import { useChainTime, useProtocol, useRead } from "../hooks";
 import { claimRaffleCall, drawRaffleCall, mockFulfillCall } from "../lib/calls";
@@ -7,7 +7,7 @@ import { dateTime, points as formatPoints } from "../lib/format";
 import { randomWord } from "../lib/parse";
 import { RAFFLE_STATUS_NAMES, RaffleStatus, readPoints, readRaffles, type Raffle, type Raffles as RafflesState } from "../lib/reads";
 import { sound } from "../lib/sound";
-import { useTx } from "../tx";
+import { useTx, single } from "../tx";
 import { ActionButton, Addr, Badge, Card, Empty, QueryView } from "../ui";
 import { RandomnessNotice } from "./Verify";
 
@@ -30,7 +30,7 @@ function VaultRaffleCard({ r, state, myPoints }: { r: Raffle; state: RafflesStat
   const prize = useRef<HTMLDivElement>(null);
   const previous = useRef("idle");
   useRevealClock();
-  const isLocal = chainId === anvil.id;
+  const isLocal = chainId === LOCAL_CHAIN_ID;
   const { totalPoints, nextDrawAt, drawInFlight } = state;
   // Read from the contract when the deployment has it: a draw needs this many activated points in total.
   const minPoints = state.minPointsToDraw ?? 0n;
@@ -64,17 +64,17 @@ function VaultRaffleCard({ r, state, myPoints }: { r: Raffle; state: RafflesStat
   }, [phase]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const draw = () =>
-    void run(`Draw raffle #${r.id}`, (send) => send("Request draw", drawRaffleCall(d!, r.id)), [
+    void run(`Draw raffle #${r.id}`, single("Request draw", drawRaffleCall(d!, r.id)), [
       "Requests the random draw. The winner is picked among points holders, weighted by their active points at this moment.",
       "Points are frozen until the draw completes. No ETH is sent; you pay only the transaction fee.",
     ]);
   const settleLocally = () =>
-    void run(`Answer raffle #${r.id} draw with mock randomness`, (send) => send("Mock fulfil", mockFulfillCall(d!.randomness, r.requestId!, randomWord())), [
+    void run(`Answer raffle #${r.id} draw with mock randomness`, single("Mock fulfil", mockFulfillCall(d!.randomness, r.requestId!, randomWord())), [
       "Local chain only: answers the draw's randomness request through the mock provider.",
       "The random word comes from this browser, so this is for testing, not a fair draw.",
     ]);
   const claim = () =>
-    void run(`Claim raffle #${r.id} prize`, (send) => send("Claim prize", claimRaffleCall(d!, r.id)), [
+    void run(`Claim raffle #${r.id} prize`, single("Claim prize", claimRaffleCall(d!, r.id)), [
       `Sends token #${r.tokenId} to the winner, ${r.winner}. Anyone may do this; you pay only the transaction fee.`,
     ]);
 
@@ -173,7 +173,7 @@ function VaultRaffleCard({ r, state, myPoints }: { r: Raffle; state: RafflesStat
             </ActionButton>
           )}
           {r.status === RaffleStatus.Drawing && <span className="muted">Waiting for randomness</span>}
-          {r.status === RaffleStatus.Drawing && isLocal && r.requestId !== undefined && (
+          {LOCAL_ENABLED && r.status === RaffleStatus.Drawing && isLocal && r.requestId !== undefined && (
             <ActionButton className="secondary local" onClick={settleLocally}>
               Local only: draw with mock randomness
             </ActionButton>

@@ -1,13 +1,16 @@
-import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type { Abi, Hash } from "viem";
+import { encodeFunctionData, type Abi, type Hash } from "viem";
 import { useAccount, useChainId, useChains, useConfig, useSwitchChain } from "wagmi";
-import { simulateContract, waitForTransactionReceipt, writeContract } from "wagmi/actions";
+import { estimateGas, simulateContract, waitForTransactionReceipt, writeContract } from "wagmi/actions";
 import { errorsAbi } from "./generated/abis";
 import type { Call } from "./lib/calls";
 import { decodeError } from "./lib/errors";
+import { gasLimitFor } from "./lib/gas";
+import { summariseCall, type CallSummary } from "./lib/review";
 import { demoWrite } from "./demo/sim";
 import { QUERY_ROOT, useProtocol } from "./hooks";
+import { playMoney } from "./lib/format";
 import { Modal } from "./ui";
 
 /** How long the dialog shows a confirmation before closing by itself. */
@@ -23,8 +26,14 @@ export type TxEntry = {
   details: readonly string[];
   /** An optional picture of the same thing (who receives what), shown above the details in the review. */
   preview?: ReactNode;
-  /** The transaction currently in flight within the action, e.g. "Approve marketplace". */
+  /**
+   * The transactions the action will send, in the wallet's terms (contract, function, value, who is
+   * approved), so the review can be compared with what the wallet then shows.
+   */
+  plan?: readonly (CallSummary & { step: string })[];
+  /** The transaction currently in flight within the action, e.g. "Approve marketplace", and what it is. */
   step?: string;
+  sending?: CallSummary;
   status: Status;
   hash?: Hash;
   error?: string;
@@ -32,6 +41,16 @@ export type TxEntry = {
 
 /** Sends one transaction as a step of the running action and resolves once it is mined. */
 export type Send = (step: string, call: Call) => Promise<void>;
+
+/** A transaction an action expects to send, known when the review opens. */
+export type Planned = { step: string; call: Call };
+export type Action = ((send: Send) => Promise<void>) & { plan?: readonly Planned[] };
+
+/** An action of exactly one transaction. Its review shows what that transaction is. */
+export const single = (step: string, call: Call): Action => Object.assign((send: Send) => send(step, call), { plan: [{ step, call }] });
+
+/** Thrown by an action when what was reviewed no longer holds: nothing is sent and the visitor reviews again. */
+export class ReviewAgain extends Error {}
 
 type TxContextValue = {
   /** True from the moment an action is opened for review until it has finished. */
@@ -42,7 +61,13 @@ type TxContextValue = {
    * Review, then run, an action of one or more transactions. `details` is what the user reads before
    * confirming. Never throws: a failure is shown in the dialog.
    */
-  run: (title: string, action: (send: Send) => Promise<void>, details?: readonly string[], options?: { quickInDemo?: boolean; preview?: ReactNode }) => Promise<void>;
+  run: (
+    title: string,
+    action: Action,
+    details?: readonly string[],
+    /** `plan`: the transactions to show in the review when the action sends more than one (a `single` action carries its own). */
+    options?: { quickInDemo?: boolean; preview?: ReactNode; plan?: readonly Planned[] },
+  ) => Promise<void>;
 };
 
 const TxContext = createContext<TxContextValue | null>(null);
@@ -61,12 +86,26 @@ export function TxProvider({ children }: { children: ReactNode }) {
   const chainId = useChainId();
   const chains = useChains();
   const account = useAccount();
-  const { demo, user } = useProtocol();
+  const { demo, user, deployment } = useProtocol();
   const { switchChainAsync } = useSwitchChain();
   const [current, setCurrent] = useState<TxEntry>();
   const [history, setHistory] = useState<TxEntry[]>([]);
   const nextId = useRef(1);
   const decision = useRef<(confirmed: boolean) => void>();
+  /** The account and chain the open review was written for. */
+  const reviewedFor = useRef<{ address: string | undefined; chainId: number }>();
+
+  // A review is for one account on one chain. If either changes while it is open (the wallet
+  // switched account, a script or another tab switched chain), it is cancelled: what the dialog
+  // says no longer describes what would be signed.
+  useEffect(() => {
+    const snapshot = reviewedFor.current;
+    if (!snapshot || current?.status !== "review") return;
+    if (snapshot.address === account.address && snapshot.chainId === chainId) return;
+    reviewedFor.current = undefined;
+    decision.current?.(false);
+    setCurrent({ id: current.id, title: current.title, details: [], status: "error", error: "The connected account or the chain changed while this was open for review, so it was cancelled. Nothing was sent. Start it again to review it for the account and chain you are on now." });
+  }, [account.address, chainId, current]);
 
   const chainName = chains.find((chain) => chain.id === chainId)?.name ?? `chain ${chainId}`;
 
@@ -86,18 +125,24 @@ export function TxProvider({ children }: { children: ReactNode }) {
         }
         return;
       }
-      let entry: TxEntry = { id, title, details, preview: options.preview, status: "review" };
+      const planned = options.plan ?? action.plan;
+      const plan = planned?.map(({ step, call }) => ({ step, ...summariseCall(call, deployment) }));
+      let entry: TxEntry = { id, title, details, preview: options.preview, plan, status: "review" };
       const update = (patch: Partial<TxEntry>) => {
         entry = { ...entry, ...patch };
         setCurrent(entry);
       };
       setCurrent(entry);
+      const reviewed = { address: account.address, chainId };
+      reviewedFor.current = demo ? undefined : reviewed;
 
       const confirmed = await new Promise<boolean>((resolve) => {
         decision.current = resolve;
       });
+      reviewedFor.current = undefined;
       if (!confirmed) {
-        setCurrent(undefined);
+        // (a review cancelled because the account or chain changed leaves its notice on screen)
+        setCurrent((shown) => (shown?.id === id && shown.status === "review" ? undefined : shown));
         return;
       }
 
@@ -110,7 +155,7 @@ export function TxProvider({ children }: { children: ReactNode }) {
           return;
         }
         if (!account.address) throw new Error("Connect a wallet first.");
-        update({ step, status: "preparing", hash: undefined });
+        update({ step, sending: summariseCall(call, deployment), status: "preparing", hash: undefined });
         if (account.chainId !== chainId) await switchChainAsync({ chainId });
 
         const request = {
@@ -125,8 +170,17 @@ export function TxProvider({ children }: { children: ReactNode }) {
         };
         // Simulating first surfaces a revert, with its decoded custom error, before the wallet opens.
         await simulateContract(config, request);
+        // A margin over the node's estimate: some paths cost more a block later (see lib/gas.ts).
+        // If the estimate cannot be had, the wallet is left to choose the limit.
+        const gas = await estimateGas(config, {
+          to: call.address,
+          data: encodeFunctionData({ abi: call.abi, functionName: call.functionName, args: call.args }),
+          value: call.value,
+          account: account.address,
+          chainId,
+        }).then(gasLimitFor, () => undefined);
         update({ status: "wallet" });
-        const hash = await writeContract(config, request);
+        const hash = await writeContract(config, { ...request, gas });
         update({ status: "confirming", hash });
         const receipt = await waitForTransactionReceipt(config, { hash, chainId });
         if (receipt.status !== "success") throw new Error("The transaction was mined but reverted.");
@@ -140,11 +194,14 @@ export function TxProvider({ children }: { children: ReactNode }) {
         setTimeout(() => setCurrent((shown) => (shown?.id === id ? undefined : shown)), SUCCESS_VISIBLE_MS);
       } catch (error) {
         console.error(error);
-        update({ status: "error", error: decodeError(error).message });
+        update({
+          status: "error",
+          error: error instanceof ReviewAgain ? `${error.message} Nothing was sent. Start it again to review the new figures.` : decodeError(error).message,
+        });
       }
       setHistory((list) => [entry, ...list].slice(0, 5));
     },
-    [account.address, account.chainId, chainId, config, demo, queryClient, switchChainAsync],
+    [account.address, account.chainId, chainId, config, demo, deployment, queryClient, switchChainAsync],
   );
 
   const busy = !!current && current.status !== "success" && current.status !== "error";
@@ -172,17 +229,20 @@ export function TxProvider({ children }: { children: ReactNode }) {
   return (
     <TxContext.Provider value={value}>
       {children}
-      <Modal open={!!current} onClose={close} title={current?.title ?? ""} dismissible={!inFlight} className="tx-modal" eyebrow={eyebrow}>
+      <Modal open={!!current} onClose={close} title={demo ? playMoney(current?.title ?? "") : (current?.title ?? "")} dismissible={!inFlight} className="tx-modal" eyebrow={eyebrow}>
         {current && (
           <div className={`tx-dialog tx-${current.status}`}>
             {current.status === "review" && current.preview && <div className="tx-preview">{current.preview}</div>}
             {current.details.length > 0 && current.status !== "success" && (
               <ol className="tx-details">
                 {current.details.map((line) => (
-                  <li key={line}>{line}</li>
+                  // in the demo every amount is play money, and says so
+                  <li key={line}>{demo ? playMoney(line) : line}</li>
                 ))}
               </ol>
             )}
+            {current.status === "review" && current.plan && current.plan.length > 0 && <CallBlock calls={current.plan} demo={demo} />}
+            {current.status !== "review" && current.status !== "success" && current.sending && <CallBlock calls={[{ step: current.step ?? "", ...current.sending }]} demo={false} />}
             {current.status === "review" ? (
               <>
                 <p className={demo ? "tx-context demo-note small" : "tx-context muted small"}>
@@ -223,7 +283,7 @@ export function TxProvider({ children }: { children: ReactNode }) {
                 </div>
                 {current.error && (
                   <p className="tx-message" role="alert">
-                    {current.error}
+                    {demo ? playMoney(current.error) : current.error}
                   </p>
                 )}
                 {current.hash && <code className="tx-hash">{current.hash}</code>}
@@ -240,6 +300,53 @@ export function TxProvider({ children }: { children: ReactNode }) {
         )}
       </Modal>
     </TxContext.Provider>
+  );
+}
+
+/** The transactions of an action in the wallet's terms: contract, function, value, approved spender. */
+function CallBlock({ calls, demo }: { calls: readonly (CallSummary & { step: string })[]; demo: boolean }) {
+  return (
+    <div className="tx-calls">
+      <p className="figure-label">{demo ? "What this would send on a chain" : calls.length > 1 ? "What your wallet will be asked to sign, in order" : "What your wallet will be asked to sign"}</p>
+      {calls.map((call, i) => (
+        <dl key={`${i}-${call.functionName}`} className="tx-call">
+          {calls.length > 1 && (
+            <div>
+              <dt>Step {i + 1}</dt>
+              <dd>{call.step}</dd>
+            </div>
+          )}
+          <div>
+            <dt>Contract</dt>
+            <dd>
+              {call.contractName ?? "Unknown contract"} <code>{call.contract}</code>
+            </dd>
+          </div>
+          <div>
+            <dt>Function</dt>
+            <dd>
+              <code>{call.functionName}</code>
+            </dd>
+          </div>
+          <div>
+            <dt>Value</dt>
+            <dd>{demo ? playMoney(call.value) : call.value}</dd>
+          </div>
+          <div>
+            <dt>Approved spender</dt>
+            <dd>
+              {call.approval ? (
+                <>
+                  {call.approval.spenderName ?? "Unknown contract"} <code>{call.approval.spender}</code>, for {call.approval.scope}
+                </>
+              ) : (
+                "none"
+              )}
+            </dd>
+          </div>
+        </dl>
+      ))}
+    </div>
   );
 }
 

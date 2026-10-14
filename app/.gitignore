@@ -1,0 +1,4 @@
+node_modules
+dist
+# local anvil addresses (npm run sync -- --local)
+src/generated/addresses.local.ts
