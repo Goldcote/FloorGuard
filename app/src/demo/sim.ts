@@ -544,7 +544,23 @@ function releaseToPlayers(h: R.Holding | undefined, now: number, by?: Address) {
  * few hours late, leaving the visitor time to do it), and the next draw is requested. Whatever the
  * visitor already did is skipped.
  */
+/**
+ * The demo's other traders keep their bids standing: an offer of theirs that has expired with tokens
+ * still wanted is cancelled and posted again for a week, as a real buyer would. Demo time runs fast, so
+ * without this the seeded offers would all read "Expired" a quarter of an hour into a visit.
+ */
+function renewOtherTradersOffers(now: number) {
+  for (const offer of [...s.offers]) {
+    if (offer.offerer === DEMO_USER || offer.remaining === 0 || now <= offer.expiry) continue;
+    const remaining = offer.remaining;
+    offer.remaining = 0;
+    s.offers.push({ ...offer, id: BigInt(s.offers.length + 1), remaining, filled: 0, expiry: now + 7 * DAY });
+    log("Marketplace", "/trade/marketplace", `Offer #${offer.id} expired and was posted again as #${s.offers.length}`, offer.offerer, now);
+  }
+}
+
 function keeper(now = demoNow()) {
+  renewOtherTradersOffers(now);
   const v = s.vault;
   for (let guard = 0; guard < 10_000; guard++) {
     const from = v.keeperUpTo;
@@ -717,7 +733,10 @@ export const demoReads = {
       userPendingPoints: s.points.pending,
     };
   },
-  openOffers: (): R.OpenOffers => ({ offers: [...s.offers].filter((o) => o.remaining > 0).reverse(), source: "logs", feeBps: MARKET_FEE }),
+  openOffers: (): R.OpenOffers => {
+    renewOtherTradersOffers(demoNow());
+    return { offers: [...s.offers].filter((o) => o.remaining > 0).reverse(), source: "logs", feeBps: MARKET_FEE };
+  },
   tokenState(tokenId: bigint): R.TokenState {
     const owner = s.owner.get(tokenId);
     if (!owner) fail(`Token #${tokenId} does not exist in the demo collection. You own tokens ${[...s.owner].filter(([, o]) => o === DEMO_USER).map(([id]) => `#${id}`).join(", ") || "none"}.`);

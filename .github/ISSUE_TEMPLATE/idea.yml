@@ -1,0 +1,16 @@
+name: Idea or open problem
+description: A design idea, or work on one of the open problems in the design paper
+labels: [design]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: Which open problem (section 13 of the design paper), or what is missing.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What you would change, what it costs, and how it could be tested.

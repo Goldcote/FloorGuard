@@ -1,0 +1,25 @@
+name: Bug
+description: Something does not work as the docs say it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Security issues go to private vulnerability reporting (see SECURITY.md), not here."
+  - type: dropdown
+    id: part
+    attributes:
+      label: Part
+      options: [Contracts, Web app, Keeper bot, Docs or paper, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: A failing test is the best reproduction.

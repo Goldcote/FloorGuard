@@ -1,7 +1,7 @@
 // The demo simulator must follow the contracts' rules, through the same maths module as the live path.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parseEther } from "viem";
-import { DEMO_CLIENT, DEMO_COLLECTION, DEMO_DEPLOYMENT as d, baseAfterSale, demoBidFills, demoCurveRestarts, demoOwnedTokens, demoReads, demoWrite, resetDemo } from "../src/demo/sim";
+import { DEMO_CLIENT, DEMO_COLLECTION, DEMO_DEPLOYMENT as d, baseAfterSale, demoNow, demoBidFills, demoCurveRestarts, demoOwnedTokens, demoReads, demoWrite, resetDemo } from "../src/demo/sim";
 import { claimRaffleCall, releaseToPlayersCall, requestUnlockRoundCall, sampleFloorCall } from "../src/lib/calls";
 import { sampledToday } from "../src/lib/reads";
 import { drawChanceBps, requiredFloor, requiredFloorBps } from "../src/viz/curves";
@@ -16,6 +16,17 @@ describe("demo simulator", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     resetDemo();
+  });
+
+  it("keeps the other traders' offers standing as demo time runs on", async () => {
+    // ten demo days: the seeded offers (five and seven days) would both have expired
+    await vi.advanceTimersByTimeAsync(((10 * DAY) / 600) * 1000);
+    const { offers } = demoReads.openOffers();
+    const nowSec = demoNow();
+    expect(offers.length).toBeGreaterThanOrEqual(2);
+    for (const offer of offers) {
+      expect(offer.expiry).toBeGreaterThan(nowSec); // none shows as expired
+    }
   });
 
   const write = async (call: Parameters<typeof demoWrite>[0]) => {
