@@ -8,8 +8,9 @@
 > repository started from. It is kept as a record of the original thinking and
 > is not a description of what was built, a roadmap or an offer.
 >
-> - **What was actually built**, and every place it departs from this draft, is
->   in [ARCHITECTURE.md](ARCHITECTURE.md). Several mechanisms here (the treasury
+> - **The current description of FloorGuard** is the
+>   [v1 design paper](FLOORGUARD-V1.md). What was actually built, and every
+>   place it departs from this draft, is in [ARCHITECTURE.md](ARCHITECTURE.md). Several mechanisms here (the treasury
 >   triggering buybacks, the engine "accepting an offer", Chainlink NFT floor
 >   feeds) were replaced after review.
 > - **There is no token.** The $FLOOR token below was one possibility discussed
