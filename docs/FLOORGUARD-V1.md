@@ -76,6 +76,24 @@ Blend, its NFT lending product, stops matching new loans on the same date. Accor
 monthly trading volume fell from about $1.43 billion in March 2023 to under $7 million in March 2026.
 ([The Block, 12 Oct 2026](https://theblock.co/news/ecosystems/2026-10-12-blur-nft-marketplace-shutting-down-frontend-blend-418363))
 
+The rest of the landscape points the same way. OpenSea answered Blur in 2023
+with OpenSea Pro, a zero-fee marketplace with rewards
+([Decrypt](https://decrypt.co/125410/opensea-no-fee-pro-marketplace-nft-rewards)),
+and announced a SEA token for the first quarter of 2026 with half of platform
+revenue earmarked for buying back that token
+([The Block](https://theblock.co/post/375195/opensea-sets-sea-token-launch-for-q1-2026-with-50-of-revenue-at-launch-earmarked-for-buybacks));
+in March 2026 it delayed the launch with no new date
+([The Block](https://www.theblock.co/post/393824/opensea-delays-sea-token-launch-offers-no-new-date)).
+Abstract, the Ethereum layer 2 built by Pudgy Penguins' parent company, announced
+on 6 October 2026 that it will shut down on 15 December, a week after Blast
+announced its own closure
+([CryptoTicker](https://cryptoticker.io/en/abstract-chain-shutdown-withdraw-funds/)).
+
+FloorGuard is the opposite bet to all of these. It pays no rewards for listing
+or volume, has no token to buy back, and spends what it earns on the
+collections that earned it: a venue's revenue buying the floor of the NFTs
+traded there, not the venue's own token.
+
 Three things follow, and they are the reason this is a good moment to build in the open:
 
 1. **Holders need somewhere to trade.** Most people trade through a website, not contracts. Volume has to
