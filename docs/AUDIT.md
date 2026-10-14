@@ -22,6 +22,7 @@ contest, is required before the contracts hold real funds.
 | Review 10 | Redesigned house shares; fixes from review 8, with simulations | 1 High, 3 Medium, 4 Low |
 | Review 11 | Final house design, re-running both earlier attacks; small Vault and raffle changes | 2 Medium, 4 Low |
 | Review 12 (14 October) | The Vault's moving lock, players' share and prize vesting | 2 Medium, 6 Low; see below |
+| External review (14 October) | An independent automated review by another model (GLM 5.3, run by the project owner through OpenClaw) of `main` at `24ce445`: contracts read in part, app, keeper, deploy scripts, dependencies | No Critical or High code finding; 1 deployment blocker, 2 Medium, 3 Low; see below |
 | Economics review | Whether the mechanism does what it claims, with models | 5 main findings; see [ECONOMICS-REVIEW.md](ECONOMICS-REVIEW.md) |
 | Static analysis | Slither 0.11.6 on `src/` | No actionable medium or high finding |
 | Web app | Every write flow clicked through with a local test account | 4 bugs fixed |
@@ -33,6 +34,23 @@ in any pass.
 Test suite at the time of writing: 303 Foundry tests (280 before review 12) (unit, fuzz, stateful invariant and
 end-to-end). Line coverage of `src/` was 94% when last measured, before the
 slots, lottery and later changes.
+
+## External review, 14 October
+
+A second model reviewed the repository read-only, after it was made public. It did not run the tests
+or fuzzing and read eight contracts only in part, so it is one more automated review, not an audit.
+Its verdict matches the record above: no Critical or High code finding; the main risk is trust in the
+owner, the oracle reporters and the keeper's key.
+
+| Finding | Severity given | Outcome |
+|---|---|---|
+| The owner can reconfigure everything; no timelock in `src/` | High (deployment blocker) | Already documented. The deploy script does create an OpenZeppelin `TimelockController` as owner when `TIMELOCK_DELAY` is set, but it is off by default. Making it required on public networks is #30 |
+| Sales oracle movable by four wash trades; push oracle trusts its reporters | Medium | Already documented. New hardening ideas (a bound on each push's change, a median of several reporters, distinct traders behind the sales median) added to #12 |
+| `decode-uri-component` denial of service via WalletConnect's `query-string` | Medium | Already known; its fixed versions break `query-string` 7. Waits for WalletConnect |
+| Chainlink VRF adapter never run against a live coordinator | Low | Already documented; part of the testnet issue |
+| Whoever takes a day's floor sample chooses its moment | Low | Already documented |
+| The keeper accepts a plaintext `KEEPER_PRIVATE_KEY` | Low | #31: keystore only for anything with real funds |
+| The app must be served with its security headers | Info | Acted on: GitHub Pages cannot send them and its origin is shared, so the hosted site is now a demo-only build with no live mode and no wallet connectors (`VITE_DEMO_ONLY`). A live build needs its own domain with the headers: #32 |
 
 ## Review 12: the moving lock
 
