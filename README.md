@@ -1,10 +1,14 @@
 # FloorGuard
 
+[![test](https://github.com/Goldcote/FloorGuard/actions/workflows/test.yml/badge.svg)](https://github.com/Goldcote/FloorGuard/actions/workflows/test.yml)
+
 An NFT marketplace protocol that spends its own fees on buying the cheapest
 tokens of the collections it trades.
 
 > **Unaudited and experimental. Do not deploy with real funds.**
-> See [SECURITY.md](SECURITY.md).
+> The code has been through automated reviews only, not a professional audit.
+> Games, the lottery and paid raffles are regulated or prohibited in many
+> places. See [SECURITY.md](SECURITY.md).
 
 Zero-royalty marketplaces reward sellers for undercutting each other.
 FloorGuard has no listings to undercut, and the part of each fee that is not
@@ -71,8 +75,9 @@ explains how the games' results can be checked.
 | Contracts in `src/` | Implemented, with unit, fuzz and invariant tests |
 | Chainlink VRF adapter | Written, not tested against a live coordinator |
 | Deployment | Local chain only; simulated on Base Sepolia, not broadcast. See [docs/TESTNET.md](docs/TESTNET.md) |
-| Web app in `app/` | Reads and transactions tested against a local chain; not yet tested with a browser wallet. See [app/README.md](app/README.md) |
-| Keeper bot in `keeper/` | Tested end to end on a local chain; not run on a public network |
+| Web app in `app/` | Every flow tested against a local chain with a built-in test account; not yet tested with a real browser wallet. Includes a demo mode that needs no wallet. See [app/README.md](app/README.md) |
+| Keeper bot in `keeper/` | Tested end to end on a local chain; not run on a public network. See [keeper/README.md](keeper/README.md) |
+| Reviews | Eleven automated review passes, an economics review and a front-end security review, recorded in [docs/AUDIT.md](docs/AUDIT.md). The latest changes to the games bankroll ("the house") have not been reviewed |
 | Audit | None |
 
 A governance token from the concept document is not built. The full list is at the end of the architecture document.
@@ -110,6 +115,27 @@ forge script script/SeedLocal.s.sol --rpc-url local --broadcast --private-key 0x
 
 Addresses are written to `deployments/31337.json`.
 
+Then run the web app against it:
+
+```bash
+cd app
+```
+
+```bash
+npm install
+```
+
+```bash
+npm run sync -- --local
+```
+
+```bash
+npm run dev
+```
+
+and open http://localhost:5173. The app's own demo mode works without any
+chain.
+
 ### Deploy to a testnet
 
 Follow [docs/TESTNET.md](docs/TESTNET.md).
@@ -130,7 +156,8 @@ docs/           architecture and the original concept documents
 ## Contributing
 
 Issues and pull requests are welcome. Please run `forge fmt` and `forge test`
-before opening a pull request, and add tests for behaviour you change. Report
+(and, for changes in `app/` or `keeper/`, `npm test` there) before opening a
+pull request, and add tests for behaviour you change. CI runs the same checks. Report
 vulnerabilities privately, as described in [SECURITY.md](SECURITY.md).
 
 ## Supporting development
