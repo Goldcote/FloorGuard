@@ -298,12 +298,28 @@ Deploy with `script/Deploy.s.sol` (see its header for the VRF environment variab
 | `VITE_LOGS_WINDOW` | Largest block range of one `eth_getLogs` request. |
 | `VITE_ANVIL_RPC_URL` | Local node URL, development only. Defaults to `http://127.0.0.1:8545`; anything but a loopback address is ignored. |
 | `VITE_ENABLE_LOCAL` | `1` keeps the local-development machinery in a production build. Leave it unset for anything public. |
+| `VITE_DEMO_ONLY` | `1` builds the demo alone: no Live mode, no wallet connectors, no wallet discovery. Use it wherever the headers below cannot be sent or the origin is shared, such as GitHub Pages. |
 
 Reads made together go out as one multicall3 call on chains that have the contract (the public ones
 do; a bare anvil does not, and they are then sent one by one). Polling follows the chain's block
 time and stops while the tab is hidden.
 
 ## Deploying
+
+### The demo alone
+
+The hosted demo at https://goldcote.github.io/FloorGuard/ is a demo-only build served by GitHub Pages
+from the `gh-pages` branch. Pages cannot send the headers below and `goldcote.github.io` is shared by
+every Pages site of the account, so that build must never offer Live mode or talk to a wallet:
+
+```bash
+VITE_DEMO_ONLY=1 npm run build
+```
+
+Publish `dist/` with an empty `.nojekyll` file beside it. Then run the checklist at the end of this
+section on `dist/`.
+
+### A live build
 
 The build uses relative asset URLs (`base: "./"`) and has no inline script or style, so it runs under
 a strict Content-Security-Policy without hashes. Serve it from a dedicated origin (never from a path

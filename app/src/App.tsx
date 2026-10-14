@@ -6,7 +6,7 @@ import { DEMO_CHAIN_ID, demoReads, resetDemo } from "./demo/sim";
 import { DICE_REVEAL_MS, SLOTS_REVEAL_MS } from "./fx/gameviz";
 import { observeReveal, useRevealClock } from "./fx/reveal";
 import { deployments } from "./deployments";
-import { LOCAL_CHAIN_ID, LOCAL_ENABLED } from "./local";
+import { DEMO_ONLY, LOCAL_CHAIN_ID, LOCAL_ENABLED } from "./local";
 import { useDemoSync, useIsDeployed, useProtocol, useRead } from "./hooks";
 import { decodeError } from "./lib/errors";
 import { eth, points as formatPoints } from "./lib/format";
@@ -277,7 +277,13 @@ export function App() {
           <PrimaryNav group={group} />
           <div className="header-tools">
             {!landing && <PointsPill />}
-            <ModeSwitch />
+            {DEMO_ONLY ? (
+              <span className="pill" title="This site is the demo only: a simulation in your browser, with no chain and no wallet.">
+                Demo
+              </span>
+            ) : (
+              <ModeSwitch />
+            )}
             {mode === "demo" ? (
               !landing && <DemoBalance />
             ) : (
