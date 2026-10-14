@@ -4,7 +4,7 @@ import { anvil, base, baseSepolia, mainnet, sepolia } from "wagmi/chains";
 import { injected, safe, walletConnect } from "wagmi/connectors";
 import { SAFE_ALLOWED_DOMAINS } from "./lib/frame";
 import { anvilRpcUrl } from "./lib/loopback";
-import { LOCAL_ENABLED } from "./local";
+import { DEMO_ONLY, LOCAL_ENABLED } from "./local";
 import { localTestAccount } from "./localWallet";
 
 const env = import.meta.env;
@@ -19,9 +19,10 @@ const env = import.meta.env;
 //    build or one built with VITE_ENABLE_LOCAL=1 (see local.ts).
 // The SDKs of Safe and WalletConnect are separate chunks that load on first use, and neither
 // connector exists by default, so out of the box the app talks to nothing but the selected chain's RPC.
-const connectors: CreateConnectorFn[] = [injected()];
-if (typeof window !== "undefined" && window.parent !== window) connectors.push(safe({ allowedDomains: SAFE_ALLOWED_DOMAINS }));
-if (env.VITE_WALLETCONNECT_PROJECT_ID) {
+// A demo-only build (local.ts) has no connectors and no discovery: it never talks to a wallet.
+const connectors: CreateConnectorFn[] = DEMO_ONLY ? [] : [injected()];
+if (!DEMO_ONLY && typeof window !== "undefined" && window.parent !== window) connectors.push(safe({ allowedDomains: SAFE_ALLOWED_DOMAINS }));
+if (!DEMO_ONLY && env.VITE_WALLETCONNECT_PROJECT_ID) {
   connectors.push(walletConnect({ projectId: env.VITE_WALLETCONNECT_PROJECT_ID, showQrModal: true }));
 }
 
@@ -51,7 +52,7 @@ if (LOCAL_ENABLED) {
 export const config = createConfig({
   chains,
   connectors,
-  multiInjectedProviderDiscovery: true,
+  multiInjectedProviderDiscovery: !DEMO_ONLY,
   transports,
   pollingInterval,
   // Reads made in the same tick go out as one multicall3 `aggregate3` call on chains that have the

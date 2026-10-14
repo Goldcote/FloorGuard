@@ -10,6 +10,8 @@ interface ImportMetaEnv {
   readonly VITE_LOGS_FROM_BLOCK?: string;
   /** "1" keeps the local-development machinery (anvil, the local test account) in a production build. */
   readonly VITE_ENABLE_LOCAL?: string;
+  /** "1": a build that is the demo only, with no live mode and no wallet connectors (see local.ts). */
+  readonly VITE_DEMO_ONLY?: string;
   /** Largest block range of one eth_getLogs request (default 9000). */
   readonly VITE_LOGS_WINDOW?: string;
 }

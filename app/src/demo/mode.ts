@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { DEMO_ONLY } from "../local";
 
 /** "demo": the in-browser simulation (src/demo/sim.ts). "live": a real chain through wagmi. */
 export type Mode = "demo" | "live";
@@ -13,15 +14,16 @@ function stored(): Mode | undefined {
   }
 }
 
-let mode: Mode = stored() ?? "demo";
+let mode: Mode = DEMO_ONLY ? "demo" : (stored() ?? "demo");
 /** Whether the visitor chose the mode themselves; until then the app may pick live when a chain answers. */
-let chosen = stored() !== undefined;
+let chosen = DEMO_ONLY || stored() !== undefined;
 const listeners = new Set<() => void>();
 
 export const getMode = () => mode;
 export const modeWasChosen = () => chosen;
 
 export function setMode(next: Mode, remember = true) {
+  if (DEMO_ONLY && next !== "demo") return; // a demo-only build has no live mode
   mode = next;
   if (remember) {
     chosen = true;

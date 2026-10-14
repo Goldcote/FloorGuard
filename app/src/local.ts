@@ -7,6 +7,13 @@
 import type { Deployment } from "./generated/addresses";
 
 export const LOCAL_ENABLED: boolean = import.meta.env.DEV || import.meta.env.VITE_ENABLE_LOCAL === "1";
+
+/**
+ * A build for hosting the demo alone ("1" in VITE_DEMO_ONLY): no Live mode, no wallet connectors and
+ * no wallet discovery, so the site never asks a wallet for anything. For hosts that cannot send the
+ * security headers a live build needs, or that share their origin with other sites.
+ */
+export const DEMO_ONLY: boolean = import.meta.env?.VITE_DEMO_ONLY === "1" && !LOCAL_ENABLED;
 export const LOCAL_CHAIN_ID = 31337;
 
 /** Whether `chainId` is the local anvil chain and local development is enabled in this build. */
