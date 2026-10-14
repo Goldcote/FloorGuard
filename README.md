@@ -17,10 +17,13 @@ for buying the cheapest tokens of that collection. How much difference that
 makes is modest: about one token bought for every fifty traded. See
 [docs/ECONOMICS-REVIEW.md](docs/ECONOMICS-REVIEW.md).
 
+**Start with the [FloorGuard v1 design paper](docs/FLOORGUARD-V1.md):** what it
+is, why now, what it can and cannot do, the open problems and how to help.
+
 The idea started as a
 [2024 white paper](https://x.com/captainPURU/status/1825613065502462081) and
-grew into the [v0.1 concept document](docs/WHITEPAPER-v0.1.md). This repository
-is the first implementation.
+grew into the [v0.1 concept document](docs/WHITEPAPER-v0.1.md), kept as history.
+This repository is the first implementation.
 
 ## How it works
 
