@@ -92,7 +92,7 @@ announced its own closure
 ([CryptoTicker](https://cryptoticker.io/en/abstract-chain-shutdown-withdraw-funds/)).
 
 FloorGuard is the opposite bet to all of these. It pays no rewards for listing
-or volume, never spends its fees buying back a token of its own, and spends
+or volume, does not spend its fees buying back a token of its own, and spends
 what it earns on the collections that earned it: a venue's revenue buying the
 floor of the NFTs traded there, not the venue's own token.
 
@@ -148,8 +148,8 @@ These were not all obvious at the start. Several were learned from reviews that 
    the economics review and changed the engine's behaviour more than any other.
 5. **No token today, no yield, no forecast.** The protocol runs on ETH. Nothing in this repository creates
    a token, and nothing presents returns. Whether FloorGuard should ever have one, such as the $FLOOR of
-   the [v0.1 concept](WHITEPAPER-v0.1.md), is an open question (section 13), not a plan. If one ever
-   exists, fees will never buy it back: they buy the floor of the collections that paid them.
+   the [v0.1 concept](WHITEPAPER-v0.1.md), is an open question (section 13), not a plan. Today every fee buys
+   the floor of the collection that paid it.
 6. **Randomness you can check.** Every draw and bet is settled by Chainlink VRF, whose proofs are verified
    on-chain, and every result can be recomputed from public data. (Section 9.)
 7. **Anyone can keep it running.** Every maintenance action (settling markets, drawing raffles, unlocking
@@ -438,8 +438,7 @@ project share, whether it runs games at all) could sit with that collection's ow
 while protocol-wide powers stay behind a timelock. That works without a token. A token such as $FLOOR,
 from the v0.1 concept, is the other option: holders would govern the protocol-wide settings. It stays on
 the table as an option to weigh once the core is audited and used, not something being built now; the
-questions it has to answer are open problem 11. Whatever is chosen, fees keep buying collection floors,
-never a FloorGuard token.
+questions it has to answer are open problem 11, including what its fees should do.
 
 ---
 
@@ -489,8 +488,11 @@ These are the places where help would change the outcome most. Each is a good fi
 11. **Should FloorGuard have a token?** $FLOOR, from the v0.1 concept, is an option, not a plan. Before
     it could be considered: real use on mainnet or a rollup, a professional audit, legal advice on where
     it could be offered, and a job only a token can do (governing protocol-wide settings, for example)
-    that a multisig cannot. Fees would never buy it back; that is what keeps FloorGuard the opposite of a
-    venue that spends its revenue on its own token.
+    that a multisig cannot. Whether some fees should ever go to it, through buybacks or otherwise, would
+    be the community's decision. The trade-off should be stated with it: every fee that goes to a token
+    no longer buys a collection's floor, revenue-funded buybacks are the part of a token most likely to
+    be treated as a security, and fees that buy only floors are what set FloorGuard apart from venues
+    that spend their revenue on their own token.
 
 ---
 
