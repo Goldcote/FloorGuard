@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { parseEther } from "viem";
 import { auctionReachesReserveAt } from "../src/lib/reads";
 import { bidState } from "../src/viz/charts";
-import { auctionEndsAt, auctionPriceAt, auctionSeries, baseAfterFill, bidAt, bidPolyline, bidReachesCapAt, bidSegments, DAY, fillsCovered, maxFillCooldown, payableBid, priceLock, saleSplit, scale, ticks, timeLock, toEth, tokenPattern, unlockPrice, type BidConfig } from "../src/viz/curves";
-import { advance, catchAuction, initialModel, modelAuctionPrice, modelBid, modelCurve, modelLock, raffle, RULES, sellIntoBid, setDay, setFloor, startAuction, trade, unlock, wager } from "../src/viz/flywheelModel";
+import { auctionEndsAt, auctionPriceAt, bpsPercent, drawChanceBps, releaseCap, requiredFloor, requiredFloorBps, auctionSeries, baseAfterFill, bidAt, bidPolyline, bidReachesCapAt, bidSegments, DAY, fillsCovered, maxFillCooldown, payableBid, priceLock, saleSplit, scale, ticks, timeLock, toEth, tokenPattern, unlockPrice, type BidConfig } from "../src/viz/curves";
+import { advance, catchAuction, drawHolding, initialModel, modelAuctionPrice, modelBid, modelCurve, modelDrawChance, modelLock, modelRequiredMultiple, raffle, RULES, sellIntoBid, setDay, setFloor, skipToUnlock, startAuction, trade, unlock, wager } from "../src/viz/flywheelModel";
 
 const ETH = parseEther("1");
 const config: BidConfig = { basePrice: parseEther("0.9"), maxPrice: parseEther("1.5"), lastReset: 1_000, growthBpsPerDay: 1_000, stepDownBps: 1_500 };
@@ -86,6 +86,19 @@ describe("the bid curve", () => {
 });
 
 describe("the vault's locks", () => {
+  it("the moving lock's ramps, as Vault.sol computes them", () => {
+    // 130% at 90 days falling to 100% at a year; 0.5% a draw rising to 5%; integer basis points
+    expect([0, 90, 91, 227.5, 364, 365, 900].map((d) => requiredFloorBps(d * DAY))).toEqual([13_000, 13_000, 12_990, 11_500, 10_011, 10_000, 10_000]);
+    expect([0, 90, 91, 227.5, 364, 365, 900].map((d) => drawChanceBps(d * DAY))).toEqual([50, 50, 51, 275, 498, 500, 500]);
+    expect(requiredFloor(parseEther("0.8"), 365 * DAY)).toBe(parseEther("0.8"));
+    // 5% of the held holdings may unlock in a week, and at least one
+    expect([0, 1, 19, 20, 39, 40, 100].map(releaseCap)).toEqual([1, 1, 1, 1, 1, 2, 5]);
+    expect(bpsPercent(11_500)).toBe("115%");
+    expect(bpsPercent(12_990)).toBe("129.9%");
+    expect(bpsPercent(50)).toBe("0.5%");
+    expect(priceLock(parseEther("0.8"), parseEther("0.8"), 10_000)).toMatchObject({ trigger: parseEther("0.8"), open: true, progress: 1 });
+  });
+
   it("time lock and price lock", () => {
     expect(timeLock(0, 180 * DAY, 45 * DAY)).toEqual({ progress: 0.25, remaining: 135 * DAY, open: false });
     expect(timeLock(0, 180 * DAY, 200 * DAY)).toEqual({ progress: 1, remaining: 0, open: true });
@@ -186,24 +199,47 @@ describe("the explainer model follows the contracts' rules", () => {
     expect(sellIntoBid(thin.model).refused).toMatch(/nothing to bid with/);
   });
 
-  it("locks for 180 days and until the floor is 30% up, then auctions from 16 times the reserve", () => {
+  it("the moving lock: a daily draw from 90 days, a falling floor multiple, then auctions from 16 times the reserve", () => {
     let m = sellIntoBid({ ...initialModel(), budget: 5 }).model;
     const h = m.holdings[0];
     expect(h).toMatchObject({ price: 0.9, status: "locked" });
-    expect(unlock(m, 1).refused).toMatch(/180 days left/);
-    m = setDay(m, 180);
-    expect(modelLock(m, m.holdings[0])).toMatchObject({ time: true, price: false });
-    expect(unlock(m, 1).refused).toMatch(/1\.170 ETH/);
+    expect(unlock(m, 1).refused).toMatch(/joins the daily draw in 90 days/);
+    expect(drawHolding(m, 1, 0).refused).toMatch(/joins the daily draw in 90 days/);
+    // the chance rises and the required multiple falls between 90 days and a year, flat outside
+    expect([modelDrawChance(0), modelDrawChance(90), modelDrawChance(365), modelDrawChance(500)]).toEqual([0.005, 0.005, 0.05, 0.05]);
+    expect(modelDrawChance(227.5)).toBeCloseTo(0.0275, 12);
+    expect(modelRequiredMultiple(90)).toBe(1.3);
+    expect(modelRequiredMultiple(227.5)).toBeCloseTo(1.15, 12);
+    expect(modelRequiredMultiple(400)).toBe(1);
+    m = setDay(m, 90);
+    expect(modelLock(m, m.holdings[0])).toMatchObject({ eligible: true, price: false, picked: false, drawnToday: false });
+    expect(unlock(m, 1).refused).toMatch(/not picked/);
+    // one draw a day; a roll above the chance does not pick it
+    const missed = drawHolding(m, 1, 0.5).model;
+    expect(modelLock(missed, missed.holdings[0])).toMatchObject({ drawnToday: true, picked: false });
+    expect(drawHolding(missed, 1, 0).refused).toMatch(/Wait a day/);
+    m = drawHolding(advance(missed, 1), 1, 0.004).model;
+    expect(modelLock(m, m.holdings[0]).picked).toBe(true);
+    expect(unlock(m, 1).refused).toMatch(/1\.1\d\d ETH \(129\.\d% of the purchase price\)/);
+    // a picked holding is not picked tomorrow
+    expect(modelLock(advance(m, 1), m.holdings[0]).picked).toBe(false);
     m = setFloor(m, 1.17);
     m = unlock(m, 1).model;
-    expect(m.holdings[0].status).toBe("unlocked");
-    expect(setDay(m, 3).day).toBe(180); // time does not run back past something that already happened
+    expect(m.holdings[0]).toMatchObject({ status: "unlocked" });
+    expect(m.holdings[0].unlockMultiple).toBeCloseTo(1.3 - (0.3 * 1) / 275, 12);
+    expect(setDay(m, 3).day).toBe(91); // time does not run back past something that already happened
+    // skipping ahead draws day by day until one picks it, with the floor kept at the multiple that day needs
+    const rolls = [0.9, 0.9, 0.001];
+    const skipped = skipToUnlock(sellIntoBid({ ...initialModel(), budget: 5 }).model, 1, () => rolls.shift() ?? 0.9).model;
+    expect(skipped.holdings[0]).toMatchObject({ status: "unlocked", unlockedDay: 92 });
+    expect(skipped.floor).toBeGreaterThanOrEqual(0.9 * modelRequiredMultiple(92));
+    m = { ...m, holdings: m.holdings.map((x) => ({ ...x, unlockMultiple: 1.3 })) };
     const started = startAuction(m, 1);
     const a = started.model.holdings[0].auction!;
     expect(a.reserve).toBeCloseTo(1.17, 12);
     expect(a.start).toBeCloseTo(18.72, 12);
-    expect(modelAuctionPrice(a, 181)).toBeCloseTo(9.36, 12);
-    expect(modelAuctionPrice(a, 181.5)).toBeCloseTo(7.02, 12);
+    expect(modelAuctionPrice(a, 92)).toBeCloseTo(9.36, 12);
+    expect(modelAuctionPrice(a, 92.5)).toBeCloseTo(7.02, 12);
     expect(modelAuctionPrice(a, 300)).toBeCloseTo(1.17, 12);
     const caught = catchAuction(advance(started.model, 3), 1);
     expect(caught.events[0]).toMatchObject({ flow: "proceeds" });

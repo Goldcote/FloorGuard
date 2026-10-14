@@ -1,16 +1,16 @@
 # FloorGuard v1
 
-### An open, fee-funded buyer of last resort for NFT collections — and an invitation to build it
+### An open, fee-funded buyer of last resort for NFT collections, and an invitation to build it
 
 *Design paper, October 2026. Supersedes the [v0.1 concept draft](WHITEPAPER-v0.1.md) as the description of
 what FloorGuard is. Every mechanism described here exists in this repository; every figure is sourced to a
 test, a model or a review in it.*
 
 > **Status, stated first.** The code is an unaudited prototype. Nothing is deployed to a public network.
-> It has been through eleven automated (AI) review passes, an economics review and a front-end security
-> review, all recorded in [AUDIT.md](AUDIT.md) — not a professional audit. The games, the lottery and
+> It has been through twelve automated (AI) review passes, an economics review and a front-end security
+> review, all recorded in [AUDIT.md](AUDIT.md). That is not a professional audit. The games, the lottery and
 > paid raffles are regulated or prohibited in many places. This paper is written for people who might help
-> build it, not for anyone deciding whether to put money in. There is no token and nothing to buy.
+> build it, not for anyone deciding whether to put money in. There is no token today and nothing to buy.
 
 ---
 
@@ -52,16 +52,18 @@ FloorGuard is a set of contracts that does exactly that and nothing more ambitio
 - **A standing floor bid.** For each collection the protocol quotes a bid that rises slowly until a holder
   sells into it, then steps down and rises again. It finds the lowest price a holder will accept without an
   oracle, and it can never bid more than its budget holds.
-- **A vault.** What the bid buys is locked for at least 180 days and until the floor is 30% above the
-  price paid. Then it is auctioned (proceeds return to the budget), raffled to the people whose fees
+- **A vault with a moving lock.** What the bid buys is locked for at least 90 days, then unlocks on a day
+  chosen by a daily random draw that nobody can predict, only once the month's median floor is up to 30%
+  above the price paid, and never more than 5% of a collection in a week. Then it is auctioned (proceeds
+  return to the budget), raffled to the people whose fees
   bought it, or lent out as licensed artwork.
-- **Optional engagement modules** — prediction markets, dice, slots, a lottery, ticket raffles and a
-  community "house" that funds the games — exist to bring in more fees, and each carries costs and risks
+- **Optional engagement modules** (prediction markets, dice, slots, a lottery, ticket raffles and a
+  community "house" that funds the games) exist to bring in more fees, and each carries costs and risks
   that this paper states plainly.
 
 What we learned building and reviewing it is as important as what we built. The honest headline from our
 own economics review is that **the buyback takes about one token off the market for every fifty traded on
-FloorGuard**. That is real, permanent, programmatic demand on the bid side — but it is second-order unless
+FloorGuard**; with one purchase in five raffled to players, about one in sixty-two stays off it. That is real, permanent, programmatic demand on the bid side, but it is second-order unless
 FloorGuard carries a large share of a collection's trading. FloorGuard is therefore most meaningful as **a
 community-owned home venue for collections whose holders choose to trade there**, at a moment when the
 largest zero-royalty venue is closing its doors. That is the opportunity this paper is about.
@@ -90,9 +92,9 @@ announced its own closure
 ([CryptoTicker](https://cryptoticker.io/en/abstract-chain-shutdown-withdraw-funds/)).
 
 FloorGuard is the opposite bet to all of these. It pays no rewards for listing
-or volume, has no token to buy back, and spends what it earns on the
-collections that earned it: a venue's revenue buying the floor of the NFTs
-traded there, not the venue's own token.
+or volume, does not spend its fees buying back a token of its own, and spends
+what it earns on the collections that earned it: a venue's revenue buying the
+floor of the NFTs traded there, not the venue's own token.
 
 Three things follow, and they are the reason this is a good moment to build in the open:
 
@@ -101,8 +103,8 @@ Three things follow, and they are the reason this is a good moment to build in t
 2. **The incentive experiment has run its course.** Points-for-listings produced volume while the points had
    value and floors that bled while they did. The case for a venue whose incentives point the other way no
    longer needs to be argued from theory.
-3. **There is room for something small and honest.** A protocol that promises no token, no yield and no
-   price, and publishes its own review record, is a different proposition from what the last cycle offered.
+3. **There is room for something small and honest.** A protocol that sells nothing, promises no yield and
+   no price, and publishes its own review record, is a different proposition from what the last cycle offered.
 
 FloorGuard began as a [2024 thread](https://x.com/captainPURU/status/1825613065502462081) proposing a "DeFi
 primitive to counter zero-royalty NFT trading venues and preserve NFT floors". This paper is what that idea
@@ -144,12 +146,14 @@ These were not all obvious at the start. Several were learned from reviews that 
    misled by a manipulated price feed. (Section 6.)
 4. **Never bid money you don't have.** A bid the budget cannot pay is not a bid. This single rule came from
    the economics review and changed the engine's behaviour more than any other.
-5. **No token, no yield, no forecast.** The protocol runs on ETH. Nothing in this repository creates or
-   promises a token, and nothing presents returns.
+5. **No token today, no yield, no forecast.** The protocol runs on ETH. Nothing in this repository creates
+   a token, and nothing presents returns. Whether FloorGuard should ever have one, such as the $FLOOR of
+   the [v0.1 concept](WHITEPAPER-v0.1.md), is an open question (section 13), not a plan. Today every fee buys
+   the floor of the collection that paid it.
 6. **Randomness you can check.** Every draw and bet is settled by Chainlink VRF, whose proofs are verified
    on-chain, and every result can be recomputed from public data. (Section 9.)
-7. **Anyone can keep it running.** Every maintenance action — settling markets, drawing raffles, unlocking
-   holdings, refunding late bets — is permissionless. A reference bot is included.
+7. **Anyone can keep it running.** Every maintenance action (settling markets, drawing raffles, unlocking
+   holdings, refunding late bets) is permissionless. A reference bot is included.
 8. **The owner is trusted, so make the owner slow and visible.** One owner configures everything. It should
    be a multisig behind a timelock; the deploy script can create the timelock. (Section 11.)
 9. **Publish what is wrong.** The review record, the economics review and the security notes are part of
@@ -171,7 +175,7 @@ flowchart TD
     M & P & G & L & I --> T[Treasury<br/>one budget per collection<br/>optional project share]
     T --> B[BuybackEngine<br/>rising bid, never above budget]
     H([Any holder]) -->|sells any token| B
-    B -->|NFT| V[Vault<br/>180 days and floor at 130%]
+    B -->|NFT| V[Vault<br/>moving lock from 90 days]
     V -->|Dutch auction proceeds| T
     V -->|prize| R[Vault raffle<br/>weighted by points]
     V -->|licensed while locked| I
@@ -184,11 +188,11 @@ flowchart TD
 | `Marketplace` | Escrowed offers on a token or a collection; accept to swap | Fee 2% (cap 5%); royalty cap 5% (max 10%) |
 | `Treasury` | Per-collection budgets; project share; unallocated pool | Project share up to 50% |
 | `BuybackEngine` | The rising floor bid | Growth 10%/day; step-down 15%; min bid 10% of base; owner-set cap |
-| `Vault` | Holds buybacks; unlock, auction, raffle, licence | Lock 180 days; unlock at 130%; auction opens at 16× reserve, halves daily |
+| `Vault` | Holds buybacks; daily unlock draw, auction, raffle, licence | From 90 days, 0.5–5% daily chance; median floor 130% → 100% of cost; 5% a week; 1 in 5 to players; auction opens at 16× reserve, halves daily |
 | `PredictionMarket` | Pooled higher/lower bets on a floor | Fee 3% of winnings; 2% dead band; betting ≤ 1/10 of the market's life |
 | `Games` | Dice, coinflip, slots against a bankroll; house shares | Edge 2% (half kept by the bankroll); per-bet and total limits |
 | `Lottery`, `TicketRaffle` | Pooled ETH rounds; NFT raffles with paid tickets | Fee 5%; minimum pot; refunds when stuck |
-| `VaultRaffle`, `Points` | Raffles vault NFTs to fee payers | 2,500 points per ETH of fee; winner keeps 20% |
+| `VaultRaffle`, `Points` | Raffles vault NFTs to fee payers | 2,500 points per ETH of fee; winner keeps 20%; prizes vest 30 days |
 | `IPLicenseManager` | Time-limited licences for vault NFTs' artwork | Owner-defined tiers |
 | `SalesFloorOracle`, `PushFloorOracle` | Floor prices for unlocks and markets | 7-sale lower median; trusted reporters |
 | `ChainlinkVRFRandomness` | Verifiable randomness | One adapter per consumer |
@@ -213,7 +217,7 @@ bid(t)   = min( curve(t) , budget of the collection )
 
 Any holder can sell any token of the collection into the bid at any time. Holders compete: the first
 willing seller takes the bid when it reaches their reservation price, so the engine buys at roughly the
-lowest price anyone will accept — the floor — without being told what that is. After a sale the curve
+lowest price anyone will accept, the floor, without being told what that is. After a sale the curve
 restarts one step below the sale price and begins to rise again.
 
 ### 6.2 What the first design got wrong
@@ -260,22 +264,56 @@ collection dominated by one holder can be milked up to the cap. Both are documen
 
 Every token the engine buys is a **holding** with a purchase price and time.
 
-- **Lock.** A holding unlocks when 180 days have passed *and* the floor (from the sales oracle) is at least
-  130% of what was paid. Anyone can trigger an unlock that meets both conditions.
-- **Release by auction.** The Dutch auction opens at **16 times its reserve** and halves every day, resting
-  at the reserve. The reserve is the highest of the oracle floor, 130% of the purchase price and an owner
-  minimum. The opening price is deliberately absurd: the sale price is found by buyers competing on the way
-  down, so a manipulated oracle cannot make the Vault sell cheaply. (Two reviews broke earlier versions of
-  this; see AUDIT.md.)
-- **Release by raffle.** The owner can raffle a holding to the people whose fees paid for it, weighted by
-  points (section 8).
+### 7.1 A lock nobody can time
+
+A fixed unlock date is a date traders can wait for; an unlock triggered by one oracle reading is a trigger
+anyone can watch or push. The first design had both (180 days, then the oracle floor at 130%), and players
+received nothing until a holding unlocked. The Vault now has a **moving lock**:
+
+| Rule | Default | Why |
+|---|---|---|
+| **No unlock before 90 days.** | 90 days | Whatever the bid buys stays off the market for at least a quarter. |
+| **A daily draw.** Once a day anyone can ask for a verifiable random word; it picks each eligible holding with a chance that rises with age. | 0.5% a day at 90 days, rising to 5% at a year | No unlock date is known before that day's draw. About two in three holdings that meet the floor condition unlock by six months, nearly all by a year. |
+| **A floor that takes a month to move.** Anyone can record the floor once a day; the Vault reads the median of the last 30 days. | 30 daily samples, 15 needed | Moving it takes more than half a month of samples, not one moment. |
+| **A required floor that falls with age.** | 130% of the price paid at 90 days, falling to 100% at a year | A holding bought near a peak is not locked forever once the market comes back, and the Vault never sells below cost. |
+| **A weekly release cap.** | 5% of a collection's holdings a week, at least one | A rally cannot release a whole vintage at once. |
+| **A players' share.** One purchase in five is set aside for players and raffled to points holders after 30 days. | 20%, owner-settable up to 50% | People who play and trade get something sooner. |
+| **Prizes vest.** A raffle prize can be claimed 30 days after it is won. | 30 days | A token won for nothing is not dumped the same day. |
+
+### 7.2 Release
+
+- **By auction.** The Dutch auction opens at **16 times its reserve** and halves every day, resting at the
+  reserve. The reserve is the highest of the oracle floor, the multiple the holding needed to unlock times
+  its purchase price, and an owner minimum. The opening price is deliberately absurd: the sale price is
+  found by buyers competing on the way down, so a manipulated oracle cannot make the Vault sell cheaply.
+  (Two reviews broke earlier versions of this; see AUDIT.md.) **The Vault never sells below the floor, so an
+  unlock is never a dump.**
+- **By raffle.** The owner can raffle an unlocked holding, and the players' share goes to raffles on its
+  own, to the people whose fees paid for it, weighted by points (section 8).
 - **Licensing while locked.** Holdings can be licensed for use of their artwork, with fees returning to the
-  budget — useful only for collections whose terms let holders sublicense.
+  budget. This is useful only for collections whose terms let holders sublicense.
+
+A raffle winner cannot be restricted to selling on FloorGuard: an NFT in a wallet can be sold anywhere. The
+vesting period is the protection, and every prize is a token back in circulation. That is the price of the
+players' share, and section 10 counts it.
+
+### 7.3 What the moving lock changes, and what it does not
+
+A model of both rules on the economics review's price paths (`test/econ/sim_moving_lock.py`; 10,000 sales a
+year, 25% on FloorGuard, three years, 40 runs):
+
+| | Fixed lock | Moving lock |
+|---|---|---|
+| Most tokens returned to circulation in one week | 5 to 20 | 2 to 5 |
+| Unlock date known in advance | Yes | No |
+| Tokens off the market after three years | 147 to 149 | 102 to 117 |
+| Held over a year and still locked, flat calm market | 51% | 39% |
+| Held over a year and still locked, falling 60% a year | 61% | 59% |
 
 **What the Vault cannot do,** from the economics review: recycling never increases the number of tokens off
-the market (an auction funds about 0.98 of a replacement), and the 130% rule sells winners and keeps losers.
-In a model of a falling market, 76% of matured holdings never unlocked. The Vault is a lock, not an
-investment fund.
+the market (an auction funds about 0.98 of a replacement), and in a falling market most holdings never get
+back to what was paid, so they stay locked; a falling threshold cannot change that. The Vault is a lock, not
+an investment fund.
 
 ---
 
@@ -288,15 +326,15 @@ together. Each is optional, and each has a cost that is stated here rather than 
 |---|---|---|---|
 | **Prediction markets** | Pooled bets on a floor going higher or lower | 3% of winnings | Later bettors know more; needs a trustworthy price reporter and a keeper to settle on time |
 | **Dice, coinflip, slots** | Single-roll games against a house bankroll; stake played at exactly fair odds | Half of the 2% edge | Gambling regulation; variance for the bankroll |
-| **The house** | Anyone can fund the bankroll for shares and redeem later | — | Holders can lose part or all; leaving a busy table costs a spread; regulated as its own activity in some places |
+| **The house** | Anyone can fund the bankroll for shares and redeem later | None | Holders can lose part or all; leaving a busy table costs a spread; regulated as its own activity in some places |
 | **Lottery** | Weekly ETH pot per collection | 5% of the pot | Gambling regulation |
 | **Ticket raffles** | Anyone raffles an NFT for paid tickets | 5% of ticket revenue | Creators can dilute buyers late |
-| **Vault raffles & points** | Vault NFTs raffled to fee payers, weighted by points | — | Points can be bought by self-trading; safe only while prizes are small against activated points |
+| **Vault raffles & points** | Vault NFTs, including one purchase in five, raffled to fee payers, weighted by points; prizes vest 30 days | None | Points can be bought by self-trading; a draw needs activated points backed by fees of four times the prize. Every prize is a token back in circulation |
 
 **The house deserves its own sentence.** It was redesigned three times in one night after three reviews in
-a row found a way to take money from passive share holders. The design that stands combines two rules —
+a row found a way to take money from passive share holders. The design that stands combines two rules:
 requests wait for the bets open when they were made, and bets open when a request is carried out are priced
-against whoever carries it out, up to a spread the requester names — and the last review showed that acting
+against whoever carries it out, up to a spread the requester names. The last review showed that acting
 on advance knowledge of every result never profits under it. Its latest hardening has not been
 independently reviewed. It is the module most in need of expert eyes.
 
@@ -315,8 +353,8 @@ returns, which are negative in every game.
   ticket (a vault raffle emits its winner). The web app's
   *Verify* view recomputes each payout in the browser.
 - **Late results cannot be traded on:** a result that arrives after its deadline is ignored, so nobody can
-  choose between a late result and a refund. What remains is that the oracle operator — or a rollup's
-  sequencer — could withhold a result it dislikes; the claim rests on them not colluding with a player.
+  choose between a late result and a refund. What remains is that the oracle operator, or a rollup's
+  sequencer, could withhold a result it dislikes; the claim rests on them not colluding with a player.
 
 The full account, with each game's expected return and how to check a result by hand, is in
 [FAIRNESS.md](FAIRNESS.md).
@@ -327,24 +365,32 @@ The full account, with each game's expected return and how to check a result by 
 
 ### 10.1 The arithmetic
 
-Fees scale with the floor, and tokens are bought at the floor, so the number of tokens removed is
-`2% × (1 − project share) × tokens traded on FloorGuard`, on any price path. **One in fifty.**
+Fees scale with the floor, and tokens are bought at the floor, so the number of tokens bought is
+`2% × (1 − project share) × tokens traded on FloorGuard`, on any price path: **one in fifty.** The players'
+share then gives one in five of them back, so the number kept off the market is
+`2% × (1 − project share) × (1 − players' share) × tokens traded`: **about one in sixty-two** with the
+defaults. An owner who wants the most supply reduction can set the players' share to zero.
 
-For a 10,000-token collection at a 1 ETH floor over three years (economics review, model):
+For a 10,000-token collection at a 1 ETH floor over three years (economics review model, rerun with both
+lock rules):
 
-| Sales a year, all venues | FloorGuard's share | Fees | Held in the Vault |
-|---|---|---|---|
-| 2,500 | 5% | 6 ETH | 0.07% of supply |
-| 10,000 | 25% | 122 ETH | 1.48% |
-| 10,000 | 100% | 489 ETH | 5.93% |
-| 30,000 | 25% | 367 ETH | 4.45% |
+| Sales a year, all venues | FloorGuard's share | Fees | Held, fixed lock | Held, moving lock |
+|---|---|---|---|---|
+| 2,500 | 5% | 6 ETH | 0.07% of supply | 0.05% |
+| 10,000 | 25% | 122 ETH | 1.48% | 1.11% |
+| 10,000 | 100% | 489 ETH | 5.93% | 4.42% |
+| 30,000 | 25% | 367 ETH | 4.45% | 3.32% |
 
 ### 10.2 What follows
 
 - **FloorGuard does not "hold up" a floor on its own.** NFT floors move several percent in a day; buying
   2% of a venue's own flow is second-order unless the venue carries most of a collection's trading.
+- **The bid reaches other venues, as far as its budget goes.** Anyone who sees a token listed below the
+  bid on any marketplace can buy it there and sell it into the bid, so an undercut below the bid is bought
+  up, by arbitrage, with the collection's own budget. The lock does not fight undercutting; the bid does.
+  The lock only keeps what the bid bought from coming straight back.
 - **It matters most where a community makes it home.** A collection whose holders choose FloorGuard as
-  their main venue — plausible for the communities now losing their default venue — turns every trade into
+  their main venue (plausible for the communities now losing their default venue) turns every trade into
   a small, permanent buy on the floor, and every self-trade into a fee for its own buyback budget.
 - **The fee has a cost.** Sellers pay 2% where other venues charge less. Holders as a group pay the fee;
   one holder in fifty receives it as a buyback. That is a deliberate trade, and it should be presented as
@@ -368,6 +414,7 @@ For a 10,000-token collection at a 1 ETH floor over three years (economics revie
 | Reviews 1–7 | All contracts, then each new module and each fix; a whole-system randomised campaign of 150,000 calls | 4 High fixed; every invariant held |
 | Economics review | Whether the mechanism does what it claims | Bid overpaid systematically; redesigned |
 | Reviews 8–11 | The redesigned bid; three house designs | 3 High in the house, each fixed; the final design shown safe against advance knowledge |
+| Review 12 | The Vault's moving lock and players' share | No High; 2 Medium fixed (raffle points gate, median judged as of the draw) |
 | Front-end review | The web app | 2 High (amounts not bound to the review), fixed |
 | Static analysis | Slither | Nothing actionable |
 
@@ -382,13 +429,16 @@ OpenZeppelin timelock that the deploy script creates (`TIMELOCK_DELAY`). The own
 escrowed offers, accrued project shares, prizes that already have a winner, stakes in a void market, funds
 reserved for open bets, or the games bankroll, which belongs to its share holders.
 
-A **guardian** can only lower bids or pause a collection — a fast key for a crash.
+A **guardian** can only lower bids or pause a collection: a fast key for a crash.
 
-### 11.3 A path to community control, without a token
+### 11.3 A path to community control, with or without a token
 
-The obvious next step is not a token. It is putting each collection's settings — its bid cap, its project
-share, whether it runs games at all — in the hands of that collection's own community multisig, while
-protocol-wide powers stay behind a timelock. That design is open (section 13).
+The next step is to take control away from a single owner. Each collection's settings (its bid cap, its
+project share, whether it runs games at all) could sit with that collection's own community multisig,
+while protocol-wide powers stay behind a timelock. That works without a token. A token such as $FLOOR,
+from the v0.1 concept, is the other option: holders would govern the protocol-wide settings. It stays on
+the table as an option to weigh once the core is audited and used, not something being built now; the
+questions it has to answer are open problem 11, including what its fees should do.
 
 ---
 
@@ -397,15 +447,16 @@ protocol-wide powers stay behind a timelock. That design is open (section 13).
 | Item | Needed for | Cost |
 |---|---|---|
 | Contract deployment | Everything | About 30 million gas in total (simulated): small on a rollup |
-| Chainlink VRF subscription | Games, raffles, lottery | Per-request gas plus premium; cheap on a rollup, significant on mainnet |
+| Chainlink VRF subscription | Vault unlock draw (one request a day), games, raffles, lottery | Per-request gas plus premium; cheap on a rollup, significant on mainnet |
 | Price reporter | Prediction markets | Gas, plus a trustworthy price source |
 | Keeper bot ([keeper/](../keeper/)) | Settling markets and draws on time | Gas and a small server |
 | Static hosting | The web app | Free |
 | Professional audit | Before real funds | The largest cost |
 
 **The minimum viable deployment** is the core loop alone on a rollup: marketplace, treasury, buyback engine
-and vault, for one or two collections whose communities want it. No Chainlink subscription, no bankroll, no
-gambling regulation, a small keeper. Everything else can be added once the core has earned trust.
+and vault, for one or two collections whose communities want it. One small randomness subscription for the
+Vault's daily draw (or unlocks by governance alone), no players' share, no bankroll, no gambling regulation,
+a small keeper. Everything else can be added once the core has earned trust.
 
 ---
 
@@ -421,17 +472,27 @@ These are the places where help would change the outcome most. Each is a good fi
 3. **Floor prices for the long tail.** The sales oracle can be moved by four wash trades; the push oracle
    trusts its reporter. A manipulation-resistant floor for small collections is an open research problem.
 4. **Raffle fairness.** Points can be bought by trading with oneself; activation can be raced. Time-weighted
-   or per-collection points, or snapshots at raffle opening, are untested ideas.
+   or per-collection points, or snapshots at raffle opening, are untested ideas. A winner who leaves a prize in the Vault could earn
+   points instead, keeping the token off the market; it is not built, because points minted from nothing
+   are exactly what raffle farmers want.
 5. **Randomness withholding.** The oracle operator or a sequencer can turn a result it dislikes into a
    refund. Commit-reveal hybrids or penalties for withholding could close it.
-6. **Per-collection community control** (section 11.3), without a token.
+6. **Per-collection community control** (section 11.3), which needs no token.
 7. **Cross-venue reach.** The bid only buys tokens sold to it. Could collection-wide offers on other
-   marketplaces' protocols — including Blur's, which keeps running on-chain — extend it?
+   marketplaces' protocols, including Blur's, which keeps running on-chain, extend it?
 8. **Testnet operations.** Deploying, running the keeper and the VRF subscription, and watching the
    figures the economics review says to monitor.
 9. **Real wallets and real users.** The app has been exercised with a built-in test account, never with
    Rabby or MetaMask in the hands of someone new.
 10. **Legal.** Which modules can be offered where, and what a responsible default deployment looks like.
+11. **Should FloorGuard have a token?** $FLOOR, from the v0.1 concept, is an option, not a plan. Before
+    it could be considered: real use on mainnet or a rollup, a professional audit, legal advice on where
+    it could be offered, and a job only a token can do (governing protocol-wide settings, for example)
+    that a multisig cannot. Whether some fees should ever go to it, through buybacks or otherwise, would
+    be the community's decision. The trade-off should be stated with it: every fee that goes to a token
+    no longer buys a collection's floor, revenue-funded buybacks are the part of a token most likely to
+    be treated as a security, and fees that buy only floors are what set FloorGuard apart from venues
+    that spend their revenue on their own token.
 
 ---
 
@@ -439,12 +500,12 @@ These are the places where help would change the outcome most. Each is a good fi
 
 | Phase | What | Exit criterion |
 |---|---|---|
-| **0 — Open** | Public repository, this paper, issues for each open problem | Contributors engaged |
-| **1 — Testnet** | Base Sepolia deployment, keeper and VRF running, public demo | Two weeks without an unexplained incident |
-| **2 — Audit the core** | Professional audit of the minimum viable deployment | Findings fixed and re-reviewed |
-| **3 — First community** | Core loop on a rollup for one or two collections that ask for it, owner behind a timelock | Real trades, real buybacks, published figures |
-| **4 — Engagement** | Modules added one at a time, each audited, only where legally sound | Per module |
-| **5 — Community control** | Per-collection settings held by collection communities | Owner powers reduced to the minimum |
+| **0. Open** | Public repository, this paper, issues for each open problem | Contributors engaged |
+| **1. Testnet** | Base Sepolia deployment, keeper and VRF running, public demo | Two weeks without an unexplained incident |
+| **2. Audit the core** | Professional audit of the minimum viable deployment | Findings fixed and re-reviewed |
+| **3. First community** | Core loop on a rollup for one or two collections that ask for it, owner behind a timelock | Real trades, real buybacks, published figures |
+| **4. Engagement** | Modules added one at a time, each audited, only where legally sound | Per module |
+| **5. Community control** | Per-collection settings held by collection communities; the token question (open problem 11) decided | Owner powers reduced to the minimum |
 
 No phase has a date. Each starts when the one before has met its criterion.
 
@@ -454,12 +515,12 @@ No phase has a date. Each starts when the one before has met its criterion.
 
 FloorGuard is MIT-licensed and built in the open. The most useful help, in rough order:
 
-- **Smart-contract security** — review the core loop; break the house.
-- **Mechanism design and economics** — the open problems in section 13.
-- **Front end** — real-wallet testing, accessibility, mobile.
-- **Operations** — testnet deployment, keeper, monitoring.
-- **Legal** — the regulatory map for the optional modules.
-- **Communities** — collections that would want a home venue whose fees buy their own floor.
+- **Smart-contract security**: review the core loop; break the house.
+- **Mechanism design and economics**: the open problems in section 13.
+- **Front end**: real-wallet testing, accessibility, mobile.
+- **Operations**: testnet deployment, keeper, monitoring.
+- **Legal**: the regulatory map for the optional modules.
+- **Communities**: collections that would want a home venue whose fees buy their own floor.
 
 Start with the [README](../README.md), run the tests, read [ARCHITECTURE.md](ARCHITECTURE.md), and open an
 issue. Report vulnerabilities privately as described in [SECURITY.md](../SECURITY.md).
@@ -477,7 +538,12 @@ issue. Report vulnerabilities privately as described in [SECURITY.md](../SECURIT
 | Project share | 0% (max 50%) | `Treasury.setProjectShare` |
 | Bid growth / step-down | 10% a day / 15% (onboarding script) | `BuybackEngine.configureBid` |
 | Minimum bid | 10% of the current base | `BuybackEngine.minBidBpsOf` |
-| Vault lock / unlock | 180 days / floor at 130% | `Vault` |
+| Vault minimum lock | 90 days (players' share: 30 days) | `Vault.MIN_LOCK`, `PLAYERS_LOCK` |
+| Daily unlock chance | 0.5% at 90 days → 5% at a year | `Vault.drawChanceBps` |
+| Required median floor | 130% of cost at 90 days → 100% at a year; median of 30 daily samples | `Vault.requiredFloorBps`, `medianFloor` |
+| Release cap | 5% of a collection's holdings a week, at least one | `Vault.releaseAllowance` |
+| Players' share | 20% of purchases (max 50%) | `Vault.setPlayersShare` |
+| Raffle prize vesting | 30 days (max 180) | `VaultRaffle.vestingPeriod` |
 | Auction | Opens at 16× reserve, halves daily, rests ≥ 1 day | `Vault` |
 | Prediction fee / dead band | 3% of winnings / 2% | `PredictionMarket` |
 | Games edge / bankroll share | 2% / half | `Games` |
@@ -488,14 +554,17 @@ issue. Report vulnerabilities privately as described in [SECURITY.md](../SECURIT
 
 ### B. Glossary
 
-- **Floor** — the lowest price at which a token of a collection can be bought.
-- **Budget** — a collection's share of the Treasury, earmarked for buying its tokens.
-- **Curve / bid** — the engine's rising price, and the part of it the budget can pay.
-- **Holding** — a token in the Vault, with its purchase price and time.
-- **Reserve** — the lowest price a Vault auction will accept.
-- **Points** — non-transferable weights earned from fees, used in vault raffles.
-- **The house** — holders of shares in the games bankroll.
-- **Keeper** — anyone (or the reference bot) making the maintenance calls the protocol relies on.
+- **Floor**: the lowest price at which a token of a collection can be bought.
+- **Budget**: a collection's share of the Treasury, earmarked for buying its tokens.
+- **Curve / bid**: the engine's rising price, and the part of it the budget can pay.
+- **Holding**: a token in the Vault, with its purchase price and time.
+- **Moving lock**: the Vault's unlock rules: from 90 days, a daily random draw, a 30-day median floor, a
+  falling threshold and a weekly cap.
+- **Players' share**: the part of purchases raffled to points holders after 30 days.
+- **Reserve**: the lowest price a Vault auction will accept.
+- **Points**: non-transferable weights earned from fees, used in vault raffles.
+- **The house**: holders of shares in the games bankroll.
+- **Keeper**: anyone (or the reference bot) making the maintenance calls the protocol relies on.
 
 ### C. Documents
 

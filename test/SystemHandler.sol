@@ -114,6 +114,8 @@ contract SystemHandler is Test {
     Lottery public lottery;
     IPLicenseManager public licenses;
     MockRandomness public rndShared;
+    /// The Vault's own provider for its daily unlock draw.
+    MockRandomness public vaultRnd;
 
     MockNFT[3] public cols; // 0 and 1 are supported everywhere, 2 is supported nowhere
     Rejector public rejector;
@@ -167,6 +169,8 @@ contract SystemHandler is Test {
         treasury.setSpender(address(engine));
         vault.setEngine(address(engine));
         vault.setRaffle(raffle);
+        vaultRnd = new MockRandomness();
+        vault.setRandomness(vaultRnd);
         marketplace.setSaleRecorder(salesOracle);
         engine.setSaleRecorder(salesOracle);
         salesOracle.setReporter(address(marketplace), true);
@@ -274,7 +278,7 @@ contract SystemHandler is Test {
     }
 
     function actionSelectors() external pure returns (bytes4[] memory s) {
-        s = new bytes4[](27);
+        s = new bytes4[](28);
         s[0] = this.mpOffer.selector;
         s[1] = this.mpAccept.selector;
         s[2] = this.mpCancel.selector;
@@ -302,6 +306,7 @@ contract SystemHandler is Test {
         s[24] = this.admin.selector;
         s[25] = this.warp.selector;
         s[26] = this.washTrade.selector;
+        s[27] = this.vDraw.selector;
     }
 
     // ------------------------------------------------------------------ helpers
@@ -611,18 +616,98 @@ contract SystemHandler is Test {
 
     function vUnlock(uint256 s1, uint256 s2, uint256) external step {
         uint256 id = _holdingIn(s1, Vault.Status.Locked);
-        (address c,, uint128 purchasePrice,, uint40 lockedUntil,,) = vault.holdings(id);
-        if (id != 0 && s2 % 6 == 0) {
-            // someone who wants the holding out: waits for the lock to end, then pushes the sales oracle
-            // to at least 130% of the purchase price (sometimes far above, to hit the cap) and unlocks
-            if (block.timestamp < lockedUntil) vm.warp(lockedUntil);
-            uint256 multiple = (s2 >> 8) % 4 == 0 ? 400 : bound(s2 >> 16, 13, 40);
-            _wash(c, uint256(purchasePrice) * multiple / 10 + 1, s2 >> 32, s2 >> 64);
-        }
+        if (id != 0 && s2 % 6 == 0 && !vault.isPlayersHolding(id)) _patientUnlocker(id, s2);
         vm.prank(_a(s2));
         try vault.unlock(id) {
             _hit("vault.unlock (permissionless)");
         } catch {}
+    }
+
+    /// Someone who wants a holding out: washes the sales oracle to at least 130% of the purchase price
+    /// (sometimes far above, to hit the cap) and samples it daily until the collection has a usable
+    /// median, waits for the lock to end, then waits for a daily draw that picks the holding.
+    function _patientUnlocker(uint256 id, uint256 s2) private {
+        (address c,, uint128 purchasePrice,, uint40 lockedUntil,,) = vault.holdings(id);
+        uint256 days_ = _samplingDaysNeeded(c, purchasePrice);
+        uint256 sampleFrom = lockedUntil > days_ * 1 days ? lockedUntil - days_ * 1 days : 0;
+        if (block.timestamp < sampleFrom) vm.warp(sampleFrom);
+        uint256 target =
+            uint256(purchasePrice) * ((s2 >> 8) % 4 == 0 ? 400 : bound(s2 >> 16, 13, 40)) / 10 + 1;
+        for (uint256 d; d < days_; ++d) {
+            _washAndSample(c, target, s2, d);
+        }
+        if (block.timestamp < lockedUntil) vm.warp(lockedUntil);
+        _drawPicking(id);
+    }
+
+    /// A month of samples is only needed when the collection has no usable median high enough.
+    function _samplingDaysNeeded(address c, uint128 purchasePrice) private view returns (uint256) {
+        (bool usable, uint256 median) = vault.medianFloor(c);
+        return usable && median >= uint256(purchasePrice) * 13 / 10 ? 0 : 16;
+    }
+
+    function _washAndSample(address c, uint256 target, uint256 s2, uint256 d) private {
+        _wash(c, target, s2 >> 32, (s2 >> 64) + d);
+        try vault.sampleFloor(c) {
+            _hit("vault.sampleFloor");
+        } catch {}
+        skip(1 days);
+    }
+
+    function _drawPicking(uint256 id) private {
+        (,,, uint40 acquiredAt,,,) = vault.holdings(id);
+        try vault.requestUnlockRound() {
+            uint256 chance = vault.drawChanceBps(block.timestamp - acquiredAt);
+            uint256 word = 1;
+            while (uint256(keccak256(abi.encode(word, id))) % 10_000 >= chance) ++word;
+            vaultRnd.fulfill(vaultRnd.lastRequestId(), word);
+        } catch {}
+    }
+
+    /// The moving lock's moving parts, driven by anyone: floor samples, the daily draw (fulfilled on time,
+    /// late or never, with any word), releases of players' holdings, and the owner's players' share.
+    function vDraw(uint256 s1, uint256 s2, uint256 s3) external step {
+        uint256 op = s2 % 6;
+        if (op == 0) {
+            vm.prank(_a(s3));
+            try vault.sampleFloor(address(cols[s1 % 3])) {
+                _hit("vault.sampleFloor");
+            } catch {}
+        } else if (op == 1) {
+            try vault.requestUnlockRound() {
+                _hit("vault.requestUnlockRound");
+                if (s3 % 3 == 0) return; // never answered
+                if (s3 % 3 == 1) skip(1 days); // too late: must be ignored
+                uint256 before = vault.seedArrivedAt();
+                vaultRnd.fulfill(vaultRnd.lastRequestId(), s3 >> 8);
+                if (s3 % 3 == 1 && vault.seedArrivedAt() != before) {
+                    ghostViolation = "Vault used a late unlock word";
+                }
+            } catch {}
+        } else if (op == 2) {
+            // an arbitrary, usually stale, request id
+            uint256 last = vaultRnd.lastRequestId();
+            if (last == 0) return;
+            uint256 requestId = 1 + s1 % last;
+            bool current = vault.roundPending() && vault.roundRequestId() == requestId;
+            try vaultRnd.fulfill(requestId, s3) {
+                if (!current) ghostViolation = "Vault accepted a stale unlock word";
+            } catch {}
+        } else if (op == 3 || op == 4) {
+            uint256 id = _holdingIn(s1, Vault.Status.Locked);
+            if (id == 0) return;
+            (,,,, uint40 lockedUntil,,) = vault.holdings(id);
+            if (op == 4 && block.timestamp < lockedUntil) vm.warp(lockedUntil);
+            vm.prank(_a(s3));
+            try vault.releaseToPlayers(id) {
+                _hit("vault.releaseToPlayers");
+            } catch {}
+        } else {
+            vm.prank(gov);
+            try vault.setPlayersShare(bound(s3, 0, 5_000)) {
+                _hit("vault.setPlayersShare");
+            } catch {}
+        }
     }
 
     function vGov(uint256 s1, uint256 s2, uint256 s3) external step {
@@ -1091,6 +1176,13 @@ contract SystemHandler is Test {
                     ? "ticketRaffle.fulfil -> Won"
                     : "ticketRaffle.fulfil late -> reopened"
             );
+            // a prompt keeper usually settles straight away; the moving lock's long waits would otherwise
+            // leave most won raffles to be aborted after their week
+            if (_trStatus(id) == TicketRaffle.Status.Won && word % 4 != 0) {
+                try ticketRaffle.settle(id) {
+                    _hit("ticketRaffle.settle");
+                } catch {}
+            }
         } catch {}
     }
 
@@ -1646,6 +1738,11 @@ contract SystemHandler is Test {
             ++expected;
         }
         assertEq(inVault, expected, "vault tokens != holdings not released");
+        uint256 counted;
+        for (uint256 c; c < 3; ++c) {
+            counted += vault.heldCount(address(cols[c]));
+        }
+        assertEq(counted, expected, "vault heldCount != holdings not released");
 
         expected = 0;
         for (uint256 k; k < aVaultRaffles.length; ++k) {
@@ -1873,6 +1970,9 @@ contract SystemHandler is Test {
             uint256 id = aVaultRaffles[k];
             if (_vrStatus(id) != VaultRaffle.Status.Won) continue;
             (address c, uint256 tokenId,,,, address winner) = raffle.raffles(id);
+            // a prize vests before it can be claimed
+            uint256 vestsAt = raffle.claimableAt(id);
+            if (block.timestamp < vestsAt) vm.warp(vestsAt);
             try raffle.claim(id) {}
             catch {
                 _must(false, "a won vault raffle cannot be claimed");

@@ -173,6 +173,25 @@ describe.skipIf(!ready)("the demo simulator agrees with the contracts", () => {
     expect((await readHoldings(client, d)).holdings.slice(0, 4).map((h) => h.purchasePrice)).toEqual(sim.vault);
   });
 
+  it("the vault: one purchase in five goes to players, with its 30-day lock; the others wait 90 days for the draw", async () => {
+    // Five sales into the bid on each side. The demo's ten seeded holdings left its remainder at zero,
+    // as a fresh chain's is.
+    const sim = await simulate(async (write) => {
+      for (const token of [1n, 2n, 3n, 4n, 5n]) await write(sellCall(demo, DEMO_COLLECTION, token, 0n));
+      const v = demoReads.holdings();
+      return { share: v.playersShareBps, held: v.holdings.slice(0, 5).reverse().map((h) => ({ players: h.players, lock: h.lockedUntil - h.acquiredAt, status: h.status })) };
+    });
+
+    await send(owner, raw(d.buybackEngine, buybackEngineAbi, "setFillCooldown", [collection, 0n]));
+    for (const token of [1n, 2n, 3n, 4n, 5n]) await send(owner, sellCall(d, collection, token, 0n));
+    const v = await readHoldings(client, d);
+    const chain = { share: v.playersShareBps, held: v.holdings.slice(0, 5).reverse().map((h) => ({ players: h.players, lock: h.lockedUntil - h.acquiredAt, status: h.status })) };
+
+    expect(sim).toEqual(chain);
+    expect(chain.held.map((h) => h.players)).toEqual([false, false, false, false, true]);
+    expect(chain.held.map((h) => h.lock / DAY)).toEqual([90, 90, 90, 90, 30]);
+  });
+
   /** What one settled bet did, in the same shape for both sides. */
   type Settled = { roll: number; status: GameBet["status"]; payout: bigint; fee: bigint; kept: bigint | undefined; toTreasury: bigint | undefined; bankroll: bigint; toBudget: bigint; points: bigint; received: bigint };
 

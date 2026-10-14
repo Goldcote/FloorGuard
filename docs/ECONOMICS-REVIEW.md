@@ -367,6 +367,41 @@ Two offsets belong in the same sentence:
 4. Do not feed buyback fills into the oracle the Vault reads, or read the push
    oracle for unlocks and keep the sales oracle for display.
 
+### 2.6 Addendum, October 2026: the moving lock
+
+After this review the fixed lock was replaced (see the Vault section of
+ARCHITECTURE.md): from 90 days a daily random draw picks holdings, with a chance
+rising from 0.5% to 5% a day at a year; a picked holding unlocks if the median of
+30 daily floor samples is at least 130% of its price at 90 days, falling to 100%
+at a year; at most 5% of a collection's holdings unlock in a week; and one
+purchase in five is raffled to players after 30 days, with prizes vesting for 30
+days. Recommendation 3 above (sell gradually) is the weekly cap; recommendation 4
+is partly met by the 30-day median, which a few self-trades at one moment no
+longer move.
+
+`test/econ/sim_moving_lock.py` runs both rules on the paths of 2.4 (Model;
+10,000 sales a year, 25% share, three years, 40 seeds):
+
+| Path | Rule | Held at the end | Auctioned | To players | Held over a year and still locked | Most returned in a week |
+|---|---|---|---|---|---|---|
+| No drift, 80% volatility | Fixed | 148 | 82 | 0 | 46% | 12 |
+| | Moving | 111 | 62 | 38 | 44% | 4 |
+| No drift, 30% volatility | Fixed | 149 | 52 | 0 | 51% | 11 |
+| | Moving | 110 | 63 | 39 | 39% | 4 |
+| Rising 60% a year | Fixed | 147 | 155 | 0 | 27% | 20 |
+| | Moving | 102 | 111 | 46 | 26% | 5 |
+| Falling 60% a year | Fixed | 149 | 30 | 0 | 61% | 5 |
+| | Moving | 117 | 26 | 32 | 59% | 2 |
+
+- **Supply.** The players' share returns a fifth of purchases, so about one
+  token in 62 traded stays off the market instead of one in 50 (the size table
+  of section 9: 1.48% of supply becomes 1.11%, 5.93% becomes 4.42%). Setting the
+  share to zero restores the original figure.
+- **Cliffs.** The weekly cap cuts the largest week of returned supply by three to
+  four times, and no unlock date is public in advance.
+- **Stuck holdings.** The falling threshold frees some holdings in a flat market
+  but not in a falling one, where the floor never gets back to the price paid.
+
 ---
 
 ## 3. Points and vault raffles

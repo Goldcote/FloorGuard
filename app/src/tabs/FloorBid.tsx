@@ -268,7 +268,7 @@ export function FloorBid({ collection }: { collection: Address }) {
                     </div>
                     <div>
                       <dt>The token</dt>
-                      <dd>to the vault: 180 days, and until the floor is {eth(unlockPrice(bid.currentBid), 4)} ETH</dd>
+                      <dd>to the vault: in a daily draw from 90 days, and out only at a 30-day median floor of up to {eth(unlockPrice(bid.currentBid), 4)} ETH (130%, less as it ages)</dd>
                     </div>
                   </dl>
                   <ActionButton

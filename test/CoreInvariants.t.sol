@@ -149,10 +149,39 @@ contract CoreHandler is Test {
             vm.prank(gov);
             vault.governanceUnlock(id);
         } else {
-            (,,,, uint40 lockedUntil,,) = vault.holdings(id);
+            if (vault.isPlayersHolding(id)) {
+                (,,,, uint40 until,,) = vault.holdings(id);
+                if (block.timestamp < until) vm.warp(until);
+                vault.releaseToPlayers(id);
+                return;
+            }
+            (,,, uint40 acquiredAt, uint40 lockedUntil,,) = vault.holdings(id);
+            uint256 sampleFrom = lockedUntil > 15 days ? lockedUntil - 15 days : 0;
+            if (block.timestamp < sampleFrom) vm.warp(sampleFrom);
+            for (uint256 d; d < 16; ++d) {
+                if (d != 0) skip(1 days);
+                _push(floor);
+                vault.sampleFloor(address(nft));
+            }
             if (block.timestamp < lockedUntil) vm.warp(lockedUntil);
+            // sometimes much later, so the falling multiple and rising chance are exercised
+            if (floor % 3 == 0) {
+                skip(uint256(floor) % 300 days);
+                for (uint256 d; d < 16; ++d) {
+                    skip(1 days);
+                    _push(floor);
+                    vault.sampleFloor(address(nft));
+                }
+            }
             _push(floor);
-            vault.unlock(id); // reverts unless the pushed floor is at least 130% of the purchase price
+            vault.requestUnlockRound(); // reverts if a draw was requested less than a day ago
+            uint256 chance = vault.drawChanceBps(block.timestamp - acquiredAt);
+            uint256 word = 1;
+            while (uint256(keccak256(abi.encode(word, id))) % 10_000 >= chance) ++word;
+            randomness.fulfill(randomness.lastRequestId(), word);
+            // reverts unless the median floor meets the multiple the holding's age needs and the
+            // weekly release cap has room
+            vault.unlock(id);
         }
     }
 
@@ -250,6 +279,8 @@ contract CoreHandler is Test {
     function claimPrize(uint256 seed) external {
         uint256 id = _raffle(seed, VaultRaffle.Status.Won);
         if (id == 0) return;
+        uint256 vestsAt = raffle.claimableAt(id);
+        if (block.timestamp < vestsAt) vm.warp(vestsAt);
         raffle.claim(id);
     }
 
@@ -395,7 +426,13 @@ contract CoreAuditInvariants is Base {
             }
             if (status == Vault.Status.Auction && !handler.ownerPriced(id)) {
                 (, uint128 endPrice,) = vault.auctions(id);
-                assertGe(endPrice, uint256(purchasePrice) * 13_000 / 10_000, "public reserve below 130%");
+                // the multiple the holding needed when it unlocked: 130% at 90 days down to 100% at a year,
+                // or 130% after a governance unlock; never below the price paid
+                uint256 bps = vault.unlockBpsOf(id) == 0 ? 13_000 : vault.unlockBpsOf(id);
+                assertGe(bps, 10_000, "unlock multiple below the price paid");
+                assertGe(
+                    endPrice, uint256(purchasePrice) * bps / 10_000, "public reserve below the unlock price"
+                );
             }
         }
         assertEq(nft.balanceOf(address(vault)), inVault);

@@ -13,6 +13,8 @@ import type { Call } from "../lib/calls";
 import { BPS, diceQuote, gameExposure, recomputeBet, slotsExposure, splitPot } from "../lib/gameMath";
 import { depositWithinSpread, houseGain, lastHolderBlocked, previewDeposit, previewRedeem, redeemRequestShares, redeemWithinSpread, type HouseEvent, type HouseRequest, type HouseState } from "../lib/houseMath";
 import type * as R from "../lib/reads";
+import { dateTime } from "../lib/format";
+import { drawChanceBps, releaseCap, requiredFloor, requiredFloorBps, VAULT } from "../viz/curves";
 
 /** Simulated seconds per real second: a simulated day passes in 2.4 real minutes. */
 export const DEMO_SPEED = 600;
@@ -45,6 +47,7 @@ export const DEMO_DEPLOYMENT: Deployment = {
   pushFloorOracle: addr(0x10d),
   randomness: addr(0x10e),
   gamesRandomness: addr(0x10e),
+  vaultRandomness: addr(0x10e),
   ticketRaffleRandomness: addr(0x10e),
   lotteryRandomness: addr(0x10e),
   owner: addr(0x10f),
@@ -64,6 +67,27 @@ type Entry = { buyer: Address; count: number };
 type Round = Omit<R.LotteryRound, "userPaid" | "userTickets" | "pot" | "prize"> & { entries: Entry[]; ticket?: bigint };
 type Raffle = Omit<R.TicketRaffle, "userPaid" | "userTickets"> & { entries: Entry[]; ticket?: bigint };
 type Market = Omit<R.Market, "stake"> & { stakes: Map<Address, { higher: bigint; lower: bigint }> };
+
+/** The Vault's moving lock: floor samples, the daily draw, the weekly release cap, the players' share. */
+type VaultSim = {
+  /** Daily samples, oldest first: the last 60, enough for the median now and as of the last draw (`Vault._samples` with its snapshot). */
+  samples: { price: bigint; takenAt: number }[];
+  sampleCount: number;
+  /** Day index of the last sample plus one (`Vault.lastSampleSlot`). */
+  lastSampleSlot: number;
+  /** The draw, and the random word behind the current result. */
+  draw: R.UnlockDraw & { seed: number };
+  /** `Vault.releaseWindows` for the demo collection. */
+  window: { start: number; cap: number; used: number };
+  /** `Vault.playersCredit`: decides which purchases are set aside for players. */
+  playersCredit: number;
+  /** `Vault.unlockBpsOf`: the multiple a holding unlocked at by the draw. */
+  unlockBps: Map<bigint, number>;
+  /** Simulated time up to which the demo's keeper has done its daily rounds. */
+  keeperUpTo: number;
+  /** The draw result (by arrival time) whose picks the keeper has already unlocked. */
+  keeperUnlocked: number;
+};
 
 type State = {
   balance: bigint;
@@ -108,6 +132,7 @@ type State = {
   houseEvents: HouseEvent[];
   /** When the bid curve restarted because money reached a budget that could not cover it, and the base it restarted from. */
   restarts: { time: number; base: bigint }[];
+  vault: VaultSim;
 };
 
 const EDGE = 200n;
@@ -133,6 +158,25 @@ const DEAD_BAND = 200n;
 const MAX_START_PRICE_AGE = 3_600;
 /** `VaultRaffle.minPointsToDraw`: no draw while fewer points than this are activated. */
 const MIN_POINTS_TO_DRAW = 100n * ETH;
+/** `VaultRaffle.pointsPerPrizeWei`: a raffle also needs this many activated points per wei the Vault paid for its prize. */
+const POINTS_PER_PRIZE_WEI = 10_000n;
+const minPointsFor = (prizeValue: bigint) => (prizeValue * POINTS_PER_PRIZE_WEI > MIN_POINTS_TO_DRAW ? prizeValue * POINTS_PER_PRIZE_WEI : MIN_POINTS_TO_DRAW);
+/** `Vault.playersShareBps`: one purchase in five is set aside for players (the contracts' default). */
+const PLAYERS_SHARE = 2_000;
+/** `VaultRaffle.vestingPeriod`: a won prize can be claimed this long after the draw. */
+const VESTING_PERIOD = 30 * DAY;
+/** `VaultRaffle.announcePeriod`: a new vault raffle can be drawn this long after it opens. */
+const ANNOUNCE_PERIOD = 7 * DAY;
+/**
+ * The demo's keeper: anyone may take the daily floor sample, request the daily draw, unlock what it
+ * picked and send players' holdings to the raffle (keeper/ does this on a chain). The simulated one
+ * does each at this time of the simulated day, unless the visitor has done it first.
+ */
+const KEEPER_AT = 16 * 3_600;
+/** The keeper leaves the visitor this long to unlock a picked holding, or release a players' holding, first. */
+const KEEPER_GRACE = 8 * 3_600;
+/** The simulated randomness provider answers the unlock draw this long after the request. */
+const DRAW_ANSWER_DELAY = 600;
 const TIERS: R.LicenseTier[] = [
   { tier: 0, price: 0n, duration: 30 * DAY },
   { tier: 1, price: milli(0.1), duration: 90 * DAY },
@@ -159,9 +203,9 @@ const listeners = new Set<() => void>();
 export const subscribeDemo = (fn: () => void) => (listeners.add(fn), () => void listeners.delete(fn));
 const changed = () => listeners.forEach((fn) => fn());
 
-function log(module: string, route: string, text: string, actor?: Address) {
+function log(module: string, route: string, text: string, actor?: Address, time = demoNow()) {
   s.block += 1n;
-  s.activity.unshift({ key: `${s.block}`, route, module, text, actor, blockNumber: s.block, time: demoNow() });
+  s.activity.unshift({ key: `${s.block}`, route, module, text, actor, blockNumber: s.block, time });
   s.activity = s.activity.slice(0, 40);
 }
 const wei = (v: bigint) => {
@@ -208,7 +252,8 @@ export function resetDemo() {
     raffleOwed: 0n,
     markets: [],
     vaultRaffles: [],
-    points: { active: 0n, pending: 0n, others: 400n * ETH },
+    // other players' activated points: enough for the seeded open raffle's prize (0.55 ETH needs 5,500)
+    points: { active: 0n, pending: 0n, others: 6_000n * ETH },
     licenses: [],
     activity: [],
     block: 100n,
@@ -221,6 +266,17 @@ export function resetDemo() {
     nextDrawAt: 0,
     unlockFloor: new Map(),
     houseEvents: [],
+    vault: {
+      samples: [],
+      sampleCount: 0,
+      lastSampleSlot: 0,
+      draw: { randomness: DEMO_DEPLOYMENT.vaultRandomness, requestedAt: 0, pending: false, requestId: 0n, seedRequestedAt: 0, seedArrivedAt: 0, seed: 0 },
+      window: { start: 0, cap: 0, used: 0 },
+      playersCredit: 0,
+      unlockBps: new Map(),
+      keeperUpTo: now,
+      keeperUnlocked: 0,
+    },
   };
   // the seed: the house was funded with 50 ETH by a simulated depositor, who holds every share
   s.bankroll = 0n;
@@ -229,20 +285,57 @@ export function resetDemo() {
   houseEvent({ kind: "deposit", amount: 50n * ETH, shares: s.totalShares });
   for (let id = 1n; id <= 6n; id++) s.owner.set(id, DEMO_USER);
   for (let id = 7n; id <= 12n; id++) s.owner.set(id, id % 2n ? NPC_A : NPC_B);
-  s.owner.set(20n, DEMO_DEPLOYMENT.vault);
-  s.owner.set(21n, DEMO_DEPLOYMENT.vault);
+  for (const id of [20n, 21n, 24n, 25n, 26n, 27n, 28n, 29n]) s.owner.set(id, DEMO_DEPLOYMENT.vault);
   s.owner.set(22n, DEMO_DEPLOYMENT.ticketRaffle);
+  s.owner.set(14n, DEMO_DEPLOYMENT.vaultRaffle);
   s.owner.set(23n, DEMO_DEPLOYMENT.vaultRaffle);
 
   s.offers.push(
     { id: 1n, offerer: NPC_A, collection: DEMO_COLLECTION, tokenId: 0n, price: ETH, remaining: 3, expiry: now + 7 * DAY, collectionWide: true, filled: 0 },
     { id: 2n, offerer: NPC_B, collection: DEMO_COLLECTION, tokenId: 3n, price: milli(1.2), remaining: 1, expiry: now + 5 * DAY, collectionWide: false, filled: 0 },
   );
+  // The seeded vault, bought over the past year: holdings at every stage of the moving lock. Every
+  // fifth purchase was set aside for players (#5 and #10), as the contracts do by default.
+  const held = (id: bigint, tokenId: bigint, price: number, daysAgo: number, extra: Partial<R.Holding> = {}): R.Holding => {
+    const acquiredAt = now - Math.round(daysAgo * DAY);
+    const players = id % 5n === 0n;
+    return { id, collection: DEMO_COLLECTION, tokenId, purchasePrice: milli(price), acquiredAt, lockedUntil: acquiredAt + (players ? VAULT.PLAYERS_LOCK : VAULT.MIN_LOCK), unlockedAt: 0, status: 1, canUnlock: false, players, picked: false, ...extra };
+  };
   s.holdings.push(
-    { id: 1n, collection: DEMO_COLLECTION, tokenId: 20n, purchasePrice: milli(0.8), acquiredAt: now - 200 * DAY, lockedUntil: now - 20 * DAY, unlockedAt: now - 2 * DAY, status: 3, canUnlock: false,
-      auction: { startPrice: 16n * milli(1.04), endPrice: milli(1.04), startTime: now - 3 * DAY - DAY / 2, currentPrice: 0n, atReserve: false, ownerPriced: false } },
-    { id: 2n, collection: DEMO_COLLECTION, tokenId: 21n, purchasePrice: milli(0.86), acquiredAt: now - 30 * DAY, lockedUntil: now + 150 * DAY, unlockedAt: 0, status: 1, canUnlock: false },
+    held(1n, 23n, 0.55, 400, { status: 4, unlockedAt: now - 20 * DAY }), // unlocked, then sent to vault raffle #2 by the owner
+    held(2n, 25n, 0.62, 340), // old: a high chance, and the floor it needs is close to what was paid
+    held(3n, 26n, 0.95, 210), // bought high: the median floor is still below what it needs
+    held(4n, 20n, 0.8, 200, {
+      // unlocked by governance and on auction
+      status: 3, unlockedAt: now - 4 * DAY,
+      auction: { startPrice: 16n * milli(1.04), endPrice: milli(1.04), startTime: now - 3 * DAY - DAY / 2, currentPrice: 0n, atReserve: false, ownerPriced: false },
+    }),
+    held(5n, 14n, 0.7, 170, { status: 4 }), // players' share: raffled (vault raffle #1)
+    held(6n, 27n, 0.75, 150),
+    held(7n, 21n, 0.86, 88), // joins the daily draw in two days
+    held(8n, 28n, 0.88, 60),
+    held(9n, 29n, 0.9, 40),
+    held(10n, 24n, 0.92, 29.6), // players' share: its 30 days end soon
   );
+  // A month of daily floor samples (the keeper takes one each afternoon), the market drifting up.
+  for (let day = 29; day >= 1; day--) {
+    const at = (Math.floor(now / DAY) - day) * DAY + KEEPER_AT;
+    const price = milli(0.93 + 0.0015 * (29 - day) + (((day * 7) % 5) - 2) * 0.004);
+    s.vault.samples.push({ price, takenAt: at });
+    s.vault.sampleCount++;
+    s.vault.lastSampleSlot = Math.floor(at / DAY) + 1;
+  }
+  // This morning's draw has already been answered; the next can be requested a day after it.
+  const d = s.vault.draw;
+  Object.assign(d, { requestedAt: now - 2 * 3_600, requestId: 1n, seedRequestedAt: now - 2 * 3_600, seedArrivedAt: now - 2 * 3_600 + DRAW_ANSWER_DELAY });
+  // The simulated provider's words come from a fixed salt. Choose the one under which this morning's
+  // draw picked only holding #2, so that a visit starts with something to unlock. Later draws fall
+  // where they fall.
+  for (drawSalt = 1; drawSalt < 100_000; drawSalt++) {
+    d.seed = drawWord(d.requestId);
+    const picked = s.holdings.filter((h) => h.status === 1 && !h.players && isPicked(h, now)).map((h) => h.id);
+    if (picked.length === 1 && picked[0] === 2n) break;
+  }
   s.rounds.push({
     id: 1n, collection: DEMO_COLLECTION, ticketPrice: milli(0.01), ticketsSold: 12, endTime: now + DAY, requestedAt: 0, feeBps: Number(POT_FEE), status: 1, winner: ZERO, minPot: MIN_POT,
     entries: [{ buyer: NPC_A, count: 7 }, { buyer: NPC_B, count: 5 }],
@@ -255,12 +348,16 @@ export function resetDemo() {
     id: 1n, collection: DEMO_COLLECTION, startPrice: ETH, closeTime: now + DAY / 3, resolveTime: now + (10 * DAY) / 3, higherPool: milli(0.5), lowerPool: milli(0.3), outcome: 0, feeBps: 300n, deadBandBps: DEAD_BAND,
     stakes: new Map(),
   });
-  s.vaultRaffles.push({ id: 1n, collection: DEMO_COLLECTION, tokenId: 23n, drawAfter: now + DAY / 4, requestedAt: 0, status: 1, winner: ZERO });
+  s.vaultRaffles.push(
+    // holding #5, set aside for players; won ten days ago and still vesting
+    { id: 1n, collection: DEMO_COLLECTION, tokenId: 14n, drawAfter: now - 133 * DAY, requestedAt: now - 10 * DAY, status: 3, winner: NPC_B, claimableAt: now - 10 * DAY + VESTING_PERIOD, minPointsRequired: minPointsFor(milli(0.7)) },
+    // holding #1, sent to a raffle by the owner
+    { id: 2n, collection: DEMO_COLLECTION, tokenId: 23n, drawAfter: now + DAY / 4, requestedAt: 0, status: 1, winner: ZERO, claimableAt: 0, minPointsRequired: minPointsFor(milli(0.55)) },
+  );
   log("Marketplace", "/trade/marketplace", "Collection offer: 3 × 1 ETH", NPC_A);
   log("Lottery", "/play/lottery", "Lottery round #1 opened at 0.01 ETH a ticket");
   log("Ticket raffle", "/play/ticket-raffles", "Raffle #1 opened for token #22 at 0.05 ETH a ticket", NPC_A);
 }
-resetDemo();
 
 // ---------------------------------------------------------------- helpers
 
@@ -347,6 +444,148 @@ function restartableAt(a: { startPrice: bigint; endPrice: bigint; startTime: num
   }
   return a.startTime + halvings * DAY + DAY;
 }
+// ---------------------------------------------------------------- the vault's moving lock
+
+const dayOf = (t: number) => Math.floor(t / DAY);
+/** A 32-bit integer hash (murmur3's finaliser over two inputs). */
+function mix(a: number, b: number): number {
+  let h = Math.imul(a ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul((b + 0x6d2b79f5) | 0, 0xc2b2ae35);
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x7feb352d);
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x846ca68b);
+  h ^= h >>> 16;
+  return h >>> 0;
+}
+let drawSalt = 1;
+/** The simulated provider's random word for an unlock-draw request. */
+const drawWord = (requestId: bigint) => mix(Number(requestId), drawSalt);
+/** `Vault.medianFloorAt`: the lower median of the samples of the 30 days up to `asOf`, with at least 15 of them. */
+function medianFloor(asOf = demoNow()): bigint | undefined {
+  const prices = s.vault.samples.filter((x) => x.takenAt <= asOf && x.takenAt + VAULT.FLOOR_SAMPLES * DAY > asOf).map((x) => x.price).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return prices.length < VAULT.MIN_FLOOR_SAMPLES ? undefined : prices[Math.floor((prices.length - 1) / 2)];
+}
+/** `Vault.drawMedianFloor`: the median as it stood when the current draw was requested. */
+const drawMedianFloor = () => (s.vault.draw.seedRequestedAt === 0 ? undefined : medianFloor(s.vault.draw.seedRequestedAt));
+/** `Vault.heldCount`: holdings still in the vault. */
+const heldCount = () => s.holdings.filter((h) => h.status !== 4).length;
+/** `Vault.releaseAllowance`. */
+function releaseAllowance(now = demoNow()): number {
+  const w = s.vault.window;
+  if (w.start === 0 || now >= w.start + VAULT.RELEASE_PERIOD) return releaseCap(heldCount());
+  return Math.max(0, w.cap - w.used);
+}
+/** `Vault.isPicked`: only holdings whose lock had ended when the draw was requested take part. */
+function isPicked(h: R.Holding, now = demoNow()): boolean {
+  const d = s.vault.draw;
+  if (h.status !== 1 || h.players) return false;
+  if (d.seedArrivedAt === 0 || now >= d.seedArrivedAt + VAULT.SEED_LIFETIME) return false;
+  if (h.lockedUntil > d.seedRequestedAt || h.acquiredAt > d.seedRequestedAt) return false;
+  return mix(d.seed, Number(h.id)) % 10_000 < drawChanceBps(d.seedRequestedAt - h.acquiredAt);
+}
+/** `Vault.canUnlock`: picked, the median floor at the multiple the holding's age requires, and room under the cap. */
+function canUnlock(h: R.Holding, now = demoNow()): boolean {
+  if (!isPicked(h, now)) return false;
+  const median = drawMedianFloor();
+  if (median === undefined || median < requiredFloor(h.purchasePrice, s.vault.draw.seedRequestedAt - h.acquiredAt)) return false;
+  return releaseAllowance(now) !== 0;
+}
+function sampleFloor(now: number) {
+  const v = s.vault;
+  if (v.lastSampleSlot >= dayOf(now) + 1) fail("Today's floor sample for this collection has already been taken.");
+  v.lastSampleSlot = dayOf(now) + 1;
+  v.samples.push({ price: salesFloor(), takenAt: now });
+  if (v.samples.length > 2 * VAULT.FLOOR_SAMPLES) v.samples.shift();
+  v.sampleCount++;
+}
+function requestDraw(now: number) {
+  const d = s.vault.draw;
+  if (d.pending && now < d.requestedAt + VAULT.ROUND_TIMEOUT) fail("Today's draw has been requested and is waiting for its random number.");
+  if (d.requestedAt !== 0 && now < d.requestedAt + VAULT.ROUND_INTERVAL) fail(`Too early: possible from ${dateTime(d.requestedAt + VAULT.ROUND_INTERVAL)}.`);
+  // one word at a time: a new request retires the last result
+  Object.assign(d, { pending: true, requestedAt: now, requestId: d.requestId + 1n, seedArrivedAt: 0 });
+}
+function answerDraw(now: number) {
+  const d = s.vault.draw;
+  Object.assign(d, { pending: false, seed: drawWord(d.requestId), seedRequestedAt: d.requestedAt, seedArrivedAt: now });
+  const picked = s.holdings.filter((h) => isPicked(h, now)).map((h) => `#${h.id}`);
+  log("Vault", "/vault/holdings", picked.length ? `Today's unlock draw picked holding ${picked.join(", ")}` : "Today's unlock draw picked no holding", undefined, now);
+}
+function unlockHolding(h: R.Holding, now: number, by?: Address) {
+  if (!h || h.status !== 1 || !canUnlock(h, now)) {
+    fail("Unlock conditions are not met: today's draw must have picked this holding, the 30-day median floor must reach the multiple its age requires, and the collection's weekly release cap must have room.");
+  }
+  const w = s.vault.window;
+  if (w.start === 0 || now >= w.start + VAULT.RELEASE_PERIOD) Object.assign(w, { start: now, cap: releaseCap(heldCount()), used: 0 });
+  w.used++;
+  const bps = requiredFloorBps(s.vault.draw.seedRequestedAt - h.acquiredAt);
+  s.vault.unlockBps.set(h.id, bps);
+  // `Vault.unlock` remembers the median floor as of the draw, capped at 16 times the unlock price
+  const median = drawMedianFloor()!;
+  const cap = ((h.purchasePrice * BigInt(bps)) / BPS) * 16n;
+  s.unlockFloor.set(h.id, median > cap ? cap : median);
+  h.status = 2;
+  h.unlockedAt = now;
+  log("Vault", "/vault/holdings", `Vault holding #${h.id} unlocked`, by, now);
+}
+function releaseToPlayers(h: R.Holding | undefined, now: number, by?: Address) {
+  if (!h?.players) fail("This holding is not set aside for players.");
+  if (h.status !== 1) fail(`Not possible in the item's current state (status code ${h.status}).`);
+  if (now < h.lockedUntil) fail(`Too early: possible from ${dateTime(h.lockedUntil)}.`);
+  h.status = 4;
+  s.owner.set(h.tokenId, DEMO_DEPLOYMENT.vaultRaffle);
+  const id = BigInt(s.vaultRaffles.length + 1);
+  s.vaultRaffles.push({ id, collection: h.collection, tokenId: h.tokenId, drawAfter: now + ANNOUNCE_PERIOD, requestedAt: 0, status: 1, winner: ZERO, claimableAt: 0, minPointsRequired: minPointsFor(h.purchasePrice) });
+  log("Vault", "/vault/raffles", `Holding #${h.id} sent to the players' raffle (vault raffle #${id})`, by, now);
+}
+/**
+ * The demo's keeper catches up to `now`, in time order: the draw's answer arrives, the day's floor
+ * sample is taken, picked holdings are unlocked and due players' holdings sent to the raffle (each a
+ * few hours late, leaving the visitor time to do it), and the next draw is requested. Whatever the
+ * visitor already did is skipped.
+ */
+function keeper(now = demoNow()) {
+  const v = s.vault;
+  for (let guard = 0; guard < 10_000; guard++) {
+    const from = v.keeperUpTo;
+    const steps: [number, () => void][] = [];
+    if (v.draw.pending) {
+      const at = v.draw.requestedAt + DRAW_ANSWER_DELAY;
+      steps.push([at, () => answerDraw(at)]);
+    }
+    let day = Math.max(v.lastSampleSlot, dayOf(from));
+    if (day * DAY + KEEPER_AT < from) day++;
+    const sampleAt = day * DAY + KEEPER_AT;
+    steps.push([sampleAt, () => sampleFloor(sampleAt)]);
+    const seed = v.draw.seedArrivedAt;
+    if (seed !== 0 && v.keeperUnlocked !== seed) {
+      const at = Math.max(seed + KEEPER_GRACE, from);
+      steps.push([
+        at,
+        () => {
+          v.keeperUnlocked = seed;
+          for (const h of s.holdings) if (canUnlock(h, at)) unlockHolding(h, at);
+        },
+      ]);
+    }
+    for (const h of s.holdings) {
+      if (!h.players || h.status !== 1) continue;
+      const at = Math.max(h.lockedUntil + KEEPER_GRACE, from);
+      steps.push([at, () => releaseToPlayers(h, at)]);
+    }
+    if (!v.draw.pending) {
+      const readyAt = v.draw.requestedAt + VAULT.ROUND_INTERVAL;
+      const at = Math.max(readyAt, dayOf(readyAt) * DAY + KEEPER_AT, from);
+      steps.push([at, () => requestDraw(at)]);
+    }
+    const [at, step] = steps.sort((a, b) => a[0] - b[0])[0];
+    if (at > now) break;
+    step();
+    v.keeperUpTo = Math.max(from, at);
+  }
+  v.keeperUpTo = Math.max(v.keeperUpTo, now);
+}
+
 const ticketsOf = (entries: Entry[], who: Address) => entries.filter((e) => e.buyer === who).reduce((n, e) => n + e.count, 0);
 function holderOf(entries: Entry[], ticket: number): Address {
   let upTo = 0;
@@ -367,7 +606,6 @@ function later(ms: number, fn: () => void) {
 
 // ---------------------------------------------------------------- reads
 
-// (function declarations: resetDemo, which runs when this module loads, already uses them)
 function houseFunds() {
   return { bankroll: s.bankroll, reserved: s.reserved, openWagers: s.openWagers, totalShares: s.totalShares };
 }
@@ -441,8 +679,10 @@ function floorBid(): R.FloorBid {
   return { budget: s.budget, currentBid: bid, curvePrice: curvePrice(), minBid: minBid(), isFillable: bid !== 0n && bid >= minBid(), active: true, ...s.bid, fillCooldown: 0, nextFillAt: 0 };
 }
 function holdingsNow(): R.Holding[] {
+  keeper();
   return [...s.holdings]
     .reverse()
+    .map((h) => ({ ...h, picked: isPicked(h), canUnlock: canUnlock(h) }))
     .map((h) => (h.auction ? { ...h, auction: { ...h.auction, currentPrice: auctionPrice(h.auction), atReserve: auctionPrice(h.auction) <= h.auction.endPrice } } : h));
 }
 function roundView(r: Round): R.LotteryRound {
@@ -499,8 +739,21 @@ export const demoReads = {
       maxStartPriceAge: MAX_START_PRICE_AGE,
     };
   },
-  holdings: (): R.VaultState => ({ holdings: holdingsNow(), holdingCount: BigInt(s.holdings.length), owner: DEMO_DEPLOYMENT.owner, governanceWindow: 30 * DAY, auctionStartMultiple: 16, auctionHalfLife: DAY, auctionRestartDwell: DAY }),
-  raffles: (): R.Raffles => ({ raffles: [...s.vaultRaffles].reverse(), raffleCount: BigInt(s.vaultRaffles.length), totalPoints: s.points.active + s.points.others, nextDrawAt: s.nextDrawAt, drawInFlight: s.vaultRaffles.some((r) => r.status === 2), minPointsToDraw: MIN_POINTS_TO_DRAW }),
+  holdings(): R.VaultState {
+    const holdings = holdingsNow();
+    const v = s.vault;
+    const { seed: _seed, ...draw } = v.draw;
+    return {
+      holdings, holdingCount: BigInt(s.holdings.length), owner: DEMO_DEPLOYMENT.owner, governanceWindow: 30 * DAY, auctionStartMultiple: 16, auctionHalfLife: DAY, auctionRestartDwell: DAY,
+      draw,
+      collections: { [DEMO_COLLECTION.toLowerCase()]: { median: medianFloor(), drawMedian: drawMedianFloor(), samples: v.sampleCount, lastSampleSlot: v.lastSampleSlot, allowance: releaseAllowance(), held: heldCount(), window: { ...v.window } } },
+      playersShareBps: PLAYERS_SHARE,
+    };
+  },
+  raffles(): R.Raffles {
+    keeper();
+    return { raffles: [...s.vaultRaffles].reverse(), raffleCount: BigInt(s.vaultRaffles.length), totalPoints: s.points.active + s.points.others, nextDrawAt: s.nextDrawAt, drawInFlight: s.vaultRaffles.some((r) => r.status === 2), minPointsToDraw: MIN_POINTS_TO_DRAW, vestingPeriod: VESTING_PERIOD, pointsPerPrizeWei: POINTS_PER_PRIZE_WEI };
+  },
   games: (): R.GamesState => ({ bankroll: s.bankroll, reserved: s.reserved, openWagers: s.openWagers, maxOpenWagersBps: MAX_OPEN_WAGERS_BPS, betsResumeAt: s.betsResumeAt, maxTotalExposureBps: 2_000n, edgeBps: EDGE, minBet: MIN_BET, maxExposureBps: 100n, maxWagerBps: MAX_WAGER_BPS, maxWager: (s.bankroll * MAX_WAGER_BPS) / BPS, bankrollShareBps: BANKROLL_SHARE, supported: true, refundTimeout: REFUND_TIMEOUT, userOwed: 0n }),
   gameQuote: (wager: bigint, chanceBps: number): R.GameQuote => diceQuote(wager, chanceBps, EDGE),
   userBets: (): R.GameBet[] => [...s.bets].reverse().map(({ player: _p, edgeBps: _e, placedAt: _t, kept: _k, seq: _s, ...bet }) => bet),
@@ -532,7 +785,7 @@ export const demoReads = {
   points: (): R.PointsBalance => ({ active: s.points.active, pending: s.points.pending }),
   activity: (): R.ActivityItem[] => s.activity.slice(0, 12),
   fairness: (): R.FairnessStatus => ({
-    sources: (["Games", "Lottery", "Ticket raffles", "Vault raffles"] as const).map((module) => ({ module, provider: DEMO_DEPLOYMENT.randomness, kind: "mock" as const, isMock: true })),
+    sources: (["Games", "Lottery", "Ticket raffles", "Vault raffles", "Vault unlock draw"] as const).map((module) => ({ module, provider: DEMO_DEPLOYMENT.randomness, kind: "mock" as const, isMock: true })),
     anyMock: true, anyUnknown: false, gamesOwner: DEMO_DEPLOYMENT.owner, ownerIsContract: false,
     games: { edgeBps: EDGE, minBet: MIN_BET, maxExposureBps: 100n, maxTotalExposureBps: 2_000n, refundTimeout: REFUND_TIMEOUT, maxWagerBps: MAX_WAGER_BPS, bankrollShareBps: BANKROLL_SHARE },
     lottery: { feeBps: POT_FEE, minPot: MIN_POT }, ticketRaffle: { feeBps: POT_FEE, minPot: MIN_POT },
@@ -671,21 +924,27 @@ const handlers: Record<string, Handler> = {
     s.owner.set(id, DEMO_DEPLOYMENT.vault);
     s.sales.push({ price, time: now });
     const vaultId = BigInt(s.holdings.length + 1);
-    s.holdings.push({ id: vaultId, collection: DEMO_COLLECTION, tokenId: id, purchasePrice: price, acquiredAt: now, lockedUntil: now + 180 * DAY, unlockedAt: 0, status: 1, canUnlock: false });
-    log("Floor bid", "/vault/holdings", `Bought token #${id} for ${wei(price)}, now vault holding #${vaultId}`, DEMO_USER);
+    // `Vault.deposit`: a running remainder sets aside exactly one purchase in five for players
+    const credit = s.vault.playersCredit + PLAYERS_SHARE;
+    const players = credit >= Number(BPS);
+    s.vault.playersCredit = players ? credit - Number(BPS) : credit;
+    s.holdings.push({ id: vaultId, collection: DEMO_COLLECTION, tokenId: id, purchasePrice: price, acquiredAt: now, lockedUntil: now + (players ? VAULT.PLAYERS_LOCK : VAULT.MIN_LOCK), unlockedAt: 0, status: 1, canUnlock: false, players, picked: false });
+    log("Floor bid", "/vault/holdings", `Bought token #${id} for ${wei(price)}, now vault holding #${vaultId}${players ? ", set aside for players" : ""}`, DEMO_USER);
   },
 
   unlock([vaultId]) {
-    const h = s.holdings.find((x) => x.id === vaultId);
-    if (!h || h.status !== 1) fail("This holding is not locked.");
-    if (demoNow() < h.lockedUntil || salesFloor() < (h.purchasePrice * 13_000n) / BPS) {
-      fail("Unlock conditions are not met: the lock must have ended and the floor must be at least 130% of the purchase price.");
-    }
-    // `Vault.unlock` remembers the floor seen now, capped at 16 times the unlock price
-    const cap = ((h.purchasePrice * 13_000n) / BPS) * 16n;
-    s.unlockFloor.set(h.id, salesFloor() > cap ? cap : salesFloor());
-    h.status = 2;
-    h.unlockedAt = demoNow();
+    unlockHolding(s.holdings.find((x) => x.id === vaultId)!, demoNow(), DEMO_USER);
+  },
+  sampleFloor() {
+    sampleFloor(demoNow());
+    log("Vault", "/vault/holdings", `Today's floor sample taken: ${wei(salesFloor())}`, DEMO_USER);
+  },
+  requestUnlockRound() {
+    requestDraw(demoNow());
+    log("Vault", "/vault/holdings", "Today's unlock draw requested", DEMO_USER);
+  },
+  releaseToPlayers([vaultId]) {
+    releaseToPlayers(s.holdings.find((x) => x.id === vaultId), demoNow(), DEMO_USER);
   },
   startAuction([vaultId]) {
     const h = s.holdings.find((x) => x.id === vaultId);
@@ -697,8 +956,9 @@ const handlers: Record<string, Handler> = {
     if (!h || !(restart || (h.status === 2 && now >= h.unlockedAt + 30 * DAY))) {
       fail(h?.status === 3 ? "The auction is still running: it can be restarted only once its price has rested at the reserve for a day." : "Only the owner can start this auction yet; anyone can 30 days after the holding unlocked.");
     }
-    // the reserve is the higher of the floor and 130% of the purchase price; it opens at 16 times that
-    const unlockAt = (h.purchasePrice * 13_000n) / BPS;
+    // the reserve is the higher of the floor and the multiple recorded at unlock (130% after a
+    // governance unlock) of the purchase price; it opens at 16 times that
+    const unlockAt = (h.purchasePrice * BigInt(s.vault.unlockBps.get(h.id) ?? VAULT.UNLOCK_START_BPS)) / BPS;
     const reserve = salesFloor() > unlockAt ? salesFloor() : unlockAt;
     // ...or at 16 times the floor seen when the holding unlocked on its own, if that is higher
     const seen = s.unlockFloor.get(h.id) ?? 0n;
@@ -790,7 +1050,7 @@ const handlers: Record<string, Handler> = {
   requestLicense([vaultId, tier], value) {
     const t = TIERS[Number(tier)] ?? fail("This licence tier is not available for the collection.");
     const h = s.holdings.find((x) => x.id === vaultId);
-    if (!h || h.status !== 1) fail("Only holdings locked in the vault can be licensed.");
+    if (!h || h.status !== 1 || h.players) fail("Only holdings locked in the vault, and not set aside for players, can be licensed.");
     if (value !== t.price) fail(`The payment must be exactly ${wei(t.price)}.`);
     pay(value);
     fee(value);
@@ -967,7 +1227,8 @@ const byContract: Record<string, Record<string, Handler>> = {
       if (demoNow() < s.nextDrawAt) fail("Too early: no draw within an hour of the previous one.");
       if (s.vaultRaffles.some((x) => x.status === 2)) fail("Another raffle's draw is in flight. Wait for it to complete or be reset.");
       const activated = s.points.active + s.points.others;
-      if (activated < MIN_POINTS_TO_DRAW) fail(`Only ${wei(activated).replace(" ETH", "")} points are activated; a draw needs at least ${wei(MIN_POINTS_TO_DRAW).replace(" ETH", "")}.`);
+      // `VaultRaffle.minPointsRequired`: the minimum, or the prize's value times the points per wei, if more
+      if (activated < r.minPointsRequired) fail(`Only ${wei(activated).replace(" ETH", "")} points are activated; a draw needs at least ${wei(r.minPointsRequired).replace(" ETH", "")}.`);
       r.status = 2;
       r.requestedAt = demoNow();
       later(2_600, () => {
@@ -976,6 +1237,7 @@ const byContract: Record<string, Record<string, Handler>> = {
         const point = (BigInt(randomInt(1_000_000)) * total) / 1_000_000n;
         r.winner = point < s.points.active ? DEMO_USER : NPC_A;
         r.status = 3;
+        r.claimableAt = demoNow() + VESTING_PERIOD;
         // leave a window for points to be activated before the next raffle is drawn
         s.nextDrawAt = demoNow() + 3_600;
         if (r.winner === DEMO_USER) s.points.active = (s.points.active * 2_000n) / BPS;
@@ -984,6 +1246,7 @@ const byContract: Record<string, Record<string, Handler>> = {
     claim([id]) {
       const r = s.vaultRaffles.find((x) => x.id === id) ?? fail("This raffle does not exist.");
       if (r.status !== 3) fail("This raffle has no prize to deliver.");
+      if (demoNow() < r.claimableAt) fail(`Too early: possible from ${dateTime(r.claimableAt)}.`);
       r.status = 4;
       s.owner.set(r.tokenId, r.winner);
     },
@@ -993,6 +1256,7 @@ const byContract: Record<string, Record<string, Handler>> = {
 /** Apply a transaction to the simulated state. Throws a readable Error if the contract would revert. */
 export async function demoWrite(call: Call): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 350));
+  keeper();
   const handler = byContract[call.address]?.[call.functionName] ?? handlers[call.functionName];
   if (!handler) fail(`"${call.functionName}" is not part of the demo.`);
   handler(call.args, call.value ?? 0n);
@@ -1019,3 +1283,6 @@ export const demoBidFills = (): { time: number; price: bigint; tokenId: bigint; 
 /** Times the bid curve restarted because money reached a budget that could not cover it, oldest first. */
 export const demoCurveRestarts = (): number[] => s.restarts.map((r) => r.time);
 export const demoActivityFeed = (limit = 40): R.ActivityItem[] => s.activity.slice(0, limit);
+
+// Last, once every helper above exists.
+resetDemo();

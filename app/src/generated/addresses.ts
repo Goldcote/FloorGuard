@@ -18,6 +18,7 @@ export type Deployment = {
   pushFloorOracle: Address;
   randomness: Address;
   gamesRandomness: Address;
+  vaultRandomness: Address;
   ticketRaffleRandomness: Address;
   lotteryRandomness: Address;
   owner: Address;

@@ -13,7 +13,11 @@ It has two modes, switched in the header:
   contracts' current rules: a bid that is the curve limited by the budget, a minimum bid, a curve
   that restarts when money reaches a budget that could not cover it, points credited once per fee,
   the prediction markets' dead band and short betting window, the games' wager cap and bankroll
-  share, house shares, and the vault raffle's minimum of activated points. It is labelled
+  share, house shares, the vault's moving lock (daily floor samples and their median, a daily draw
+  with a chance rising with age, a required floor falling with age, the weekly release cap, one
+  purchase in five set aside for players and raffled after 30 days; a simulated keeper does the
+  daily steps later in each simulated day if the visitor has not), prize vesting, and the vault
+  raffle's minimum of activated points. It is labelled
   "Demo: simulated, no real transactions, play money" on every page and is not fair play.
 - **Live**: a real chain through wagmi and viem. There is no analytics, no CDN, no remote font or
   image, and no backend. What the browser contacts: the page's own origin (the bundle), and the
@@ -42,8 +46,14 @@ What each of the non-game pages shows:
   as a ceiling and as fuel. The curve and the bid are told apart: "the curve is at X; the budget can
   pay Y, so the bid is Y". In the demo the chart has the whole history; on a chain it draws the
   climb that is running now.
-- **Vault**: each holding with its time lock and price lock, its state, its licence tiers, and each
-  auction as a falling price on a log scale with the reserve as the floor line.
+- **Vault**: the moving lock. The day's unlock draw (requested, waiting, what it picked), each
+  collection's 30-day median floor, today's sample and its weekly release cap, with buttons for the
+  permissionless steps (take today's floor sample, request today's draw). Each holding with its state,
+  age, the date it joins the draw, its chance in today's draw, the floor its age requires against the
+  median, whether it was picked today, and Unlock when all of that holds; players' holdings with
+  their 30-day countdown and "Send to the players' raffle"; its licence tiers; and each auction as a
+  falling price on a log scale with the reserve as the floor line. Vault raffle prizes show until
+  when they vest, and Claim only once they can be claimed.
 - **Marketplace**: collection offers as a ladder (the protocol's own bid sits in it at its price),
   single-token offers, and a preview of who receives what before accepting or offering.
 - **The house** (`#/play/house`): the games bankroll (free, set aside for open bets, wagers in
@@ -155,12 +165,17 @@ Things to know on a local chain:
 - Unlocking vault holdings by governance, sending them to a raffle, pushing an oracle floor and
   setting a collection's project share are owner actions with no button in the app. Use `cast send`
   with `--unlocked --from <account #0>`.
-- A vault raffle draw needs a randomness answer. On chain 31337 only, a raffle in the Drawing state shows a
-  dashed "Local only: draw with mock randomness" button that calls `MockRandomness.fulfill`.
-- To walk through everything: a holding unlocks 180 days after purchase and only if the sales floor
-  (three recent collection-offer or floor-bid sales) is at least 130% of its purchase price; a raffle
-  can be drawn 7 days after it opens, and only once someone has activated points; a prediction market
-  resolves only with an oracle price pushed after its resolve time.
+- A vault raffle draw and the vault's daily unlock draw need a randomness answer. On chain 31337 only,
+  a raffle in the Drawing state, and the vault's draw while it waits, show a dashed "Local only" button
+  that calls `MockRandomness.fulfill`.
+- To walk through everything: a holding joins the daily unlock draw 90 days after purchase; a picked
+  holding unlocks only if the median of the last 30 daily floor samples (at least 15; take one a day
+  with the button, which needs a fresh sales floor, three recent collection-offer or floor-bid sales) is
+  at least 130% of its purchase price at 90 days, falling to 100% at a year, and only within the
+  collection's weekly release cap. Every fifth purchase is set aside for players and can be sent to
+  the vault raffle after 30 days. A raffle can be drawn 7 days after it opens, and only once someone
+  has activated points; its prize can be claimed 30 days after the draw. A prediction market resolves
+  only with an oracle price pushed after its resolve time.
 
 ## Games (Play)
 

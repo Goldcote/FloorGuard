@@ -2,11 +2,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parseEther } from "viem";
 import { DEMO_CLIENT, DEMO_COLLECTION, DEMO_DEPLOYMENT as d, baseAfterSale, demoBidFills, demoCurveRestarts, demoOwnedTokens, demoReads, demoWrite, resetDemo } from "../src/demo/sim";
+import { claimRaffleCall, releaseToPlayersCall, requestUnlockRoundCall, sampleFloorCall } from "../src/lib/calls";
+import { sampledToday } from "../src/lib/reads";
+import { drawChanceBps, requiredFloor, requiredFloorBps } from "../src/viz/curves";
 import { buyCall, startAuctionCall, unlockCall, buyLotteryTicketsCall, claimMarketCall, createMarketCall, drawRaffleCall, placeBetCall, playCall, resolveMarketCall, sellCall, spinCall, acceptOfferCall, flushPointsCall } from "../src/lib/calls";
 import { diceQuote, recomputeBet, slotsExposure, gameExposure } from "../src/lib/gameMath";
 import { maxGameWager, readFloorBid, readGames, readOverview, readUserBets } from "../src/lib/reads";
 
 const ETH = parseEther("1");
+const DAY = 86_400;
 
 describe("demo simulator", () => {
   beforeEach(() => {
@@ -92,8 +96,9 @@ describe("demo simulator", () => {
     // the next climb starts one step (15% in the demo, the AddCollection default) below the sale
     expect(demoReads.floorBid().basePrice).toBe((paid * 8_500n) / 10_000n);
     const vault = demoReads.holdings().holdings;
-    expect(vault[0]).toMatchObject({ tokenId: 2n, purchasePrice: paid, status: 1 });
-    expect(vault[0].lockedUntil - vault[0].acquiredAt).toBe(180 * 86_400);
+    expect(vault[0]).toMatchObject({ tokenId: 2n, purchasePrice: paid, status: 1, players: false, picked: false, canUnlock: false });
+    // a holding takes no part in the unlock draw for its first 90 days
+    expect(vault[0].lockedUntil - vault[0].acquiredAt).toBe(90 * 86_400);
   });
 
   it("lottery: exact payment, tickets counted, draw pays the pot less 5%", async () => {
@@ -240,10 +245,19 @@ describe("demo simulator", () => {
 
   it("vault raffle: no draw below the minimum of activated points", async () => {
     expect(demoReads.raffles().minPointsToDraw).toBe(parseEther("100"));
-    await expect(write(drawRaffleCall(d, 1n))).rejects.toThrow(/announce period/);
+    // each raffle also needs 10,000 activated points per wei the vault paid for its prize: 5,500 for 0.55 ETH
+    expect(demoReads.raffles().pointsPerPrizeWei).toBe(10_000n);
+    expect(demoReads.raffles().raffles.find((r) => r.id === 2n)!.minPointsRequired).toBe(parseEther("5500"));
+    await expect(write(drawRaffleCall(d, 2n))).rejects.toThrow(/announce period/);
     await vi.advanceTimersByTimeAsync(40_000);
-    await write(drawRaffleCall(d, 1n)); // 400 points are activated in the demo, above the minimum
+    await write(drawRaffleCall(d, 2n)); // 6,000 points are activated in the demo, above what it needs
     expect(demoReads.raffles().raffles[0].status).toBe(2);
+    await vi.advanceTimersByTimeAsync(3_000);
+    // the winner is drawn, and the prize vests for 30 days before anyone can deliver it
+    const won = demoReads.raffles().raffles[0];
+    expect(won).toMatchObject({ id: 2n, status: 3 });
+    expect(won.claimableAt - demoReads.chainTime()).toBeGreaterThan(30 * DAY - 600);
+    await expect(write(claimRaffleCall(d, 2n))).rejects.toThrow(/Too early: possible from/);
   });
 
   it("vault: an unsold auction can be restarted once its price sits at the reserve, and a locked holding stays locked", async () => {
@@ -260,7 +274,104 @@ describe("demo simulator", () => {
     // the floor is 1 ETH and the vault paid 0.8: the reserve is 130% of that, and it opens at 16 times it
     expect(after).toMatchObject({ endPrice: parseEther("1.04"), startPrice: parseEther("16.64"), atReserve: false });
     expect(after.startTime).toBeGreaterThan(before.auction!.startTime);
-    const locked = demoReads.holdings().holdings.find((h) => h.status === 1)!;
+    // a holding today's draw did not pick stays locked
+    const locked = demoReads.holdings().holdings.find((h) => h.status === 1 && !h.players && !h.picked)!;
     await expect(write(unlockCall(d, locked.id))).rejects.toThrow(/Unlock conditions are not met/);
+  });
+
+  describe("vault: the moving lock", () => {
+    const vault = () => demoReads.holdings();
+    const holding = (id: bigint) => vault().holdings.find((h) => h.id === id)!;
+    const collection = () => vault().collections[DEMO_COLLECTION.toLowerCase()];
+    /** Simulated seconds as fake-timer milliseconds (the demo runs 600 times faster). */
+    const sim = (seconds: number) => vi.advanceTimersByTimeAsync(Math.ceil((seconds * 1000) / 600));
+
+    it("starts with a month of floor samples and this morning's draw, which picked an old holding that the floor and the cap allow", () => {
+      const v = vault();
+      expect(v.playersShareBps).toBe(2_000);
+      expect(v.draw).toMatchObject({ pending: false, requestId: 1n });
+      expect(v.draw.seedArrivedAt).toBeLessThan(demoReads.chainTime());
+      // 29 daily samples: a usable median (it needs 15 in the last 30 days)
+      expect(collection()).toMatchObject({ samples: 29, allowance: 1, held: 8, window: { start: 0, cap: 0, used: 0 } });
+      expect(collection().median).toBeGreaterThan(parseEther("0.9"));
+      expect(sampledToday(collection(), demoReads.chainTime())).toBe(false);
+      // holding #2 is 340 days old: picked, and the median is above the ~102.7% of its price it needs
+      expect(holding(2n)).toMatchObject({ status: 1, picked: true, canUnlock: true, players: false });
+      const age = v.draw.seedRequestedAt - holding(2n).acquiredAt;
+      expect(requiredFloorBps(age)).toBe(10_274);
+      expect(drawChanceBps(age)).toBe(458);
+      // #3 was bought high: not picked, and the median is below what it needs anyway
+      expect(holding(3n)).toMatchObject({ picked: false, canUnlock: false });
+      expect(collection().median!).toBeLessThan(requiredFloor(holding(3n).purchasePrice, age));
+      // #7 joins the draw in two days; #10 is set aside for players and goes to the raffle in under a day
+      expect(holding(7n).lockedUntil - demoReads.chainTime()).toBe(2 * DAY);
+      expect(holding(10n)).toMatchObject({ players: true, status: 1 });
+      expect(holding(10n).lockedUntil - holding(10n).acquiredAt).toBe(30 * DAY);
+    });
+
+    it("unlock: anyone, while today's result lasts, within the weekly cap", async () => {
+      await write(unlockCall(d, 2n));
+      expect(holding(2n)).toMatchObject({ status: 2, canUnlock: false });
+      // the first unlock opens a weekly window: 5% of 8 held, at least one, and it is used
+      expect(collection()).toMatchObject({ allowance: 0, window: { cap: 1, used: 1 } });
+      await expect(write(unlockCall(d, 2n))).rejects.toThrow(/Unlock conditions are not met/);
+      await expect(write(unlockCall(d, 6n))).rejects.toThrow(/Unlock conditions are not met/);
+    });
+
+    it("the floor sample and the draw: once a day each, anyone, or the keeper later in the day", async () => {
+      await write(sampleFloorCall(d, DEMO_COLLECTION));
+      expect(collection().samples).toBe(30);
+      expect(sampledToday(collection(), demoReads.chainTime())).toBe(true);
+      await expect(write(sampleFloorCall(d, DEMO_COLLECTION))).rejects.toThrow(/already been taken/);
+      // the next draw can be requested a day after this morning's
+      const nextAt = vault().draw.requestedAt + DAY;
+      await expect(write(requestUnlockRoundCall(d))).rejects.toThrow(/Too early: possible from/);
+      await sim(nextAt - demoReads.chainTime());
+      await write(requestUnlockRoundCall(d));
+      expect(vault().draw).toMatchObject({ pending: true, requestId: 2n });
+      await expect(write(requestUnlockRoundCall(d))).rejects.toThrow(/waiting for its random number/);
+      await sim(700); // the simulated provider answers
+      const draw = vault().draw;
+      expect(draw).toMatchObject({ pending: false, seedRequestedAt: draw.requestedAt });
+      expect(draw.seedArrivedAt).toBe(draw.requestedAt + 600);
+      // holding #2 was not unlocked yesterday, so the keeper did it before the result expired
+      expect(holding(2n).status).toBe(2);
+      // a week later the keeper has sampled every day and requested every draw
+      await sim(7 * DAY);
+      expect(collection().samples).toBe(37);
+      expect(vault().draw.requestId).toBe(8n);
+      expect(demoReads.activity().some((a) => /unlock draw picked/.test(a.text))).toBe(true);
+    });
+
+    it("the players' share: one purchase in five, locked 30 days, then to the vault raffle", async () => {
+      await expect(write(releaseToPlayersCall(d, 10n))).rejects.toThrow(/Too early: possible from/);
+      await expect(write(releaseToPlayersCall(d, 9n))).rejects.toThrow(/not set aside for players/);
+      await sim(holding(10n).lockedUntil - demoReads.chainTime());
+      await write(releaseToPlayersCall(d, 10n));
+      expect(holding(10n).status).toBe(4);
+      const opened = demoReads.raffles().raffles[0];
+      // its 0.92 ETH prize needs 9,200 activated points: more than the demo's 6,000, so no draw yet
+      expect(opened).toMatchObject({ id: 3n, tokenId: 24n, status: 1, claimableAt: 0, minPointsRequired: parseEther("9200") });
+      expect(opened.drawAfter - demoReads.chainTime()).toBeGreaterThan(7 * DAY - 60);
+      await sim(opened.drawAfter - demoReads.chainTime());
+      await expect(write(drawRaffleCall(d, 3n))).rejects.toThrow(/Only 6000 points are activated; a draw needs at least 9200/);
+      // the next five purchases: the fifth is set aside for players (ten seeded, so it is #15)
+      for (const token of [1n, 2n, 3n, 4n, 5n]) await write(sellCall(d, DEMO_COLLECTION, token, 0n));
+      const bought = vault().holdings.slice(0, 5);
+      expect(bought.map((h) => [h.id, h.players])).toEqual([[15n, true], [14n, false], [13n, false], [12n, false], [11n, false]]);
+      expect(bought[0].lockedUntil - bought[0].acquiredAt).toBe(30 * DAY);
+      expect(bought[1].lockedUntil - bought[1].acquiredAt).toBe(90 * DAY);
+      // a players' holding never unlocks by the draw
+      await expect(write(unlockCall(d, 15n))).rejects.toThrow(/Unlock conditions are not met/);
+    });
+
+    it("a won prize vests for 30 days", async () => {
+      const won = demoReads.raffles().raffles.find((r) => r.id === 1n)!;
+      expect(won.status).toBe(3);
+      await expect(write(claimRaffleCall(d, 1n))).rejects.toThrow(/Too early: possible from/);
+      await sim(won.claimableAt - demoReads.chainTime());
+      await write(claimRaffleCall(d, 1n));
+      expect(demoReads.raffles().raffles.find((r) => r.id === 1n)!.status).toBe(4);
+    });
   });
 });
