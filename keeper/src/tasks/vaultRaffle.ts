@@ -1,5 +1,5 @@
 // VaultRaffle: draw once the announce period and any redraw cooldown have passed and points are
-// activated; reset a draw whose randomness never came; deliver prizes.
+// activated; reset a draw whose randomness never came; deliver prizes once they have vested.
 import type { Address } from "viem";
 import { range } from "../chain.ts";
 import { type Ctx, type Head, carryOut, firstOpen, readerAt } from "../context.ts";
@@ -16,6 +16,13 @@ export interface VaultRaffleEntry {
   requestedAt: bigint;
   status: number;
   winner: Address;
+  /** `VaultRaffle.claimableAt`: when a won prize has vested. Read only for won raffles, 0 otherwise. */
+  claimableAt: bigint;
+  /**
+   * `VaultRaffle.minPointsRequired`, for open raffles of a VaultRaffle that scales the minimum with the
+   * prize's value. Null when the contract has no such function: `minPointsToDraw` applies.
+   */
+  minPointsRequired?: bigint | null;
 }
 
 export interface VaultRaffleState {
@@ -48,7 +55,19 @@ export function decideVaultRaffle(state: VaultRaffleState): Decision {
     }
   }
   for (const r of state.raffles) {
-    if (r.status === VR.Won) act("claim", r.id, `deliver the prize to the winner ${r.winner}`);
+    if (r.status !== VR.Won) continue;
+    if (now >= r.claimableAt) {
+      act("claim", r.id, `deliver the vested prize to the winner ${r.winner}`);
+    } else {
+      decision.wakeAt.push(r.claimableAt);
+      decision.findings.push({
+        task: "vaultRaffle",
+        level: "info",
+        code: "prize_vesting",
+        message: `raffle ${r.id}: won by ${r.winner}, claimable in ${duration(r.claimableAt - now)}`,
+        data: { raffleId: r.id, winner: r.winner, claimableAt: r.claimableAt },
+      });
+    }
   }
 
   let drawInFlight = state.freezeCount !== 0n;
@@ -70,8 +89,9 @@ export function decideVaultRaffle(state: VaultRaffleState): Decision {
       wait("warn", "waiting_for_flush", `drawable, but ${state.pendingAccounts} account(s) still have pending points; a draw would lock them out`);
     } else if (state.totalPoints === 0n) {
       wait("warn", "no_points", "drawable, but no points are activated");
-    } else if (state.totalPoints < state.minPointsToDraw) {
-      wait("warn", "below_min_points", `drawable, but activated points ${state.totalPoints} are below minPointsToDraw ${state.minPointsToDraw}`);
+    } else if (state.totalPoints < (r.minPointsRequired ?? state.minPointsToDraw)) {
+      const required = r.minPointsRequired ?? state.minPointsToDraw;
+      wait("warn", "below_min_points", `drawable, but activated points ${state.totalPoints} are below the ${required} this raffle requires`);
     } else {
       act("draw", r.id, `announce period over since ${duration(now - r.drawAfter)}, ${state.totalPoints} points activated`);
       drawInFlight = true;
@@ -93,16 +113,20 @@ export async function fetchVaultRaffles(ctx: Ctx, head: Head): Promise<VaultRaff
   const r = readerAt(ctx, head);
   const count = await r.read<bigint>("vaultRaffle", "raffleCount");
   const from = ctx.cache.watermark("vaultRaffles");
+  const scaled = ctx.abis.vaultRaffle.some((i) => i.type === "function" && i.name === "minPointsRequired");
   const raffles = await r.map(range(from, count), async (id): Promise<VaultRaffleEntry> => {
     const s = await r.struct<RaffleStruct>("vaultRaffle", "raffles", [id]);
+    const status = Number(s.status);
     return {
       id,
       collection: s.collection,
       tokenId: s.tokenId,
       drawAfter: BigInt(s.drawAfter),
       requestedAt: BigInt(s.requestedAt),
-      status: Number(s.status),
+      status,
       winner: s.winner,
+      claimableAt: status === VR.Won ? await r.read<bigint>("vaultRaffle", "claimableAt", [id]) : 0n,
+      minPointsRequired: status === VR.Open && scaled ? await r.read<bigint>("vaultRaffle", "minPointsRequired", [id]) : null,
     };
   });
   ctx.cache.setWatermark("vaultRaffles", firstOpen(raffles, (x) => x.status === VR.Claimed, from, count));

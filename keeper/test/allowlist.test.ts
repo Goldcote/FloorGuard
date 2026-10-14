@@ -9,7 +9,7 @@ import { TARGET_CONTRACTS, type TargetContract } from "../src/types.ts";
 import { A, ABIS, ADDRESSES, ALL_OPT_INS, NO_OPT_INS } from "./helpers.ts";
 
 describe("allowlist", () => {
-  it("is exactly these fifteen calls", () => {
+  it("is exactly these eighteen calls", () => {
     // Selectors computed independently with `cast sig`. Adding to the allowlist means changing this too.
     expect(ALLOWED_SELECTORS).toEqual({
       predictionMarket: { resolve: "0x4f896d4f" },
@@ -18,9 +18,15 @@ describe("allowlist", () => {
       lottery: { draw: "0x3b304147", resetDraw: "0xe1cfc041", abort: "0xe50701f4" },
       ticketRaffle: { close: "0x0aebeb4e", settle: "0x8df82800", resetDraw: "0xe1cfc041", abort: "0xe50701f4" },
       games: { refund: "0x278ecde1" },
-      vault: { unlock: "0x6198e339", startAuction: "0x065de74c" },
+      vault: {
+        sampleFloor: "0x3ab2f409",
+        requestUnlockRound: "0x303bb381",
+        unlock: "0x6198e339",
+        releaseToPlayers: "0xca4bafe2",
+        startAuction: "0x065de74c",
+      },
     });
-    expect(Object.values(ALLOWLIST).flat()).toHaveLength(15);
+    expect(Object.values(ALLOWLIST).flat()).toHaveLength(18);
   });
 
   it("encodes an allowlisted call with no value", () => {
@@ -69,7 +75,7 @@ describe("allowlist", () => {
     expect(() => verifyAbis(ABIS)).not.toThrow();
     const payable = { ...ABIS, games: parseAbi(["function refund(uint256 requestId) payable"]) as Abi };
     expect(() => verifyAbis(payable)).toThrow(/payable/);
-    const other = { ...ABIS, vault: parseAbi(["function unlock(address who)", "function startAuction(uint256 id)"]) as Abi };
+    const other = { ...ABIS, vault: [...ABIS.vault.filter((i) => !("name" in i) || i.name !== "unlock"), ...parseAbi(["function unlock(address who)"])] as Abi };
     expect(() => verifyAbis(other)).toThrow(/does not match/);
     const missing = { ...ABIS, points: parseAbi(["function flush(address user)"]) as Abi };
     expect(() => verifyAbis(missing)).toThrow(/exactly one/);
@@ -106,6 +112,27 @@ describe("allowlist", () => {
       const buy = encodeFunctionData({ abi: ABIS.vault, functionName: "buy", args: [1n] });
       expect(() => assertSendable({ to: ADDRESSES.vault, data: buy, value: 0n }, ADDRESSES)).toThrow(/not allowlisted/);
       expect(() => assertSendable({ to: ADDRESSES.vault, data: "0x", value: 0n }, ADDRESSES)).toThrow(/no selector/);
+    });
+
+    it("refuses the Vault's randomness callback and owner-only raffle path, and accepts the new maintenance calls", () => {
+      // fulfillRandomness is permissioned to the provider; a keeper calling it could only fail, and must not try
+      const fulfill = encodeFunctionData({ abi: ABIS.vault, functionName: "fulfillRandomness", args: [1n, 2n] });
+      expect(() => assertSendable({ to: ADDRESSES.vault, data: fulfill, value: 0n }, ADDRESSES)).toThrow(/not allowlisted/);
+      const sendToRaffle = encodeFunctionData({ abi: ABIS.vault, functionName: "sendToRaffle", args: [1n] });
+      expect(() => assertSendable({ to: ADDRESSES.vault, data: sendToRaffle, value: 0n }, ADDRESSES)).toThrow(/not allowlisted/);
+      for (const [functionName, args] of [
+        ["sampleFloor", [A(1)]],
+        ["requestUnlockRound", []],
+        ["releaseToPlayers", [3n]],
+      ] as const) {
+        const call = encodeAction({ contract: "vault", functionName, args }, ABIS, ADDRESSES, NO_OPT_INS);
+        expect(call.to).toBe(ADDRESSES.vault);
+        expect(call.value).toBe(0n);
+        expect(call.data).toBe(encodeFunctionData({ abi: ABIS.vault, functionName, args } as never));
+      }
+      // the same selectors are refused on any other target
+      const sample = encodeFunctionData({ abi: ABIS.vault, functionName: "sampleFloor", args: [A(1)] });
+      expect(() => assertSendable({ to: ADDRESSES.vaultRaffle, data: sample, value: 0n }, ADDRESSES)).toThrow(/not allowlisted/);
     });
   });
 

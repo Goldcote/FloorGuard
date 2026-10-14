@@ -3,8 +3,8 @@
 //   anvil --port 8547
 //   npm test
 //
-// The test snapshots the chain, deploys the protocol with script/Deploy.s.sol, seeds it, and plays six
-// months of protocol life against the keeper. The keeper signs with anvil key #1, which owns nothing;
+// The test snapshots the chain, deploys the protocol with script/Deploy.s.sol, seeds it, and plays about
+// six months of protocol life against the keeper. The keeper signs with anvil key #1, which owns nothing;
 // everything that needs the owner (anvil key #0), a player or the mock randomness is done by the test.
 //
 // script/SeedLocal.s.sol is not used: it reverts with InvalidDuration against the current
@@ -20,8 +20,10 @@ import {
   type Hex,
   createTestClient,
   createWalletClient,
+  encodeAbiParameters,
   getAddress,
   http,
+  keccak256,
   parseEther,
   publicActions,
   zeroAddress,
@@ -91,6 +93,7 @@ describe.skipIf(!ready)("keeper against anvil", () => {
   let dir: string;
   let d: Deployment;
   let nft: Address;
+  let vaultRandomness: Address;
   const abi: Record<string, Abi> = {};
   const gas: Record<string, bigint[]> = {};
 
@@ -109,6 +112,16 @@ describe.skipIf(!ready)("keeper against anvil", () => {
     await test.increaseTime({ seconds });
     await test.mine({ blocks: 1 });
   };
+  const warpTo = async (timestamp: bigint) => {
+    const now = (await test.getBlock()).timestamp;
+    if (timestamp > now) await warp(Number(timestamp - now));
+  };
+
+  /** Task switches that leave only the named tasks on. */
+  const only = (...tasks: string[]) =>
+    Object.fromEntries(
+      ["PREDICTION", "POINTS", "VAULT_RAFFLE", "LOTTERY", "TICKET_RAFFLE", "GAMES", "VAULT", "MONITOR"].map((t) => [`KEEPER_TASK_${t}`, tasks.includes(t) ? "on" : "off"]),
+    );
 
   /** A keeper as a fresh process would be: new context, state from the chain (and the cache file, if any). */
   async function keeper(overrides: Record<string, string> = {}, key: Hex | null = KEYS.keeper): Promise<{ ctx: Ctx; report: RunReport }> {
@@ -116,6 +129,9 @@ describe.skipIf(!ready)("keeper against anvil", () => {
       KEEPER_RPC_URL: RPC,
       KEEPER_CHAIN_ID: String(CHAIN_ID),
       KEEPER_DEPLOYMENT_FILE: join(dir, "deployment.json"),
+      // Off unless a test turns it on: once the oracle has a fresh price it samples the floor every day,
+      // which would add a call to every pass of the tests about other contracts.
+      KEEPER_TASK_VAULT: "off",
       KEEPER_MAX_SPEND_PER_RUN_ETH: "1",
       KEEPER_MAX_SPEND_PER_DAY_ETH: "5",
       KEEPER_TX_TIMEOUT_SECONDS: "20",
@@ -160,6 +176,7 @@ describe.skipIf(!ready)("keeper against anvil", () => {
       const json = readFileSync(file, "utf8");
       writeFileSync(join(dir, "deployment.json"), json);
       d = parseDeployment(JSON.parse(json));
+      vaultRandomness = getAddress((JSON.parse(json) as { vaultRandomness: string }).vaultRandomness);
     } finally {
       if (before !== null) writeFileSync(file, before);
       else if (existsSync(file)) unlinkSync(file);
@@ -170,6 +187,11 @@ describe.skipIf(!ready)("keeper against anvil", () => {
     }
 
     // ---- seed: what script/SeedLocal.s.sol sets up, plus players other than the owner
+    // The few points this test earns could never outweigh a prize's cost: turn off the check that scales
+    // a raffle's minimum points with what the Vault paid for the prize, where the contract has it.
+    if (abi.VaultRaffle!.some((i) => i.type === "function" && i.name === "setPointsPerPrizeWei")) {
+      await send("owner", d.vaultRaffle, "VaultRaffle", "setPointsPerPrizeWei", [0n]);
+    }
     const deployHash = await wallet.deployContract({ account: accounts.owner, chain, abi: abi.MockNFT!, bytecode: artifact("MockNFT").bytecode.object });
     nft = getAddress((await test.waitForTransactionReceipt({ hash: deployHash })).contractAddress!);
     for (let tokenId = 1n; tokenId <= 10n; tokenId++) await send("owner", nft, "MockNFT", "mint", [accounts.owner.address, tokenId]);
@@ -350,29 +372,112 @@ describe.skipIf(!ready)("keeper against anvil", () => {
     expect(calls((await keeper()).report)).toEqual([]);
   });
 
-  it("unlocks a vault holding once the lock has passed and the floor is at 130%", async () => {
-    await warp(174 * DAY);
-    // the time lock is over but the sales oracle has no fresh price: nothing to do, and it says why
-    const early = await keeper();
-    expect(calls(early.report)).toEqual([]);
-    expect(findings(early.report).some((f) => f.code === "waiting_for_floor")).toBe(true);
+  it("samples the floor daily, requests the unlock draw once a holding takes part, and unlocks the holding it picks", async () => {
+    const holding = async (id: bigint) =>
+      struct<{ status: number; acquiredAt: number; lockedUntil: number }>(d.vault, "Vault", "holdings", [id]);
+    const h1 = await holding(1n);
+    const acquiredAt = BigInt(h1.acquiredAt);
+    const lockedUntil = BigInt(h1.lockedUntil);
+    expect(lockedUntil - acquiredAt).toBe(90n * BigInt(DAY));
+    expect(await read<boolean>(d.vault, "Vault", "isPlayersHolding", [1n])).toBe(false);
 
-    // three floor-type sales at 1.3 ETH put the sales oracle above 130% of the 0.9 ETH purchase price
-    for (const tokenId of [3n, 4n, 5n]) await trade("bob", tokenId, parseEther("1.3"));
+    // Passes two hours into a sample interval, so that a pass and the checks after it share one interval.
+    // The first interval that starts after the lock has ended is the first whose draw the holding is in.
+    const day = BigInt(DAY);
+    const eligible = lockedUntil - (lockedUntil % day) + day + 7_200n;
+    const first = eligible - 16n * day;
+    for (let tokenId = 100n; tokenId < 130n; tokenId++) await send("owner", nft, "MockNFT", "mint", [accounts.owner.address, tokenId]);
+    let token = 100n;
+
+    // Sixteen days before the holding can take part: one floor sample a day, and no draw is requested,
+    // because no holding could use it. A floor-type sale every other day keeps the sales oracle fresh.
+    for (let at = first; at < eligible; at += day) {
+      await warpTo(at);
+      const sales = at === first ? 3 : (at - first) / day % 2n === 0n ? 1 : 0;
+      for (let i = 0; i < sales; i++) await trade("bob", token++, parseEther("1.3"));
+      const { report } = await keeper(only("VAULT"));
+      expect(calls(report), `day ${(at - acquiredAt) / day}`).toEqual(["vault.sampleFloor:confirmed"]);
+      // a second pass in the same interval has nothing to do
+      if (at === first) {
+        expect(calls((await keeper(only("VAULT"))).report)).toEqual([]);
+        expect((await read<readonly [boolean, bigint]>(d.vault, "Vault", "medianFloor", [nft]))[0]).toBe(false);
+      }
+    }
+    expect(await read<bigint>(d.vault, "Vault", "sampleCount", [nft])).toBe(16n);
+    expect(await read<number>(d.vault, "Vault", "roundRequestedAt")).toBe(0);
+
+    // The first day the holding takes part: the 17th sample makes the median usable, at 1.3 ETH against
+    // the 1.17 ETH (130%) required, so the draw is requested too.
+    const draw = async (at: bigint, sales: number) => {
+      await warpTo(at);
+      for (let i = 0; i < sales; i++) await trade("bob", token++, parseEther("1.3"));
+      const { report } = await keeper(only("VAULT"));
+      expect(calls(report)).toEqual(["vault.sampleFloor:confirmed", "vault.requestUnlockRound:confirmed"]);
+      const [usable, median] = await read<readonly [boolean, bigint]>(d.vault, "Vault", "medianFloor", [nft]);
+      expect(usable).toBe(true);
+      expect(median).toBe(parseEther("1.3"));
+      const requestId = await read<bigint>(d.vault, "Vault", "roundRequestId");
+      const requestedAt = BigInt(await read<number>(d.vault, "Vault", "roundRequestedAt"));
+      const chance = await read<bigint>(d.vault, "Vault", "drawChanceBps", [requestedAt - acquiredAt]);
+      expect(chance).toBeGreaterThanOrEqual(50n);
+      expect(chance).toBeLessThan(60n);
+      return { requestId, chance };
+    };
+    // Vault.isPicked: keccak256(abi.encode(seed, vaultId)) % 10_000 < drawChanceBps(age)
+    const roll = (word: bigint, vaultId: bigint) =>
+      BigInt(keccak256(encodeAbiParameters([{ type: "uint256" }, { type: "uint256" }], [word, vaultId]))) % 10_000n;
+
+    // the provider answers with a word that does not pick holding 1: nothing to unlock, and nothing more today
+    const today = await draw(eligible, 1);
+    let miss = 0n;
+    while (roll(miss, 1n) < today.chance) miss++;
+    await send("alice", vaultRandomness, "MockRandomness", "fulfill", [today.requestId, miss]);
+    expect(await read<boolean>(d.vault, "Vault", "isPicked", [1n])).toBe(false);
+    const missed = await keeper(only("VAULT"));
+    expect(calls(missed.report)).toEqual([]);
+    expect(findings(missed.report).some((f) => f.code === "waiting_for_draw")).toBe(true);
+
+    // the next day's word picks it (a draw can be requested a full day after the last request)
+    const tomorrow = await draw(eligible + day + 600n, 0);
+    let hit = 0n;
+    while (roll(hit, 1n) >= tomorrow.chance) hit++;
+    await send("alice", vaultRandomness, "MockRandomness", "fulfill", [tomorrow.requestId, hit]);
+    expect(await read<boolean>(d.vault, "Vault", "isPicked", [1n])).toBe(true);
     expect(await read<boolean>(d.vault, "Vault", "canUnlock", [1n])).toBe(true);
 
-    const { report } = await keeper();
-    // the trades also credited points, and a day has passed since the last flush
+    const { report } = await keeper({ KEEPER_TASK_VAULT: "on" });
+    // the sales also credited points, and the vault-only passes did not activate them
     expect(calls(report).sort()).toEqual(["points.flushMany:confirmed", "vault.unlock:confirmed"]);
-    expect((await struct<{ status: number }>(d.vault, "Vault", "holdings", [1n])).status).toBe(2); // Unlocked
+    expect((await holding(1n)).status).toBe(2); // Unlocked
+    // the floor multiple at the holding's age when the draw was requested: just under 130%
+    const bps = await read<bigint>(d.vault, "Vault", "unlockBpsOf", [1n]);
+    expect(bps).toBeLessThan(13_000n);
+    expect(bps).toBeGreaterThan(12_900n);
 
     // the governance window is open: the keeper reports the unlocked holding and leaves it alone
-    const idle = await keeper();
+    const idle = await keeper({ KEEPER_TASK_VAULT: "on" });
     expect(calls(idle.report)).toEqual([]);
     expect(findings(idle.report).some((f) => f.code === "holding_unlocked")).toBe(true);
-  });
 
-  it("flushes points before a vault raffle can be drawn, draws it, and delivers the prize", async () => {
+    // Four more purchases. Every fifth purchase of a collection is set aside for players: holding 5 is
+    // locked for 30 days and then goes to the raffle; holdings 2 to 4 wait for the draw like holding 1.
+    await send("owner", d.treasury, "Treasury", "deposit", [nft], parseEther("10"));
+    for (let tokenId = 200n; tokenId < 204n; tokenId++) {
+      await send("owner", nft, "MockNFT", "mint", [accounts.owner.address, tokenId]);
+      await send("owner", d.buybackEngine, "BuybackEngine", "sell", [nft, tokenId, 0n]);
+    }
+    expect(await read<bigint>(d.vault, "Vault", "holdingCount")).toBe(5n);
+    for (const id of [2n, 3n, 4n]) expect(await read<boolean>(d.vault, "Vault", "isPlayersHolding", [id])).toBe(false);
+    expect(await read<boolean>(d.vault, "Vault", "isPlayersHolding", [5n])).toBe(true);
+    const h5 = await holding(5n);
+    expect(BigInt(h5.lockedUntil) - BigInt(h5.acquiredAt)).toBe(30n * day);
+    // nothing to do for them yet: holdings 2 to 4 are in their minimum lock, holding 5 in its players' lock
+    const waiting = await keeper(only("VAULT"));
+    expect(calls(waiting.report)).toEqual([]);
+    expect(waiting.report.tasks.find((t) => t.task === "vault")!.metrics).toMatchObject({ locked: 4, forPlayers: 1, unlocked: 1 });
+  }, 120_000);
+
+  it("flushes points before a vault raffle can be drawn, draws it, and delivers the prize once it has vested", async () => {
     const cache = { KEEPER_CACHE_FILE: join(dir, "cache.json") };
     await send("owner", d.vault, "Vault", "sendToRaffle", [1n]);
     const raffle = await struct<{ drawAfter: number }>(d.vaultRaffle, "VaultRaffle", "raffles", [1n]);
@@ -412,22 +517,32 @@ describe.skipIf(!ready)("keeper against anvil", () => {
     await send("alice", d.randomness, "MockRandomness", "fulfill", [requestId, 0n]);
     const won = await struct<{ status: number; winner: Address }>(d.vaultRaffle, "VaultRaffle", "raffles", [1n]);
     expect(won.status).toBe(3); // Won
+    const claimableAt = await read<bigint>(d.vaultRaffle, "VaultRaffle", "claimableAt", [1n]);
+    expect(claimableAt).toBe((await test.getBlock()).timestamp + 30n * BigInt(DAY));
 
+    // The prize vests for 30 days. No raffle is open and the cache says points were flushed today, so
+    // the points credited during the draw wait for the daily schedule: a pass now does nothing.
+    const vesting = await keeper(cache);
+    expect(calls(vesting.report)).toEqual([]);
+    expect(findings(vesting.report).some((f) => f.code === "prize_vesting")).toBe(true);
+    expect(existsSync(cache.KEEPER_CACHE_FILE)).toBe(true);
+    expect(vesting.report.exitCode).not.toBe(EXIT.failure);
+    expect(await read<bigint>(d.points, "Points", "pendingOf", [accounts.bob.address])).toBeGreaterThan(0n);
+
+    // a day later the points are activated; the prize is still vesting
+    await warp(DAY);
+    expect(calls((await keeper(cache)).report)).toEqual(["points.flushMany:confirmed"]);
+    expect(await read<bigint>(d.points, "Points", "pendingOf", [accounts.bob.address])).toBe(0n);
+    expect(await read<Address>(nft, "MockNFT", "ownerOf", [1n])).toBe(d.vaultRaffle);
+
+    // one second before it vests: nothing; at claimableAt: delivered
+    await warpTo(claimableAt - 2n);
+    expect(calls((await keeper({ ...cache, ...only("VAULT_RAFFLE") })).report)).toEqual([]);
+    await warpTo(claimableAt);
     const claimed = await keeper(cache);
     expect(calls(claimed.report)).toEqual(["vaultRaffle.claim:confirmed"]);
     expect(await read<Address>(nft, "MockNFT", "ownerOf", [1n])).toBe(won.winner);
     expect((await struct<{ status: number }>(d.vaultRaffle, "VaultRaffle", "raffles", [1n])).status).toBe(4); // Claimed
-
-    // No raffle is open and the cache says points were flushed today, so the points credited during
-    // the draw wait for the daily schedule: a pass now does nothing, a pass a day later activates them.
-    const last = await keeper(cache);
-    expect(calls(last.report)).toEqual([]);
-    expect(existsSync(cache.KEEPER_CACHE_FILE)).toBe(true);
-    expect(last.report.exitCode).not.toBe(EXIT.failure);
-    expect(await read<bigint>(d.points, "Points", "pendingOf", [accounts.bob.address])).toBeGreaterThan(0n);
-    await warp(DAY);
-    expect(calls((await keeper(cache)).report)).toEqual(["points.flushMany:confirmed"]);
-    expect(await read<bigint>(d.points, "Points", "pendingOf", [accounts.bob.address])).toBe(0n);
   });
 
   it("resets draws whose randomness never arrives, reports stuck rounds, and aborts only when opted in", async () => {
@@ -436,10 +551,13 @@ describe.skipIf(!ready)("keeper against anvil", () => {
     await send("alice", d.lottery, "Lottery", "buy", [nft, 5], parseEther("0.05"));
     await send("owner", d.ticketRaffle, "TicketRaffle", "create", [nft, 11n, parseEther("0.05"), 5, 40, BigInt(3 * DAY)]);
     await send("alice", d.ticketRaffle, "TicketRaffle", "buy", [2n, 5], parseEther("0.25"));
-    await send("owner", d.buybackEngine, "BuybackEngine", "sell", [nft, 12n, 0n]);
-    await send("owner", d.vault, "Vault", "governanceUnlock", [2n]);
-    await send("owner", d.vault, "Vault", "sendToRaffle", [2n]);
     await send("alice", d.games, "Games", "play", [nft, 5_000n], parseEther("0.01"));
+    // the second vault raffle: the players' holding has served its 30-day lock, and anyone may send it on
+    const released = await keeper(only("VAULT"));
+    expect(calls(released.report)).toEqual(["vault.releaseToPlayers:confirmed"]);
+    expect((await struct<{ status: number }>(d.vault, "Vault", "holdings", [5n])).status).toBe(4); // Released
+    expect(await read<bigint>(d.vaultRaffle, "VaultRaffle", "raffleCount")).toBe(2n);
+    expect((await struct<{ tokenId: bigint }>(d.vaultRaffle, "VaultRaffle", "raffles", [2n])).tokenId).toBe(203n);
     const status = async (to: Address, name: string, getter: string, id: bigint) => (await struct<{ status: number }>(to, name, getter, [id])).status;
 
     await warp(7 * DAY + 60);
@@ -482,10 +600,13 @@ describe.skipIf(!ready)("keeper against anvil", () => {
   }, 60_000);
 
   it("splits a flush that does not fit the gas limit, and starts or restarts a vault auction only when opted in", async () => {
-    const vaultOnly = { KEEPER_TASK_POINTS: "off", KEEPER_TASK_VAULT_RAFFLE: "off", KEEPER_TASK_MONITOR: "off" };
-    const vaultCalls = (report: RunReport) => calls(report).filter((c) => c.startsWith("vault."));
+    const vaultOnly = { KEEPER_TASK_POINTS: "off", KEEPER_TASK_VAULT_RAFFLE: "off", KEEPER_TASK_MONITOR: "off", KEEPER_TASK_VAULT: "on" };
+    // the daily floor sample comes with any pass after a sale; it is covered above
+    const vaultCalls = (report: RunReport) => calls(report).filter((c) => c.startsWith("vault.") && !c.startsWith("vault.sampleFloor"));
     await send("owner", d.buybackEngine, "BuybackEngine", "sell", [nft, 13n, 0n]);
-    await send("owner", d.vault, "Vault", "governanceUnlock", [3n]);
+    const id = await read<bigint>(d.vault, "Vault", "holdingCount");
+    expect(await read<boolean>(d.vault, "Vault", "isPlayersHolding", [id])).toBe(false);
+    await send("owner", d.vault, "Vault", "governanceUnlock", [id]);
     await warp(30 * DAY + 60);
 
     // past the governance window: reported, not acted on
@@ -504,13 +625,13 @@ describe.skipIf(!ready)("keeper against anvil", () => {
 
     const started = await keeper({ ...vaultOnly, KEEPER_VAULT_START_AUCTION: "true" });
     expect(vaultCalls(started.report)).toEqual(["vault.startAuction:confirmed"]);
-    expect((await struct<{ status: number }>(d.vault, "Vault", "holdings", [3n])).status).toBe(3); // Auction
-    const first = await struct<{ startTime: number; startPrice: bigint; endPrice: bigint }>(d.vault, "Vault", "auctions", [3n]);
+    expect((await struct<{ status: number }>(d.vault, "Vault", "holdings", [id])).status).toBe(3); // Auction
+    const first = await struct<{ startTime: number; startPrice: bigint; endPrice: bigint }>(d.vault, "Vault", "auctions", [id]);
     expect(first.startPrice).toBe(first.endPrice * 16n);
 
     // four days later the price has reached the reserve and nobody bought
     await warp(4 * DAY + 60);
-    expect(await read<bigint>(d.vault, "Vault", "auctionPrice", [3n])).toBe(first.endPrice);
+    expect(await read<bigint>(d.vault, "Vault", "auctionPrice", [id])).toBe(first.endPrice);
     for (const tokenId of [17n, 18n, 19n]) await trade("bob", tokenId, parseEther("1.3"));
 
     const noRestart = await keeper({ ...vaultOnly, KEEPER_VAULT_START_AUCTION: "true" });
@@ -521,9 +642,13 @@ describe.skipIf(!ready)("keeper against anvil", () => {
     const dwelling = await keeper({ ...vaultOnly, KEEPER_VAULT_RESTART_AUCTION: "true" });
     expect(vaultCalls(dwelling.report)).toEqual([]);
 
-    const restarted = await keeper({ ...vaultOnly, KEEPER_VAULT_RESTART_AUCTION: "true", KEEPER_VAULT_RESTART_DWELL_SECONDS: "0" });
+    // with no dwell of its own, the keeper still waits the day Vault.AUCTION_RESTART_DWELL requires
+    const noDwell = { ...vaultOnly, KEEPER_VAULT_RESTART_AUCTION: "true", KEEPER_VAULT_RESTART_DWELL_SECONDS: "0" };
+    expect(vaultCalls((await keeper(noDwell)).report)).toEqual([]);
+    await warp(DAY);
+    const restarted = await keeper(noDwell);
     expect(vaultCalls(restarted.report)).toEqual(["vault.startAuction:confirmed"]);
-    const second = await struct<{ startTime: number }>(d.vault, "Vault", "auctions", [3n]);
+    const second = await struct<{ startTime: number }>(d.vault, "Vault", "auctions", [id]);
     expect(second.startTime).toBeGreaterThan(first.startTime);
   }, 60_000);
 

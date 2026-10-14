@@ -5,7 +5,16 @@ import { LOT, type LotteryState, type RoundState, decideLottery } from "../src/t
 import { type PointsState, chunk, decidePoints, flushBatchSize, flushReason } from "../src/tasks/points.ts";
 import { type MarketState, type PredictionState, decidePrediction } from "../src/tasks/prediction.ts";
 import { TR, type TicketRaffleEntry, type TicketRaffleState, decideTicketRaffle } from "../src/tasks/ticketRaffle.ts";
-import { type HoldingState, VS, type VaultState, decideVault, secondsToReserve } from "../src/tasks/vault.ts";
+import {
+  type CollectionFloor,
+  type HoldingState,
+  type UnlockRound,
+  VS,
+  type VaultState,
+  decideVault,
+  roundReadyAt,
+  secondsToReserve,
+} from "../src/tasks/vault.ts";
 import { VR, type VaultRaffleEntry, type VaultRaffleState, decideVaultRaffle } from "../src/tasks/vaultRaffle.ts";
 import type { Decision } from "../src/types.ts";
 import { A, DAY, HOUR } from "./helpers.ts";
@@ -185,6 +194,7 @@ describe("vault raffle: draw, resetDraw, claim", () => {
     requestedAt: 0n,
     status: VR.Open,
     winner: A(0),
+    claimableAt: 0n,
     ...over,
   });
   const state = (raffles: VaultRaffleEntry[], over: Partial<VaultRaffleState> = {}): VaultRaffleState => ({
@@ -236,6 +246,12 @@ describe("vault raffle: draw, resetDraw, claim", () => {
     expect(codes(decideVaultRaffle(state([raffle()], { totalPoints: 0n, minPointsToDraw: 0n })))).toEqual(["warn:no_points"]);
   });
 
+  it("uses a raffle's own minimum when the contract scales it with the prize", () => {
+    expect(codes(decideVaultRaffle(state([raffle({ minPointsRequired: 501n })])))).toEqual(["warn:below_min_points"]);
+    expect(calls(decideVaultRaffle(state([raffle({ minPointsRequired: 500n })])))).toEqual(["draw(1)"]);
+    expect(calls(decideVaultRaffle(state([raffle({ minPointsRequired: null })])))).toEqual(["draw(1)"]);
+  });
+
   it("requests one draw per pass: the first freezes points for the rest", () => {
     const d = decideVaultRaffle(state([raffle({ id: 1n }), raffle({ id: 2n })]));
     expect(calls(d)).toEqual(["draw(1)"]);
@@ -250,9 +266,18 @@ describe("vault raffle: draw, resetDraw, claim", () => {
     expect(calls(late)).toEqual(["resetDraw(1)"]);
   });
 
-  it("claims for raffles with a winner and leaves claimed ones alone", () => {
-    const d = decideVaultRaffle(state([raffle({ id: 1n, status: VR.Won, winner: A(9) }), raffle({ id: 2n, status: VR.Claimed })]));
+  it("claims for raffles with a vested prize and leaves claimed ones alone", () => {
+    const d = decideVaultRaffle(state([raffle({ id: 1n, status: VR.Won, winner: A(9), claimableAt: NOW }), raffle({ id: 2n, status: VR.Claimed })]));
     expect(calls(d)).toEqual(["claim(1)"]);
+  });
+
+  it("does not claim before the prize has vested, and wakes when it does", () => {
+    const vesting = decideVaultRaffle(state([raffle({ status: VR.Won, winner: A(9), claimableAt: NOW + 1n })]));
+    expect(vesting.actions).toEqual([]);
+    expect(codes(vesting)).toEqual(["info:prize_vesting"]);
+    expect(vesting.wakeAt).toEqual([NOW + 1n]);
+    const vested = decideVaultRaffle(state([raffle({ status: VR.Won, winner: A(9), claimableAt: NOW - 30n * DAY })]));
+    expect(calls(vested)).toEqual(["claim(1)"]);
   });
 
   it("orders resets and claims before draws", () => {
@@ -459,49 +484,196 @@ describe("games: refund", () => {
 
 // ------------------------------------------------------------------ vault
 
-describe("vault: unlock, startAuction", () => {
+describe("vault: sampleFloor, requestUnlockRound, unlock, releaseToPlayers, startAuction", () => {
+  const SLOT = NOW / DAY;
+  const C = A(1);
   const holding = (over: Partial<HoldingState> = {}): HoldingState => ({
     id: 1n,
-    collection: A(1),
+    collection: C,
     tokenId: 1n,
     purchasePrice: 100n,
-    lockedUntil: NOW - 10n,
+    acquiredAt: NOW - 100n * DAY,
+    lockedUntil: NOW - 10n * DAY,
     unlockedAt: 0n,
     status: VS.Locked,
-    canUnlock: true,
+    forPlayers: false,
+    requiredBpsNow: 12_000n,
+    picked: false,
+    requiredBpsAtSeed: null,
+    canUnlock: false,
     auction: null,
+    ...over,
+  });
+  const picked = (over: Partial<HoldingState> = {}) => holding({ picked: true, requiredBpsAtSeed: 12_000n, canUnlock: true, ...over });
+  const floor = (over: Partial<CollectionFloor> = {}): CollectionFloor => ({
+    collection: C,
+    // today's sample is taken
+    lastSampleSlot: SLOT + 1n,
+    oracleFresh: true,
+    median: 150n,
+    releaseAllowance: 1n,
+    ...over,
+  });
+  // a draw was requested a day ago and answered
+  const round = (over: Partial<UnlockRound> = {}): UnlockRound => ({
+    hasRandomness: true,
+    pending: false,
+    requestedAt: NOW - 3_600n,
+    interval: DAY,
+    timeout: DAY,
     ...over,
   });
   const state = (holdings: HoldingState[], over: Partial<VaultState> = {}): VaultState => ({
     now: NOW,
     governanceWindow: 30n * DAY,
     halfLife: DAY,
+    sampleInterval: DAY,
     startAuctionEnabled: false,
     restartAuctionEnabled: false,
     restartDwell: 3n * DAY,
+    minRestartDwell: DAY,
+    collections: [floor()],
+    round: round(),
     holdings,
     ...over,
   });
 
-  it("unlocks when canUnlock is true", () => {
-    expect(calls(decideVault(state([holding()])))).toEqual(["unlock(1)"]);
+  describe("sampleFloor", () => {
+    it("samples a collection once a day while its oracle price is fresh", () => {
+      // lastSampleSlot is the interval index plus one: equal to today's index means yesterday's sample
+      expect(calls(decideVault(state([], { collections: [floor({ lastSampleSlot: SLOT })] })))).toEqual([`sampleFloor(${C})`]);
+      expect(calls(decideVault(state([], { collections: [floor({ lastSampleSlot: 0n })] })))).toEqual([`sampleFloor(${C})`]);
+      const done = decideVault(state([]));
+      expect(done.actions).toEqual([]);
+      expect(done.wakeAt).toEqual([(SLOT + 1n) * DAY]);
+    });
+
+    it("does not sample a stale oracle and says so once for all collections", () => {
+      const d = decideVault(state([], { collections: [floor({ lastSampleSlot: SLOT, oracleFresh: false }), floor({ collection: A(2), lastSampleSlot: 0n, oracleFresh: false })] }));
+      expect(d.actions).toEqual([]);
+      expect(codes(d)).toEqual(["info:floor_not_sampled"]);
+      expect(d.findings[0]!.data).toEqual({ collections: [C, A(2)] });
+    });
   });
 
-  it("waits for the time lock, then for the floor, and reports the latter once", () => {
-    const locked = decideVault(state([holding({ lockedUntil: NOW + 99n, canUnlock: false })]));
-    expect(locked.actions).toEqual([]);
-    expect(locked.wakeAt).toEqual([NOW + 99n]);
-    const waiting = decideVault(state([holding({ canUnlock: false }), holding({ id: 2n, canUnlock: false })]));
-    expect(waiting.actions).toEqual([]);
-    expect(codes(waiting)).toEqual(["info:waiting_for_floor"]);
-    expect(waiting.findings[0]!.data).toEqual({ holdings: 2 });
+  describe("requestUnlockRound", () => {
+    const due = round({ requestedAt: NOW - DAY });
+
+    it("requests the day's draw when a holding takes part and meets the floor at its age", () => {
+      expect(calls(decideVault(state([holding()], { round: due })))).toEqual(["requestUnlockRound()"]);
+      // the very first draw
+      expect(calls(decideVault(state([holding()], { round: round({ requestedAt: 0n }) })))).toEqual(["requestUnlockRound()"]);
+    });
+
+    it("waits a day after the last request, and wakes then", () => {
+      const d = decideVault(state([holding()], { round: round({ requestedAt: NOW - DAY + 1n }) }));
+      expect(d.actions).toEqual([]);
+      expect(d.wakeAt).toEqual([(SLOT + 1n) * DAY, NOW + 1n]);
+    });
+
+    it("waits for a pending request until it has timed out", () => {
+      const pending = decideVault(state([holding()], { round: round({ requestedAt: NOW - DAY + 5n, pending: true, timeout: DAY }) }));
+      expect(pending.actions).toEqual([]);
+      expect(pending.wakeAt).toEqual([(SLOT + 1n) * DAY, NOW + 5n]);
+      const timedOut = decideVault(state([holding()], { round: round({ requestedAt: NOW - DAY, pending: true }) }));
+      expect(calls(timedOut)).toEqual(["requestUnlockRound()"]);
+      // a longer timeout than interval is respected as well
+      const slow = decideVault(state([holding()], { round: round({ requestedAt: NOW - DAY, pending: true, timeout: 2n * DAY }) }));
+      expect(slow.actions).toEqual([]);
+      expect(slow.wakeAt).toEqual([(SLOT + 1n) * DAY, NOW + DAY]);
+    });
+
+    it("does not pay for a draw that could not unlock anything", () => {
+      const none = (holdings: HoldingState[], collections = [floor()]) => calls(decideVault(state(holdings, { round: due, collections })));
+      // no holdings, or only holdings still in their minimum lock
+      expect(none([])).toEqual([]);
+      expect(none([holding({ lockedUntil: NOW + 1n, requiredBpsNow: null })])).toEqual([]);
+      // players' holdings never take part
+      expect(none([holding({ forPlayers: true, lockedUntil: NOW + 1n, requiredBpsNow: null })])).toEqual([]);
+      // median below the multiple required at the holding's age (100 * 1.6 = 160 > 150)
+      expect(none([holding({ requiredBpsNow: 16_000n })])).toEqual([]);
+      // no usable median yet
+      expect(none([holding()], [floor({ median: null })])).toEqual([]);
+      // release cap used up
+      expect(none([holding()], [floor({ releaseAllowance: 0n })])).toEqual([]);
+      // exactly at the required floor is enough
+      expect(none([holding({ requiredBpsNow: 15_000n })])).toEqual(["requestUnlockRound()"]);
+    });
+
+    it("warns when holdings could unlock but the Vault has no randomness provider", () => {
+      const d = decideVault(state([holding()], { round: round({ hasRandomness: false, requestedAt: 0n }) }));
+      expect(d.actions).toEqual([]);
+      expect(codes(d)).toEqual(["warn:no_randomness", "info:waiting_for_draw"]);
+    });
+  });
+
+  describe("unlock", () => {
+    it("unlocks a holding the draw picked when canUnlock is true", () => {
+      expect(calls(decideVault(state([picked()])))).toEqual(["unlock(1)"]);
+    });
+
+    it("waits for the minimum lock, then for the draw, and reports the latter once", () => {
+      const locked = decideVault(state([holding({ lockedUntil: NOW + 99n, requiredBpsNow: null })]));
+      expect(locked.actions).toEqual([]);
+      expect(locked.wakeAt).toEqual([(SLOT + 1n) * DAY, NOW + 99n]);
+      const waiting = decideVault(state([holding(), holding({ id: 2n, requiredBpsNow: 16_000n })]));
+      expect(waiting.actions).toEqual([]);
+      expect(codes(waiting)).toEqual(["info:waiting_for_draw"]);
+      expect(waiting.findings[0]!.data).toEqual({ holdings: 2, meetFloor: 1 });
+    });
+
+    it("says why a picked holding cannot unlock", () => {
+      const why = (h: HoldingState, f = floor()) => codes(decideVault(state([h], { collections: [f] })));
+      expect(why(picked({ canUnlock: false }), floor({ median: null }))).toEqual(["info:picked_without_median"]);
+      expect(why(picked({ canUnlock: false, requiredBpsAtSeed: 16_000n }))).toEqual(["info:picked_below_floor"]);
+      expect(why(picked({ canUnlock: false }), floor({ releaseAllowance: 0n }))).toEqual(["info:release_cap_reached"]);
+      // the median as it stood when the draw was requested decides, where the contract records it
+      expect(why(picked({ canUnlock: false }), floor({ drawMedian: 110n }))).toEqual(["info:picked_below_floor"]);
+      expect(why(picked({ canUnlock: false }), floor({ median: null, drawMedian: 150n, releaseAllowance: 0n }))).toEqual(["info:release_cap_reached"]);
+    });
+
+    it("never sends more unlocks for a collection than its release cap allows", () => {
+      const three = [picked({ id: 1n }), picked({ id: 2n }), picked({ id: 3n }), picked({ id: 4n, collection: A(2) })];
+      const d = decideVault(state(three, { collections: [floor({ releaseAllowance: 2n }), floor({ collection: A(2) })] }));
+      expect(calls(d)).toEqual(["unlock(1)", "unlock(2)", "unlock(4)"]);
+      expect(codes(d)).toEqual(["info:release_cap_reached"]);
+    });
+
+    it("unlocks with the current draw before requesting the next one, after the day's samples", () => {
+      const d = decideVault(
+        state([picked(), holding({ id: 2n, forPlayers: true, requiredBpsNow: null })], {
+          collections: [floor({ lastSampleSlot: SLOT })],
+          round: round({ requestedAt: NOW - DAY }),
+          startAuctionEnabled: true,
+        }),
+      );
+      expect(calls(d)).toEqual([`sampleFloor(${C})`, "releaseToPlayers(2)", "unlock(1)", "requestUnlockRound()"]);
+    });
+  });
+
+  describe("releaseToPlayers", () => {
+    it("sends a players' holding to the raffle once its lock has ended, never through the draw", () => {
+      const players = (lockedUntil: bigint) => holding({ forPlayers: true, lockedUntil, requiredBpsNow: null });
+      const early = decideVault(state([players(NOW + 30n)]));
+      expect(early.actions).toEqual([]);
+      expect(early.wakeAt).toEqual([(SLOT + 1n) * DAY, NOW + 30n]);
+      expect(calls(decideVault(state([players(NOW)])))).toEqual(["releaseToPlayers(1)"]);
+      // not counted as waiting for the draw, and no draw is requested for it
+      const d = decideVault(state([players(NOW - DAY)], { round: round({ requestedAt: 0n }) }));
+      expect(calls(d)).toEqual(["releaseToPlayers(1)"]);
+      expect(d.findings).toEqual([]);
+    });
+
+    it("leaves a released players' holding alone", () => {
+      expect(calls(decideVault(state([holding({ forPlayers: true, status: VS.Released })])))).toEqual([]);
+    });
   });
 
   it("reports an unlocked holding and leaves it to governance during the window", () => {
     const d = decideVault(state([holding({ status: VS.Unlocked, unlockedAt: NOW - DAY })], { startAuctionEnabled: true }));
     expect(d.actions).toEqual([]);
     expect(codes(d)).toEqual(["info:holding_unlocked"]);
-    expect(d.wakeAt).toEqual([NOW + 29n * DAY]);
+    expect(d.wakeAt).toContain(NOW + 29n * DAY);
   });
 
   it("starts the auction after the governance window only when opted in", () => {
@@ -516,7 +688,7 @@ describe("vault: unlock, startAuction", () => {
     // opens at 16x the reserve: reaches it after exactly four half-lives
     const auction = (startTime: bigint, ownerPriced = false) =>
       holding({ status: VS.Auction, auction: { startPrice: 1_600n, endPrice: 100n, startTime, ownerPriced } });
-    const on = { restartAuctionEnabled: true };
+    const on = { restartAuctionEnabled: true, collections: [] };
 
     const running = decideVault(state([auction(NOW - 4n * DAY + 1n)], on));
     expect(running.actions).toEqual([]);
@@ -528,15 +700,29 @@ describe("vault: unlock, startAuction", () => {
     expect(justThere.wakeAt).toEqual([NOW + 3n * DAY]);
 
     expect(calls(decideVault(state([auction(NOW - 7n * DAY)], on)))).toEqual(["startAuction(1)"]);
-    expect(codes(decideVault(state([auction(NOW - 7n * DAY)])))).toEqual(["warn:auction_at_reserve"]);
+    expect(codes(decideVault(state([auction(NOW - 7n * DAY)], { collections: [] })))).toEqual(["warn:auction_at_reserve"]);
     // an owner-priced auction can only be restarted by the owner
     const ownerPriced = decideVault(state([auction(NOW - 30n * DAY, true)], on));
     expect(ownerPriced.actions).toEqual([]);
     expect(codes(ownerPriced)).toEqual(["info:auction_at_reserve"]);
+
+    // a shorter configured dwell than Vault.AUCTION_RESTART_DWELL is raised to it: the contract would revert
+    const noDwell = { ...on, restartDwell: 0n };
+    const tooSoon = decideVault(state([auction(NOW - 5n * DAY + 1n)], noDwell));
+    expect(tooSoon.actions).toEqual([]);
+    expect(tooSoon.wakeAt).toEqual([NOW + 1n]);
+    expect(calls(decideVault(state([auction(NOW - 5n * DAY)], noDwell)))).toEqual(["startAuction(1)"]);
   });
 
   it("ignores released holdings", () => {
-    expect(decideVault(state([holding({ status: VS.Released })]))).toEqual({ actions: [], findings: [], wakeAt: [] });
+    expect(decideVault(state([holding({ status: VS.Released })], { collections: [] }))).toEqual({ actions: [], findings: [], wakeAt: [] });
+  });
+
+  it("roundReadyAt mirrors requestUnlockRound's conditions", () => {
+    expect(roundReadyAt(round({ requestedAt: 0n }))).toBe(0n);
+    expect(roundReadyAt(round({ requestedAt: NOW }))).toBe(NOW + DAY);
+    expect(roundReadyAt(round({ requestedAt: NOW, pending: true, timeout: 2n * DAY }))).toBe(NOW + 2n * DAY);
+    expect(roundReadyAt(round({ requestedAt: NOW, pending: false, timeout: 2n * DAY }))).toBe(NOW + DAY);
   });
 
   describe("secondsToReserve mirrors Vault.auctionPrice", () => {
