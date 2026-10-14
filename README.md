@@ -18,7 +18,9 @@ makes is modest: about one token bought for every fifty traded. See
 [docs/ECONOMICS-REVIEW.md](docs/ECONOMICS-REVIEW.md).
 
 **Start with the [FloorGuard v1 design paper](docs/FLOORGUARD-V1.md):** what it
-is, why now, what it can and cannot do, the open problems and how to help.
+is, why now, what it can and cannot do, the open problems and how to help. It is
+also available as a designed
+[PDF and Word file](https://github.com/Goldcote/FloorGuard/releases/tag/paper-v1).
 
 The idea started as a
 [2024 white paper](https://x.com/captainPURU/status/1825613065502462081) and
@@ -162,7 +164,7 @@ docs/           architecture and the original concept documents
 
 ## Contributing
 
-Issues and pull requests are welcome. Please run `forge fmt` and `forge test`
+Issues and pull requests are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) says where to start. Please run `forge fmt` and `forge test`
 (and, for changes in `app/` or `keeper/`, `npm test` there) before opening a
 pull request, and add tests for behaviour you change. CI runs the same checks. Report
 vulnerabilities privately, as described in [SECURITY.md](SECURITY.md).
