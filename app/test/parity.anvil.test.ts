@@ -35,8 +35,9 @@ if (!ready) console.warn("SKIPPED: needs anvil on 127.0.0.1:8545 with Deploy.s.s
 const ETH = parseEther("1");
 
 describe.skipIf(!ready)("the demo simulator agrees with the contracts", () => {
-  const d = deployment!;
-  const collection = d.demoCollection!;
+  // Vitest collects a skipped suite too: without a local deployment `d` is empty and nothing runs.
+  const d = (deployment ?? {}) as NonNullable<typeof deployment>;
+  const collection = d.demoCollection as Address;
   let owner: Address, seller: Address, buyer: Address, user: Address;
   let outer: `0x${string}`;
   let inner: `0x${string}`;

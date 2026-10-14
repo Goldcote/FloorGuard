@@ -143,8 +143,9 @@ const REFUND = 6 * 3_600;
 const pts = (feeWei: bigint) => (feeWei * 2_500n * ETH) / ETH;
 
 describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
-  const d = deployment!;
-  const collection = d.demoCollection!;
+  // Vitest collects a skipped suite too: without a local deployment `d` is empty and nothing runs.
+  const d = (deployment ?? {}) as NonNullable<typeof deployment>;
+  const collection = d.demoCollection as Address;
   let owner: Address; // anvil account #0: deployer, protocol owner, holder of the demo tokens
   let seller: Address; // account #1
   let buyer: Address; // account #2
