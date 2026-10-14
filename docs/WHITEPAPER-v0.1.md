@@ -4,6 +4,22 @@
 *Draft v0.1 — March 19, 2026*
 *Author: Sylv (concept) + Chris (spec)*
 
+> **Historical concept document.** This is the v0.1 draft that the code in this
+> repository started from. It is kept as a record of the original thinking and
+> is not a description of what was built, a roadmap or an offer.
+>
+> - **What was actually built**, and every place it departs from this draft, is
+>   in [ARCHITECTURE.md](ARCHITECTURE.md). Several mechanisms here (the treasury
+>   triggering buybacks, the engine "accepting an offer", Chainlink NFT floor
+>   feeds) were replaced after review.
+> - **There is no token.** The $FLOOR token below was one possibility discussed
+>   in the draft. Nothing in this repository creates, plans or promises a token.
+> - **Figures in this draft are illustrative, not forecasts.** For an analysis of
+>   what the mechanism can and cannot do, see
+>   [ECONOMICS-REVIEW.md](ECONOMICS-REVIEW.md).
+> - Some ideas here (casino gamification such as referral rewards on losses or
+>   leaderboards, paid NFT raffle tickets as a profit source) were not built.
+
 ---
 
 ## Abstract
@@ -500,7 +516,11 @@ contract Vault {
 - Regulatory concerns
 - Can work purely with ETH
 
-### If Yes: $FLOOR Token
+### A potential $FLOOR token (not built)
+
+*A possibility considered in this draft only. The supply and allocation below
+are illustrative; no token exists, and any token would need its own legal and
+economic review.*
 
 ```
 Total Supply: 100,000,000 FLOOR
@@ -780,7 +800,8 @@ See `contracts/` folder for full implementations.
 
 *Document version: 0.1*
 *Last updated: 2026-03-19*
-*Status: DRAFT — Awaiting review*
+*Status: historical draft, superseded by the implementation and
+[ARCHITECTURE.md](ARCHITECTURE.md)*
 
 ---
 
@@ -915,9 +936,9 @@ Uses across content
 Fees → Treasury → Buybacks
 ```
 
-### Revenue Projections
+### Illustrative licensing scenarios (not a forecast)
 
-Assuming Vault holds 100 NFTs with mixed licensing:
+If the Vault held 100 NFTs with mixed licensing, purely for illustration:
 
 | Scenario | Monthly Licenses | Avg Fee | Monthly Revenue |
 |----------|-----------------|---------|-----------------|
@@ -925,7 +946,8 @@ Assuming Vault holds 100 NFTs with mixed licensing:
 | Moderate | 50 | 0.15 ETH | 7.5 ETH |
 | Optimistic | 100 | 0.2 ETH | 20 ETH |
 
-This creates a **sustainable yield** from locked NFTs without selling them.
+In this scenario, licence fees would add to the buyback budget without selling
+the NFTs. Whether anyone would pay for such licences is untested.
 
 ### Governance Decisions
 
