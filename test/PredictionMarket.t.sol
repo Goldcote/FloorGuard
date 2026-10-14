@@ -115,12 +115,12 @@ contract PredictionMarketTest is Base {
         vm.prank(bob);
         prediction.claim(marketId);
         assertEq(bob.balance, before);
-        // bob's stake funds 3% of 2 ETH in fees
-        assertEq(points.pendingOf(bob), 0.06 ether * POINTS_RATE / 1 ether);
+        // bob's stake funds 3% of 2 ETH in fees; each fee is credited once, half to each side
+        assertEq(points.pendingOf(bob), 0.03 ether * POINTS_RATE / 1 ether);
 
         vm.prank(alice);
         prediction.claim(marketId);
-        assertEq(points.pendingOf(alice), 0.06 ether * POINTS_RATE / 1 ether);
+        assertEq(points.pendingOf(alice), 0.03 ether * POINTS_RATE / 1 ether);
     }
 
     function test_claim_onlyOnceAndOnlyWithStake() public {
@@ -247,5 +247,42 @@ contract PredictionMarketTest is Base {
 
         assertEq(paid + fees + dust, total);
         assertLt(dust, 3);
+    }
+
+    /// A move smaller than the dead band voids the market, so a one-wei move cannot decide it.
+    function test_void_moveInsideTheDeadBand() public {
+        _bet(alice, true, 1 ether);
+        _bet(bob, false, 1 ether);
+        _resolveAt(10.19 ether); // +1.9%, inside the 2% band
+        assertEq(uint8(_outcome()), uint8(PredictionMarket.Outcome.Void));
+    }
+
+    function test_moveAtTheDeadBandDecides() public {
+        _bet(alice, true, 1 ether);
+        _bet(bob, false, 1 ether);
+        _resolveAt(9.8 ether); // exactly -2%
+        assertEq(uint8(_outcome()), uint8(PredictionMarket.Outcome.Lower));
+    }
+
+    function test_create_needsACurrentStartPrice() public {
+        skip(1 hours + 1); // the pushed price is still fresh for settlement, but too old to start on
+        vm.expectRevert(PredictionMarket.OracleUnavailable.selector);
+        prediction.createMarket(address(nft), 1 hours, 1 days);
+    }
+
+    function test_marketRules_ownerOnlyCappedAndFixedPerMarket() public {
+        vm.prank(alice);
+        vm.expectRevert();
+        prediction.setMarketRules(0, 1 hours);
+        vm.prank(gov);
+        vm.expectRevert(PredictionMarket.TooHigh.selector);
+        prediction.setMarketRules(1_001, 1 hours);
+
+        vm.prank(gov);
+        prediction.setMarketRules(0, 1 hours); // no dead band for new markets
+        _bet(alice, true, 1 ether);
+        _bet(bob, false, 1 ether);
+        _resolveAt(10.1 ether); // the open market keeps its 2% band
+        assertEq(uint8(_outcome()), uint8(PredictionMarket.Outcome.Void));
     }
 }

@@ -19,3 +19,6 @@ dist/
 
 # Local deployments
 deployments/31337.json
+
+# Local tool config
+.claude/

@@ -109,7 +109,16 @@ contract TicketRaffleTest is Base {
         skip(1 days);
         ticketRaffle.close(raffleId);
         assertEq(uint8(_status()), uint8(TicketRaffle.Status.Refunding));
+
+        vm.prank(bob);
+        vm.expectRevert(TicketRaffle.NotCreator.selector);
+        ticketRaffle.reclaim(raffleId);
+        vm.prank(alice);
+        ticketRaffle.reclaim(raffleId);
         assertEq(nft.ownerOf(1), alice);
+        vm.prank(alice);
+        vm.expectRevert(TicketRaffle.AlreadyReclaimed.selector);
+        ticketRaffle.reclaim(raffleId);
 
         uint256 before = bob.balance;
         vm.prank(bob);
@@ -183,16 +192,85 @@ contract TicketRaffleTest is Base {
         ticketRaffle.fulfillRandomness(1, 0);
     }
 
-    function test_unsupportedCollectionFeeGoesToUnallocated() public {
+    function test_create_onlySupportedCollectionsAndOnlyTheTokenOwner() public {
+        _mintApproved(alice, 2, address(ticketRaffle));
+        vm.prank(bob);
+        vm.expectRevert(TicketRaffle.NotTokenOwner.selector);
+        ticketRaffle.create(address(nft), 2, 0.1 ether, 5, 20, 1 days);
+
         vm.prank(gov);
         ticketRaffle.setCollectionSupport(address(nft), false);
+        vm.prank(alice);
+        vm.expectRevert(TicketRaffle.UnsupportedCollection.selector);
+        ticketRaffle.create(address(nft), 2, 0.1 ether, 5, 20, 1 days);
+    }
+
+    /// A raffle too small to pay for its own randomness request is refunded, not drawn.
+    function test_potBelowMinimumIsRefunded() public {
+        _mintApproved(alice, 2, address(ticketRaffle));
+        vm.prank(alice);
+        uint256 id = ticketRaffle.create(address(nft), 2, 1 wei, 1, 1, 1 hours);
+        vm.prank(bob);
+        ticketRaffle.buy{value: 1}(id, 1);
+        ticketRaffle.close(id);
+        (,,,,,,,,, TicketRaffle.Status status,) = ticketRaffle.raffles(id);
+        assertEq(uint8(status), uint8(TicketRaffle.Status.Refunding));
+        assertEq(randomness.lastRequestId(), 0);
+    }
+
+    /// If randomness never arrives, anyone can turn the raffle into refunds a week after its end.
+    function test_abort_whenTheDrawNeverCompletes() public {
+        _buy(bob, 5);
+        skip(1 days);
+        ticketRaffle.close(raffleId);
+        vm.expectRevert(abi.encodeWithSelector(TicketRaffle.TooEarly.selector, block.timestamp + 7 days));
+        ticketRaffle.abort(raffleId);
+
+        skip(7 days);
+        vm.prank(carol);
+        ticketRaffle.abort(raffleId);
+        assertEq(uint8(_status()), uint8(TicketRaffle.Status.Refunding));
+
+        uint256 before = bob.balance;
+        vm.prank(bob);
+        ticketRaffle.refund(raffleId);
+        assertEq(bob.balance - before, 0.5 ether);
+        vm.prank(alice);
+        ticketRaffle.reclaim(raffleId);
+        assertEq(nft.ownerOf(1), alice);
+
+        vm.expectRevert(TicketRaffle.StaleRequest.selector);
+        randomness.fulfill(1, 0); // the abandoned request can no longer pick a winner
+    }
+
+    /// A drawn raffle that nobody settles for a week (for example because the NFT cannot be moved) can
+    /// also be aborted, so the ticket money is never stuck.
+    function test_abort_whenAWonRaffleIsNeverSettled() public {
+        _buy(bob, 5);
+        skip(1 days);
+        ticketRaffle.close(raffleId);
+        randomness.fulfill(1, 0);
+        skip(7 days);
+        ticketRaffle.abort(raffleId);
+        vm.expectRevert(
+            abi.encodeWithSelector(TicketRaffle.WrongStatus.selector, TicketRaffle.Status.Refunding)
+        );
+        ticketRaffle.settle(raffleId);
+        vm.prank(bob);
+        ticketRaffle.refund(raffleId);
+        assertEq(address(ticketRaffle).balance, 0);
+    }
+
+    /// The fee is fixed when the raffle is created.
+    function test_feeChangeDoesNotAffectExistingRaffles() public {
+        vm.prank(gov);
+        ticketRaffle.setParams(1_000, 0.05 ether);
         _buy(bob, 10);
         skip(1 days);
         ticketRaffle.close(raffleId);
         randomness.fulfill(1, 0);
         ticketRaffle.settle(raffleId);
-        assertEq(treasury.unallocated(), 0.05 ether);
-        assertEq(treasury.budgetOf(address(nft)), 0);
+        assertEq(ticketRaffle.owedTo(alice), 0.95 ether);
     }
 
     /// Whoever buys however many tickets, every wei ends up with the creator, the treasury or back
@@ -211,6 +289,8 @@ contract TicketRaffleTest is Base {
         ticketRaffle.close(raffleId);
 
         if (sold < 5) {
+            vm.prank(alice);
+            ticketRaffle.reclaim(raffleId);
             assertEq(nft.ownerOf(1), alice);
             for (uint256 i; i < 3; ++i) {
                 if (ticketRaffle.paidBy(raffleId, buyers[i]) == 0) continue;

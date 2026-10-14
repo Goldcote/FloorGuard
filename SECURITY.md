@@ -4,8 +4,11 @@
 
 FloorGuard has had no professional audit, no formal verification and no testnet
 soak. The test suite covers the behaviour described in `docs/ARCHITECTURE.md`,
-which is not the same as being safe. Two automated review passes have been run
-and their findings fixed (`test/Regressions.t.sol`); that is not an audit.
+which is not the same as being safe. Six automated code review passes and one
+economics review have been run and their findings acted on;
+[docs/AUDIT.md](docs/AUDIT.md) and
+[docs/ECONOMICS-REVIEW.md](docs/ECONOMICS-REVIEW.md) record them. That is not a
+professional audit.
 
 ## Known limitations
 
@@ -15,36 +18,111 @@ and their findings fixed (`test/Regressions.t.sol`); that is not an audit.
 - **Oracle manipulation.** `SalesFloorOracle` can be moved by four wash trades in
   a single transaction, whatever the organic volume. Pushing it down is free,
   because the fee on a 1 wei sale rounds to zero; pushing it up costs the fee on
-  each inflated sale. The Vault defends against a low reading with an auction
-  reserve, but anything else that settles on this oracle is exposed. Do not point
-  the PredictionMarket at it. `PushFloorOracle` trusts its reporters completely.
-- **Buyback overpayment.** The rising bid is capped only by the owner-set
-  `maxPrice`. If a collection's budget is empty for a long time and is then
-  refilled, sellers may be paid more than the market floor. The bid only steps
-  down by `stepDownBps` per fill, so several sellers in a row can benefit until
-  the bid falls back to the floor or the budget runs out.
-- **Raffle farming.** Points cost fees, so a raffle is safe only while the prize
-  is worth less than the fees behind all outstanding points. If the Treasury is
-  funded from outside (donations, owner allocations) rather than from fees, a
-  self-dealer can buy a large share of the points just before a draw for less
-  than the prize is worth. Points are not time-weighted.
-- **Late information in prediction markets.** Betting closes at most halfway
+  each inflated sale. Vault auctions use it for their reserve and opening price:
+  a low reading cannot open an auction below 16 times the unlock price, but a
+  high reading can hold an auction above the market until it is restarted.
+  Anything else that settles on this oracle is exposed. Do not point the
+  PredictionMarket at it. `PushFloorOracle` trusts its reporters completely.
+- **Vault unlock timing.** Because the oracle can be pushed down for free, anyone
+  can keep a holding from unlocking on its own; the owner can still unlock it.
+  Pushing the oracle up to force an early unlock costs fees and only works after
+  the 180-day lock.
+- **Collections with open supply.** If tokens of a supported collection can still
+  be minted, whoever can mint below the bid can sell fresh tokens into it and
+  take the collection's whole budget. Support only fully minted collections
+  whose owner cannot mint more, and set a buyback cooldown.
+- **Prediction settlement needs a keeper.** A market settles on the oracle price
+  at the moment `resolve` is called, provided it was published after the
+  settlement time. If nobody resolves promptly, whoever benefits can wait for a
+  price they like. Someone has to call `resolve` as soon as the first price after
+  settlement is published.
+- **Other things that need a keeper.** A ticket raffle with a winner has to be
+  settled within a week of its draw or anyone can turn it into refunds. A
+  lottery round or raffle not drawn within a week of its end is refunded. A
+  prediction market's settlement price is rejected once it is a day old, so a
+  market has to be resolved within a day of that price. `keeper/` is a bot that
+  does all of this; it has not been run on a public network.
+- **Points need activating.** Pending points do not count in a raffle. Someone
+  has to call `flushMany` for holders before each draw, or holders must activate
+  their own.
+- **Buyback overpayment.** The bid is limited by the collection's budget, and
+  late money restarts the curve rather than inheriting its drift. In a review's
+  simulation this paid the floor in steady, rising and falling markets. What
+  remains: the owner's `maxPrice` is the only upper limit; a holder who
+  dominates a collection's supply can wait for a higher bid; and after a sharp
+  fall with almost no fee income the base is stale, so a lump arriving then
+  (auction proceeds, a donation, an allocation), and the budget already on
+  hand, is offered at once at up to the stale base unless the owner or guardian
+  lowers the bid first. In a review's model a 60% overnight fall led to a first
+  purchase at 2.4 times the new floor; with the guardian acting, 1.003 times. Changing the Treasury's
+  spender and back also skips the restart: reconfigure the bid afterwards.
+- **Selling into the bid without a minimum.** With a thin budget the bid can be
+  far below the base. Always pass a `minPrice`. The engine refuses bids under
+  a share of the current base (a tenth by default), and the Vault's `minReserveOf`
+  keeps a cheaply bought holding from being auctioned cheaply: set both.
+- **Raffle farming.** Points cost fees (one point per unit of fee, and a farmer
+  who also sells into the bid gets part of the fee back), only activated points
+  count, and whoever calls `draw` closes activation for everyone else. A raffle
+  is safe only while the prize is worth much less than the fees behind the
+  activated points: as a rule of thumb, at most a quarter. Set
+  `minPointsToDraw` accordingly, run `flushMany` for holders before each draw,
+  and prefer an auction, which always returns more to the budget. Points are
+  not time-weighted and are shared across collections.
+- **Late information in prediction markets.** Betting closes at most a tenth of the way
   through a market and settlement needs a price published after the settlement
   time, but later bettors still see more recent prices than earlier ones.
 - **Games and paid raffles.** Operating games of chance and paid raffles is
-  regulated or prohibited in many jurisdictions; deploying `Games` or
-  `TicketRaffle` is the operator's legal responsibility. The
-  bankroll carries variance: a run of player wins can shrink it. The fairness of
+  regulated or prohibited in many jurisdictions; deploying `Games`, `Lottery`
+  or `TicketRaffle` is the operator's legal responsibility. The same question
+  applies to `VaultRaffle`, where the chance of a prize is earned by paying
+  fees, and to `PredictionMarket`, which takes bets on a price reported by a
+  party the operator appoints. The
+  bankroll carries variance: a run of player wins can shrink it. It keeps
+  half of the edge by default to pay for that risk, and a long run of player wins can still exhaust it. On Ethereum mainnet a randomness request can cost
+  many times the fee on a small wager: set `minBet` so the fee covers it. The fairness of
   every bet rests on the randomness provider.
-- **Shared randomness subscription.** The deploy script puts the raffle and the
-  games on one Chainlink VRF subscription. Many minimum-size bets can drain it
-  and stall raffle draws. Use separate subscriptions and a `minBet` that covers
+- **House shares.** Anyone can fund the games bankroll for shares and redeem them
+  later. Share holders can lose part or all of what they put in when players
+  win; nothing is guaranteed, and the half of the edge the bankroll keeps only
+  tilts the average. Three reviews in a row broke or bent the pricing design.
+  What stands now: a request waits for the bets open when it was made, and bets
+  open when it is carried out are priced against whoever carries it out, up to
+  a spread the requester names and the contract enforces. Whatever spread a
+  requester tolerates another holder can make them pay by opening bets, so
+  tolerate little. On a busy table a fair-value exit can take hours or never
+  come. While randomness is down, bets are free (they are refunded in full), so
+  someone can keep funds set aside until the six-hour refund and the ten-minute
+  pause after it. The account that funds the bankroll owns the shares, and
+  shares cannot be transferred: do not fund it from a deployment hot key.
+  Offering a share in a gambling bankroll may be a regulated activity of its
+  own (in some places a security or a gambling licence matter), separate from
+  operating the games. The latest hardening has tests but no independent
+  review, and the randomised campaigns written for earlier versions no longer
+  apply and were removed.
+- **Shared randomness subscription.** The deploy script puts all four randomness
+  consumers (vault raffle, games, ticket raffle and lottery) on one Chainlink
+  VRF subscription. Many minimum-size bets can drain it and stall every draw
+  until it is refilled. Use separate subscriptions and a `minBet` that covers
   the cost of a request.
 - **No slippage guard on bets.** The owner can change the games edge (up to 10%)
   between a player signing a bet and it being mined.
+- **Ticket raffle dilution.** A raffle's creator can buy most of the unsold
+  tickets just before the end. Their own ticket money comes back to them less
+  the fee, so this cheaply cuts other buyers' odds. Judge odds against the
+  maximum number of tickets, not the number sold so far.
+- **Deployer power until handover.** The deploying key owns every contract until
+  the final owner accepts ownership, which with a timelock takes at least the
+  timelock delay. Complete the handover before funding anything.
 - **IP licences are records, not rights.** `IPLicenseManager` records payments.
   Whether the Vault can sublicense a collection's artwork depends on that
   collection's terms.
+- **Owner changes that reach open positions.** A licence tier's duration can be
+  changed between a buyer signing and the purchase being mined; only the price
+  is checked. Fees and minimum pots are fixed per market, raffle and round when
+  they are created.
+- **Stranded ETH.** Rounding dust in the PredictionMarket is never swept. Games,
+  ticket raffle and lottery payouts go only to the account that earned them, so
+  a contract that cannot receive ETH cannot collect.
 - **Non-standard NFTs.** Collections with transfer hooks, blocklists or
   non-standard ERC-721 behaviour have not been considered.
 

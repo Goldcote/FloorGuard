@@ -6,6 +6,9 @@
 // machine without Foundry. Addresses are always rewritten from whatever deployments/*.json exist.
 //
 // `npm run sync -- --check` writes nothing and exits 1 if the generated files are out of date.
+// `npm run sync -- --local` also writes the local anvil chain's addresses (deployments/31337.json) to
+// src/generated/addresses.local.ts. Without it that chain is left out, so a checked-in addresses.ts
+// never carries a local deployment into a production build.
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,6 +30,9 @@ const CONTRACTS = {
   pointsAbi: "Points",
   vaultRaffleAbi: "VaultRaffle",
   gamesAbi: "Games",
+  ticketRaffleAbi: "TicketRaffle",
+  lotteryAbi: "Lottery",
+  ipLicenseManagerAbi: "IPLicenseManager",
   salesFloorOracleAbi: "SalesFloorOracle",
   pushFloorOracleAbi: "PushFloorOracle",
   erc721Abi: "ERC721",
@@ -43,10 +49,15 @@ const REQUIRED_KEYS = [
   "points",
   "vaultRaffle",
   "games",
+  "ticketRaffle",
+  "lottery",
+  "ipLicenseManager",
   "salesFloorOracle",
   "pushFloorOracle",
   "randomness",
   "gamesRandomness",
+  "ticketRaffleRandomness",
+  "lotteryRandomness",
   "owner",
 ];
 const OPTIONAL_KEYS = ["demoCollection"];
@@ -109,7 +120,11 @@ function syncAbis() {
   return true;
 }
 
-function syncAddresses() {
+/** The local anvil chain. Its addresses never go into the checked-in addresses.ts. */
+const LOCAL_CHAIN_ID = 31337;
+const local = process.argv.includes("--local");
+
+function readDeployments() {
   const files = existsSync(deploymentsDir)
     ? readdirSync(deploymentsDir).filter((f) => /^\d+\.json$/.test(f))
     : [];
@@ -131,6 +146,12 @@ function syncAddresses() {
     }
     deployments[chainId] = entry;
   }
+  return deployments;
+}
+
+function syncAddresses() {
+  const all = readDeployments();
+  const { [LOCAL_CHAIN_ID]: localEntry, ...publicChains } = all;
 
   const fields = [
     ...REQUIRED_KEYS.map((k) => `  ${k}: Address;`),
@@ -141,11 +162,26 @@ function syncAddresses() {
     "\n" +
     "export type Address = `0x${string}`;\n\n" +
     `export type Deployment = {\n${fields}\n};\n\n` +
-    "/** Keyed by chain id. A chain without an entry has no known deployment. */\n" +
-    `export const deployments: Partial<Record<number, Deployment>> = ${JSON.stringify(deployments, null, 2)};\n`;
+    "/** Keyed by chain id. A chain without an entry has no known deployment. The local anvil chain\n" +
+    " *  (31337) is never listed here: see addresses.local.ts and src/local.ts. */\n" +
+    `export const deployments: Partial<Record<number, Deployment>> = ${JSON.stringify(publicChains, null, 2)};\n`;
   emit("addresses.ts", source);
-  const ids = Object.keys(deployments);
-  console.log(`Addresses: ${ids.length} chain(s)${ids.length ? `: ${ids.join(", ")}` : ""}.`);
+  const ids = Object.keys(publicChains);
+  console.log(`Addresses: ${ids.length} public chain(s)${ids.length ? `: ${ids.join(", ")}` : ""}.`);
+
+  // `npm run sync -- --local`: the local chain's addresses, in a git-ignored file that only a
+  // development build (or one built with VITE_ENABLE_LOCAL=1) imports.
+  if (!local) {
+    if (localEntry) console.log("Addresses: deployments/31337.json was left out. Use `npm run sync -- --local` for a local chain.");
+    return;
+  }
+  const localSource =
+    HEADER +
+    "// LOCAL DEVELOPMENT ONLY (npm run sync -- --local). Git-ignored; not part of a production build.\n\n" +
+    'import type { Deployment } from "./addresses";\n\n' +
+    `export const localDeployment: Deployment | undefined = ${localEntry ? JSON.stringify(localEntry, null, 2) : "undefined"};\n`;
+  emit("addresses.local.ts", localSource);
+  console.log(`Addresses: local chain ${LOCAL_CHAIN_ID} ${localEntry ? "written to" : "absent; emptied"} src/generated/addresses.local.ts.`);
 }
 
 syncAbis();

@@ -111,34 +111,59 @@ contract VaultTest is Base {
         _pushFloor(14 ether);
         vm.prank(carol);
         vault.startAuction(vaultId);
-        assertEq(vault.auctionPrice(vaultId), 21 ether);
+        assertEq(vault.auctionPrice(vaultId), 224 ether); // 16 x the 14 ETH floor
     }
 
     function test_auction_ownerCanStartImmediately() public {
         _unlockByConditions();
         vm.prank(gov);
         vault.startAuction(vaultId);
-        assertEq(vault.auctionPrice(vaultId), 19.5 ether);
+        assertEq(vault.auctionPrice(vaultId), 208 ether); // 16 x the 13 ETH reserve
     }
 
-    function test_auction_priceFallsToFloorThenHolds() public {
+    function test_auction_priceHalvesDailyDownToTheReserveThenHolds() public {
         _unlockByConditions();
         vm.prank(gov);
-        vault.startAuction(vaultId); // 19.5 -> 13 over 3 days
+        vault.startAuction(vaultId); // 208 -> 13 over 4 days
 
-        skip(1.5 days);
-        assertEq(vault.auctionPrice(vaultId), 16.25 ether);
-        skip(1.5 days);
+        skip(12 hours);
+        assertEq(vault.auctionPrice(vaultId), 156 ether);
+        skip(12 hours);
+        assertEq(vault.auctionPrice(vaultId), 104 ether);
+        skip(1 days);
+        assertEq(vault.auctionPrice(vaultId), 52 ether);
+        skip(1 days);
+        assertEq(vault.auctionPrice(vaultId), 26 ether);
+        skip(12 hours);
+        assertEq(vault.auctionPrice(vaultId), 19.5 ether);
+        skip(12 hours);
         assertEq(vault.auctionPrice(vaultId), 13 ether);
         skip(10 days);
         assertEq(vault.auctionPrice(vaultId), 13 ether);
+    }
+
+    function test_cancelAuction_returnsTheHoldingToUnlocked() public {
+        _unlockByConditions();
+        vm.prank(gov);
+        vault.startAuction(vaultId);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
+        vault.cancelAuction(vaultId);
+
+        vm.prank(gov);
+        vault.cancelAuction(vaultId);
+        assertEq(uint8(_status()), uint8(Vault.Status.Unlocked));
+        vm.prank(gov);
+        vault.relock(vaultId, block.timestamp + 30 days);
+        assertEq(uint8(_status()), uint8(Vault.Status.Locked));
     }
 
     function test_buy_sendsProceedsToCollectionBudgetAndRefundsExcess() public {
         _unlockByConditions();
         vm.prank(gov);
         vault.startAuction(vaultId);
-        skip(3 days);
+        skip(4 days);
 
         uint256 before = bob.balance;
         vm.prank(bob);
@@ -160,7 +185,7 @@ contract VaultTest is Base {
         vm.prank(gov);
         vault.startAuction(vaultId);
         vm.prank(bob);
-        vm.expectRevert(abi.encodeWithSelector(Vault.PriceNotMet.selector, 19.5 ether, 19 ether));
+        vm.expectRevert(abi.encodeWithSelector(Vault.PriceNotMet.selector, 208 ether, 19 ether));
         vault.buy{value: 19 ether}(vaultId);
     }
 
@@ -173,11 +198,17 @@ contract VaultTest is Base {
         vm.expectRevert(Vault.AuctionRunning.selector);
         vault.startAuction(vaultId);
 
-        skip(3 days);
+        skip(4 days); // the price has just reached the reserve
+        _pushFloor(20 ether);
+        vm.prank(carol);
+        vm.expectRevert(Vault.AuctionRunning.selector); // it must rest there for a day first
+        vault.startAuction(vaultId);
+
+        skip(1 days);
         _pushFloor(20 ether); // floor rose while the auction sat at 13
         vm.prank(carol);
         vault.startAuction(vaultId);
-        assertEq(vault.auctionPrice(vaultId), 30 ether);
+        assertEq(vault.auctionPrice(vaultId), 320 ether);
     }
 
     /// A public auction never goes below the unlock price, whatever the oracle says.
@@ -187,8 +218,8 @@ contract VaultTest is Base {
         _pushFloor(1); // oracle pushed down to 1 wei
         vm.prank(carol);
         vault.startAuction(vaultId);
-        assertEq(vault.auctionPrice(vaultId), 19.5 ether);
-        skip(3 days);
+        assertEq(vault.auctionPrice(vaultId), 208 ether);
+        skip(4 days);
         assertEq(vault.auctionPrice(vaultId), 13 ether); // 130% of the 10 ETH purchase price
 
         vm.prank(carol);

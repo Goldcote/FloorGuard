@@ -38,7 +38,7 @@ contract FlywheelTest is Base {
         points.flush(alice);
         points.flush(bob);
         assertEq(points.pointsOf(alice), points.pointsOf(bob));
-        assertEq(points.totalPoints(), 2 * 10 * POINTS_RATE);
+        assertEq(points.totalPoints(), 10 * POINTS_RATE); // each fee credited once, half to each side
 
         // 2. Buyback: the bid starts under the floor and rises until a holder takes it.
         vm.prank(gov);

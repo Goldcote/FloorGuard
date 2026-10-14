@@ -8,8 +8,8 @@ import {ITreasury, IFloorOracle, IPoints} from "./interfaces/IFloorGuard.sol";
 /// @title PredictionMarket
 /// @notice Pooled (parimutuel) bets on whether a collection's floor will be higher or lower at a set
 ///         time. Winners split the losing pool pro rata; a fee on their winnings goes to the Treasury as
-///         buyback budget for that collection. Markets with a one-sided pool, an unchanged price or no
-///         usable oracle price are voided and refunded in full.
+///         buyback budget for that collection. Markets with a one-sided pool, a price that moved less
+///         than the dead band, or no usable oracle price are voided and refunded in full.
 contract PredictionMarket is Ownable2Step, ReentrancyGuard {
     enum Outcome {
         Pending,
@@ -47,12 +47,22 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
 
     uint256 public feeBps = 300;
     uint256 public minBet = 0.001 ether;
-    /// @notice Oracle prices older than this are rejected.
+    /// @notice Oracle prices older than this are rejected at settlement.
     uint256 public maxOracleAge = 1 days;
+    /// @notice A market can only be created on a price at most this old, so its start price is current.
+    uint256 public maxStartPriceAge = 1 hours;
+    /// @notice A market is void unless the price moved by at least this share of the start price, so a
+    ///         one-wei move cannot decide it.
+    uint256 public deadBandBps = 200;
+    uint256 public constant MAX_DEAD_BAND_BPS = 1_000;
     mapping(address collection => bool) public isSupported;
 
     uint256 public marketCount;
     mapping(uint256 marketId => Market) public markets;
+    /// @notice The fee of each market, fixed when it is created.
+    mapping(uint256 marketId => uint256) public feeBpsOf;
+    /// @notice The dead band of each market, fixed when it is created.
+    mapping(uint256 marketId => uint256) public deadBandBpsOf;
     mapping(uint256 marketId => mapping(address => Stake)) public stakes;
 
     event MarketCreated(
@@ -68,6 +78,7 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
     event CollectionSupportSet(address indexed collection, bool supported);
     event ParamsSet(uint256 feeBps, uint256 minBet, uint256 maxOracleAge);
     event OracleSet(address oracle);
+    event MarketRulesSet(uint256 deadBandBps, uint256 maxStartPriceAge);
     event PointsSet(address points);
 
     error UnsupportedCollection();
@@ -90,20 +101,23 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
 
     // ------------------------------------------------------------------ markets
 
-    /// @notice Open a market on a supported collection. Betting runs for `bettingPeriod`, at most half of
-    ///         `duration`; the market settles on a floor price published at or after `duration`.
+    /// @notice Open a market on a supported collection. Betting runs for `bettingPeriod`, at most a tenth
+    ///         of `duration`, so the last bettor knows little more than the first; the market settles on
+    ///         a floor price published at or after `duration`.
     function createMarket(address collection, uint256 bettingPeriod, uint256 duration)
         external
         returns (uint256 marketId)
     {
         if (!isSupported[collection]) revert UnsupportedCollection();
-        if (bettingPeriod < MIN_BETTING_PERIOD || duration < 2 * bettingPeriod || duration > MAX_DURATION) {
+        if (bettingPeriod < MIN_BETTING_PERIOD || duration < 10 * bettingPeriod || duration > MAX_DURATION) {
             revert InvalidDuration();
         }
-        (bool fresh, uint256 price,) = _tryFloor(collection);
-        if (!fresh) revert OracleUnavailable();
+        (bool fresh, uint256 price, uint256 updatedAt) = _tryFloor(collection);
+        if (!fresh || updatedAt + maxStartPriceAge < block.timestamp) revert OracleUnavailable();
 
         marketId = ++marketCount;
+        feeBpsOf[marketId] = feeBps;
+        deadBandBpsOf[marketId] = deadBandBps;
         Market storage m = markets[marketId];
         m.collection = collection;
         m.startPrice = uint128(price);
@@ -148,12 +162,13 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
             if (!fresh) {
                 if (block.timestamp < uint256(m.resolveTime) + VOID_GRACE) revert OracleUnavailable();
                 outcome = Outcome.Void;
-            } else if (endPrice > m.startPrice) {
-                outcome = Outcome.Higher;
-            } else if (endPrice < m.startPrice) {
-                outcome = Outcome.Lower;
             } else {
-                outcome = Outcome.Void;
+                uint256 move = endPrice > m.startPrice ? endPrice - m.startPrice : m.startPrice - endPrice;
+                if (move == 0 || move * BPS < uint256(m.startPrice) * deadBandBpsOf[marketId]) {
+                    outcome = Outcome.Void;
+                } else {
+                    outcome = endPrice > m.startPrice ? Outcome.Higher : Outcome.Lower;
+                }
             }
         }
         m.outcome = outcome;
@@ -168,6 +183,7 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
         Stake memory s = stakes[marketId][msg.sender];
         if (s.higher == 0 && s.lower == 0) revert NothingToClaim();
         delete stakes[marketId][msg.sender];
+        uint256 marketFeeBps = feeBpsOf[marketId];
 
         uint256 payout;
         uint256 fee;
@@ -181,18 +197,21 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
                 higherWon ? (m.higherPool, m.lowerPool) : (m.lowerPool, m.higherPool);
             if (won != 0) {
                 uint256 profit = won * losePool / winPool;
-                fee = profit * feeBps / BPS;
+                fee = profit * marketFeeBps / BPS;
                 payout = won + profit - fee;
             }
-            pointsFee = fee + lost * feeBps / BPS;
+            // each fee is credited once: half to the winners who pay it, half to the losers who fund it
+            pointsFee = lost * marketFeeBps / BPS;
         }
 
         emit Claimed(marketId, msg.sender, payout, fee);
-        if (fee != 0) {
-            // points follow what reached the buyback budget, not the project's share of the fee
-            uint256 toBudget = treasury.depositFee{value: fee}(m.collection);
-            pointsFee = pointsFee * toBudget / fee;
+        // points follow what reaches the buyback budget, not the project's share of the fee
+        if (pointsFee != 0) {
+            (, uint16 shareBps) = treasury.projectShareOf(m.collection);
+            pointsFee = pointsFee * (BPS - shareBps) / BPS;
         }
+        if (fee != 0) pointsFee += treasury.depositFee{value: fee}(m.collection);
+        pointsFee /= 2;
         if (pointsFee != 0 && address(points) != address(0)) {
             // points are a bonus; a failure there must never block a payout
             try points.creditFee(msg.sender, pointsFee) {} catch {}
@@ -210,13 +229,21 @@ contract PredictionMarket is Ownable2Step, ReentrancyGuard {
         emit CollectionSupportSet(collection, supported);
     }
 
-    /// @dev A fee change applies to markets that are already open.
+    /// @dev A fee change applies to markets created afterwards.
     function setParams(uint256 feeBps_, uint256 minBet_, uint256 maxOracleAge_) external onlyOwner {
         if (feeBps_ > MAX_FEE_BPS) revert TooHigh();
         feeBps = feeBps_;
         minBet = minBet_;
         maxOracleAge = maxOracleAge_;
         emit ParamsSet(feeBps_, minBet_, maxOracleAge_);
+    }
+
+    /// @dev The dead band applies to markets created afterwards.
+    function setMarketRules(uint256 deadBandBps_, uint256 maxStartPriceAge_) external onlyOwner {
+        if (deadBandBps_ > MAX_DEAD_BAND_BPS) revert TooHigh();
+        deadBandBps = deadBandBps_;
+        maxStartPriceAge = maxStartPriceAge_;
+        emit MarketRulesSet(deadBandBps_, maxStartPriceAge_);
     }
 
     function setOracle(IFloorOracle oracle_) external onlyOwner {

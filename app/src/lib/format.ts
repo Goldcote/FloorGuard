@@ -20,15 +20,15 @@ export function dateTime(seconds: number | bigint): string {
   return new Date(n * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
-/** A duration in seconds as "3d 4h", "2h 5m", "40s". */
+/** A duration in seconds as "3d 4h", "30d", "2h 5m", "40s". */
 export function duration(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
   const d = Math.floor(s / 86_400);
   const h = Math.floor((s % 86_400) / 3_600);
   const m = Math.floor((s % 3_600) / 60);
-  if (d > 0) return `${d}d ${h}h`;
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m ${s % 60}s`;
+  if (d > 0) return h > 0 ? `${d}d ${h}h` : `${d}d`;
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  if (m > 0) return s % 60 > 0 ? `${m}m ${s % 60}s` : `${m}m`;
   return `${s}s`;
 }
 
@@ -41,6 +41,11 @@ export function relative(target: number, now: number): string {
 /** Points use 18 decimals, like ETH. */
 export function points(amount: bigint): string {
   return eth(amount, 2);
+}
+
+/** In the demo every amount is play money: "ETH" in a result line or a dialog reads "play ETH". */
+export function playMoney(text: string): string {
+  return text.replace(/(?<!play )\bETH\b/g, "play ETH");
 }
 
 /** Basis points as a percentage string. */
