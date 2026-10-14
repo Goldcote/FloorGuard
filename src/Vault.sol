@@ -167,6 +167,14 @@ contract Vault is IVault, IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     /// @notice When the draw behind `roundSeed` was requested; holdings eligible by then take part.
     uint40 public seedRequestedAt;
     uint40 public seedArrivedAt;
+    /// @notice Number of draws requested, and the one `roundSeed` answers.
+    uint256 public roundNonce;
+    uint256 public seedNonce;
+    /// @notice A collection's median floor as it stood when draw `snapNonceOf` was requested, recorded by
+    ///         the first sample taken after that request, before the sample can push an old one out of
+    ///         the ring. Zero when there was no usable median.
+    mapping(address collection => uint256) public snapNonceOf;
+    mapping(address collection => uint256) public snapMedianOf;
 
     event Deposited(
         uint256 indexed vaultId, address indexed collection, uint256 indexed tokenId, uint256 price
@@ -187,6 +195,7 @@ contract Vault is IVault, IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     event UnlockRoundSeeded(uint256 requestId, uint256 seed);
     event UnlockRoundExpired(uint256 requestId);
     event ReleasedToPlayers(uint256 indexed vaultId, uint256 raffleId);
+    event RemovedFromPlayers(uint256 indexed vaultId);
     event RandomnessSet(address randomness);
     event PlayersShareSet(uint256 playersShareBps);
 
@@ -256,6 +265,12 @@ contract Vault is IVault, IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         if (lastSampleSlot[collection] >= slot) revert AlreadySampled();
         (bool fresh, uint256 floor) = _tryFloor(collection);
         if (!fresh || floor > type(uint128).max) revert StaleOracle();
+        uint256 nonce = roundNonce;
+        if (nonce != 0 && snapNonceOf[collection] != nonce) {
+            (bool usable, uint256 median) = medianFloorAt(collection, roundRequestedAt);
+            snapNonceOf[collection] = nonce;
+            snapMedianOf[collection] = usable ? median : 0;
+        }
         lastSampleSlot[collection] = slot;
         _samples[collection][sampleCount[collection]++ % FLOOR_SAMPLES] =
             FloorSample(uint128(floor), uint40(block.timestamp));
@@ -265,13 +280,23 @@ contract Vault is IVault, IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     /// @notice Lower median of the samples taken in the last `FLOOR_SAMPLES` intervals. Not usable with
     ///         fewer than `MIN_FLOOR_SAMPLES` of them.
     function medianFloor(address collection) public view returns (bool usable, uint256 median) {
+        return medianFloorAt(collection, block.timestamp);
+    }
+
+    /// @notice The median as it stood at `asOf`: only samples taken at or before then, and within the
+    ///         `FLOOR_SAMPLES` intervals before it, among those still in the ring.
+    function medianFloorAt(address collection, uint256 asOf)
+        public
+        view
+        returns (bool usable, uint256 median)
+    {
         FloorSample[FLOOR_SAMPLES] storage ring = _samples[collection];
         uint256[FLOOR_SAMPLES] memory prices;
         uint256 n;
         uint256 horizon = FLOOR_SAMPLES * SAMPLE_INTERVAL;
         for (uint256 i; i < FLOOR_SAMPLES; ++i) {
             FloorSample memory s = ring[i];
-            if (s.takenAt == 0 || s.takenAt + horizon <= block.timestamp) continue;
+            if (s.takenAt == 0 || s.takenAt > asOf || s.takenAt + horizon <= asOf) continue;
             uint256 j = n++;
             for (; j > 0 && prices[j - 1] > s.price; --j) {
                 prices[j] = prices[j - 1];
@@ -292,6 +317,9 @@ contract Vault is IVault, IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         if (roundRequestedAt != 0 && block.timestamp < readyAt) revert TooEarly(readyAt);
         roundPending = true;
         roundRequestedAt = uint40(block.timestamp);
+        ++roundNonce;
+        // One word at a time: a new draw retires the previous one.
+        seedArrivedAt = 0;
         uint256 requestId = randomness.requestRandomness();
         roundRequestId = requestId;
         emit UnlockRoundRequested(requestId);
@@ -308,6 +336,7 @@ contract Vault is IVault, IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
             return;
         }
         roundSeed = randomWord;
+        seedNonce = roundNonce;
         seedRequestedAt = roundRequestedAt;
         seedArrivedAt = uint40(block.timestamp);
         emit UnlockRoundSeeded(requestId, randomWord);
@@ -328,6 +357,7 @@ contract Vault is IVault, IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     ///         is eligible.
     function isPicked(uint256 vaultId) public view returns (bool) {
         Holding memory h = holdings[vaultId];
+        if (h.status != Status.Locked || isPlayersHolding[vaultId]) return false;
         if (seedArrivedAt == 0 || block.timestamp >= uint256(seedArrivedAt) + SEED_LIFETIME) return false;
         if (h.lockedUntil > seedRequestedAt || h.acquiredAt > seedRequestedAt) return false;
         uint256 roll = uint256(keccak256(abi.encode(roundSeed, vaultId))) % BPS;
@@ -343,12 +373,24 @@ contract Vault is IVault, IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
 
     // ------------------------------------------------------------------ unlocking
 
-    /// @notice True when the current draw picked this holding, the 30-day median floor meets the
-    ///         multiple its age requires, and the collection's release cap has room.
+    /// @notice The collection's median floor as it stood when the current draw was requested. A sample
+    ///         taken once the draw is known cannot change it.
+    function drawMedianFloor(address collection) public view returns (bool usable, uint256 median) {
+        if (snapNonceOf[collection] == seedNonce && seedNonce != 0) {
+            median = snapMedianOf[collection];
+            return (median != 0, median);
+        }
+        // no sample since the request, so the ring is as it was then
+        return medianFloorAt(collection, seedRequestedAt);
+    }
+
+    /// @notice True when the current draw picked this holding, the 30-day median floor as it stood when
+    ///         the draw was requested meets the multiple its age requires, and the collection's release
+    ///         cap has room.
     function canUnlock(uint256 vaultId) public view returns (bool) {
+        if (!isPicked(vaultId)) return false;
         Holding memory h = holdings[vaultId];
-        if (h.status != Status.Locked || isPlayersHolding[vaultId] || !isPicked(vaultId)) return false;
-        (bool usable, uint256 median) = medianFloor(h.collection);
+        (bool usable, uint256 median) = drawMedianFloor(h.collection);
         if (!usable || median < _required(h)) return false;
         return releaseAllowance(h.collection) != 0;
     }
@@ -361,7 +403,7 @@ contract Vault is IVault, IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         unlockBpsOf[vaultId] = bps;
         // Remember the median floor, capped so that a pumped oracle cannot push the opening price of
         // every later auction out of reach.
-        (, uint256 median) = medianFloor(h.collection);
+        (, uint256 median) = drawMedianFloor(h.collection);
         uint256 cap = uint256(h.purchasePrice) * bps / BPS * AUCTION_START_MULTIPLE;
         unlockFloorOf[vaultId] = median > cap ? cap : median;
         _unlock(vaultId, false);
@@ -372,6 +414,7 @@ contract Vault is IVault, IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         Status status = holdings[vaultId].status;
         if (status != Status.Locked) revert WrongStatus(status);
         delete unlockFloorOf[vaultId];
+        delete unlockBpsOf[vaultId]; // the reserve goes back to 130% of the purchase price
         _unlock(vaultId, true);
     }
 
@@ -402,7 +445,7 @@ contract Vault is IVault, IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     function sendToRaffle(uint256 vaultId) external onlyOwner returns (uint256 raffleId) {
         Holding storage h = holdings[vaultId];
         if (h.status != Status.Unlocked) revert WrongStatus(h.status);
-        raffleId = _toRaffle(vaultId, h);
+        raffleId = _toRaffle(h);
         emit SentToRaffle(vaultId, raffleId);
     }
 
@@ -414,15 +457,27 @@ contract Vault is IVault, IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         if (h.status != Status.Locked) revert WrongStatus(h.status);
         if (block.timestamp < h.lockedUntil) revert TooEarly(h.lockedUntil);
         if (address(raffle) == address(0)) revert NoRaffle();
-        raffleId = _toRaffle(vaultId, h);
+        raffleId = _toRaffle(h);
         emit ReleasedToPlayers(vaultId, raffleId);
     }
 
-    function _toRaffle(uint256 vaultId, Holding storage h) private returns (uint256 raffleId) {
+    /// @notice Take a holding out of the players' share, for example while points are too thin for a
+    ///         fair raffle or when no raffle is set. It joins the moving lock, never before `MIN_LOCK`.
+    function removeFromPlayers(uint256 vaultId) external onlyOwner {
+        Holding storage h = holdings[vaultId];
+        if (!isPlayersHolding[vaultId]) revert NotForPlayers();
+        if (h.status != Status.Locked) revert WrongStatus(h.status);
+        isPlayersHolding[vaultId] = false;
+        uint256 earliest = uint256(h.acquiredAt) + MIN_LOCK;
+        if (h.lockedUntil < earliest) h.lockedUntil = uint40(earliest);
+        emit RemovedFromPlayers(vaultId);
+    }
+
+    function _toRaffle(Holding storage h) private returns (uint256 raffleId) {
         h.status = Status.Released;
         --heldCount[h.collection];
         IERC721(h.collection).transferFrom(address(this), address(raffle), h.tokenId);
-        raffleId = raffle.open(h.collection, h.tokenId);
+        raffleId = raffle.open(h.collection, h.tokenId, h.purchasePrice);
     }
 
     // ------------------------------------------------------------------ auction

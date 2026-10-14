@@ -152,7 +152,7 @@ contract VaultRaffleTest is Base {
         assertEq(nft.ownerOf(1), address(raffle));
         assertEq(uint8(_status()), uint8(VaultRaffle.Status.Open));
         vm.expectRevert(VaultRaffle.NotVault.selector);
-        raffle.open(address(nft), 1);
+        raffle.open(address(nft), 1, 1 ether);
     }
 
     function test_sendToRaffle_requiresUnlockedHolding() public {
@@ -254,6 +254,26 @@ contract VaultRaffleTest is Base {
         randomness.fulfill(randomness.lastRequestId(), 0);
         raffle.claim(raffleId); // no vesting
         assertEq(nft.ownerOf(1), bob);
+    }
+
+    /// A prize needs activated points in proportion to what the Vault paid for it.
+    function test_draw_needsPointsInProportionToThePrize() public {
+        vm.prank(gov);
+        raffle.setPointsPerPrizeWei(10_000);
+        uint256 value = raffle.prizeValueOf(raffleId);
+        assertGt(value, 0);
+        uint256 required = value * 10_000;
+        assertEq(raffle.minPointsRequired(raffleId), required);
+
+        _earn(bob, value / 1_000); // a thousandth of the prize in fees
+        skip(7 days);
+        vm.expectRevert(
+            abi.encodeWithSelector(VaultRaffle.BelowMinPoints.selector, points.totalPoints(), required)
+        );
+        raffle.draw(raffleId);
+
+        _earn(carol, value * 10); // ten times the prize in fees, at this suite's 1,000 points per ETH
+        raffle.draw(raffleId);
     }
 
     function test_claim_revertsBeforeWinner() public {

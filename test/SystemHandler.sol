@@ -616,32 +616,51 @@ contract SystemHandler is Test {
 
     function vUnlock(uint256 s1, uint256 s2, uint256) external step {
         uint256 id = _holdingIn(s1, Vault.Status.Locked);
-        (address c,, uint128 purchasePrice, uint40 acquiredAt, uint40 lockedUntil,,) = vault.holdings(id);
-        if (id != 0 && s2 % 6 == 0 && !vault.isPlayersHolding(id)) {
-            // someone who wants the holding out: from two weeks before its lock ends, washes the sales
-            // oracle to at least 130% of the purchase price every day (sometimes far above, to hit the
-            // cap) and samples it, then waits for a daily draw that picks the holding
-            uint256 sampleFrom = lockedUntil > 15 days ? lockedUntil - 15 days : 0;
-            if (block.timestamp < sampleFrom) vm.warp(sampleFrom);
-            uint256 multiple = (s2 >> 8) % 4 == 0 ? 400 : bound(s2 >> 16, 13, 40);
-            for (uint256 d; d < 16; ++d) {
-                _wash(c, uint256(purchasePrice) * multiple / 10 + 1, s2 >> 32, (s2 >> 64) + d);
-                try vault.sampleFloor(c) {
-                    _hit("vault.sampleFloor");
-                } catch {}
-                skip(1 days);
-            }
-            if (block.timestamp < lockedUntil) vm.warp(lockedUntil);
-            try vault.requestUnlockRound() {
-                uint256 chance = vault.drawChanceBps(block.timestamp - acquiredAt);
-                uint256 word = 1;
-                while (uint256(keccak256(abi.encode(word, id))) % 10_000 >= chance) ++word;
-                vaultRnd.fulfill(vaultRnd.lastRequestId(), word);
-            } catch {}
-        }
+        if (id != 0 && s2 % 6 == 0 && !vault.isPlayersHolding(id)) _patientUnlocker(id, s2);
         vm.prank(_a(s2));
         try vault.unlock(id) {
             _hit("vault.unlock (permissionless)");
+        } catch {}
+    }
+
+    /// Someone who wants a holding out: washes the sales oracle to at least 130% of the purchase price
+    /// (sometimes far above, to hit the cap) and samples it daily until the collection has a usable
+    /// median, waits for the lock to end, then waits for a daily draw that picks the holding.
+    function _patientUnlocker(uint256 id, uint256 s2) private {
+        (address c,, uint128 purchasePrice,, uint40 lockedUntil,,) = vault.holdings(id);
+        uint256 days_ = _samplingDaysNeeded(c, purchasePrice);
+        uint256 sampleFrom = lockedUntil > days_ * 1 days ? lockedUntil - days_ * 1 days : 0;
+        if (block.timestamp < sampleFrom) vm.warp(sampleFrom);
+        uint256 target =
+            uint256(purchasePrice) * ((s2 >> 8) % 4 == 0 ? 400 : bound(s2 >> 16, 13, 40)) / 10 + 1;
+        for (uint256 d; d < days_; ++d) {
+            _washAndSample(c, target, s2, d);
+        }
+        if (block.timestamp < lockedUntil) vm.warp(lockedUntil);
+        _drawPicking(id);
+    }
+
+    /// A month of samples is only needed when the collection has no usable median high enough.
+    function _samplingDaysNeeded(address c, uint128 purchasePrice) private view returns (uint256) {
+        (bool usable, uint256 median) = vault.medianFloor(c);
+        return usable && median >= uint256(purchasePrice) * 13 / 10 ? 0 : 16;
+    }
+
+    function _washAndSample(address c, uint256 target, uint256 s2, uint256 d) private {
+        _wash(c, target, s2 >> 32, (s2 >> 64) + d);
+        try vault.sampleFloor(c) {
+            _hit("vault.sampleFloor");
+        } catch {}
+        skip(1 days);
+    }
+
+    function _drawPicking(uint256 id) private {
+        (,,, uint40 acquiredAt,,,) = vault.holdings(id);
+        try vault.requestUnlockRound() {
+            uint256 chance = vault.drawChanceBps(block.timestamp - acquiredAt);
+            uint256 word = 1;
+            while (uint256(keccak256(abi.encode(word, id))) % 10_000 >= chance) ++word;
+            vaultRnd.fulfill(vaultRnd.lastRequestId(), word);
         } catch {}
     }
 
@@ -1157,6 +1176,13 @@ contract SystemHandler is Test {
                     ? "ticketRaffle.fulfil -> Won"
                     : "ticketRaffle.fulfil late -> reopened"
             );
+            // a prompt keeper usually settles straight away; the moving lock's long waits would otherwise
+            // leave most won raffles to be aborted after their week
+            if (_trStatus(id) == TicketRaffle.Status.Won && word % 4 != 0) {
+                try ticketRaffle.settle(id) {
+                    _hit("ticketRaffle.settle");
+                } catch {}
+            }
         } catch {}
     }
 

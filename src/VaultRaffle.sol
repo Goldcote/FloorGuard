@@ -46,6 +46,11 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     ///         when the fees behind the activated points are large against the prize; the owner should
     ///         set this to several times the points one prize's worth of fees would earn.
     uint256 public minPointsToDraw;
+    /// @notice Activated points needed per wei the Vault paid for a prize. A raffle is only a fair
+    ///         distribution while the fees behind the activated points are large against the prize: at
+    ///         the deployed rate of 2,500 points per ETH of fees, 10,000 points per wei means fees of at
+    ///         least four times the prize's cost. Zero turns the check off.
+    uint256 public pointsPerPrizeWei = 10_000;
     /// @notice Time between a winner being drawn and the prize becoming claimable.
     uint256 public vestingPeriod = 30 days;
 
@@ -60,6 +65,8 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     mapping(uint256 raffleId => uint256 requestId) public currentRequest;
     /// @notice When a won prize can be claimed.
     mapping(uint256 raffleId => uint256) public claimableAt;
+    /// @notice What the Vault paid for each prize.
+    mapping(uint256 raffleId => uint256) public prizeValueOf;
 
     event RaffleOpened(
         uint256 indexed raffleId, address indexed collection, uint256 indexed tokenId, uint256 drawAfter
@@ -72,6 +79,7 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     event AnnouncePeriodSet(uint256 announcePeriod);
     event MinPointsToDrawSet(uint256 minPointsToDraw);
     event VestingPeriodSet(uint256 vestingPeriod);
+    event PointsPerPrizeWeiSet(uint256 pointsPerPrizeWei);
 
     error NotVault();
     error NotRandomness();
@@ -92,9 +100,10 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     }
 
     /// @inheritdoc IVaultRaffle
-    function open(address collection, uint256 tokenId) external returns (uint256 raffleId) {
+    function open(address collection, uint256 tokenId, uint256 value) external returns (uint256 raffleId) {
         if (msg.sender != vault) revert NotVault();
         raffleId = ++raffleCount;
+        prizeValueOf[raffleId] = value;
         uint256 drawAfter = block.timestamp + announcePeriod;
         raffles[raffleId] = Raffle({
             collection: collection,
@@ -117,7 +126,8 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
         if (points.freezeCount() != 0) revert DrawInFlight();
         uint256 total = points.totalPoints();
         if (total == 0) revert NoPoints();
-        if (total < minPointsToDraw) revert BelowMinPoints(total, minPointsToDraw);
+        uint256 required = minPointsRequired(raffleId);
+        if (total < required) revert BelowMinPoints(total, required);
 
         r.status = Status.Drawing;
         r.requestedAt = uint40(block.timestamp);
@@ -191,6 +201,18 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     function setMinPointsToDraw(uint256 minPointsToDraw_) external onlyOwner {
         minPointsToDraw = minPointsToDraw_;
         emit MinPointsToDrawSet(minPointsToDraw_);
+    }
+
+    /// @notice Activated points a raffle needs before it can be drawn: the larger of `minPointsToDraw`
+    ///         and `pointsPerPrizeWei` times what the Vault paid for the prize.
+    function minPointsRequired(uint256 raffleId) public view returns (uint256) {
+        uint256 byValue = prizeValueOf[raffleId] * pointsPerPrizeWei;
+        return byValue > minPointsToDraw ? byValue : minPointsToDraw;
+    }
+
+    function setPointsPerPrizeWei(uint256 pointsPerPrizeWei_) external onlyOwner {
+        pointsPerPrizeWei = pointsPerPrizeWei_;
+        emit PointsPerPrizeWeiSet(pointsPerPrizeWei_);
     }
 
     /// @notice Applies to prizes drawn after the change.

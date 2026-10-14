@@ -164,6 +164,15 @@ contract CoreHandler is Test {
                 vault.sampleFloor(address(nft));
             }
             if (block.timestamp < lockedUntil) vm.warp(lockedUntil);
+            // sometimes much later, so the falling multiple and rising chance are exercised
+            if (floor % 3 == 0) {
+                skip(uint256(floor) % 300 days);
+                for (uint256 d; d < 16; ++d) {
+                    skip(1 days);
+                    _push(floor);
+                    vault.sampleFloor(address(nft));
+                }
+            }
             _push(floor);
             vault.requestUnlockRound(); // reverts if a draw was requested less than a day ago
             uint256 chance = vault.drawChanceBps(block.timestamp - acquiredAt);
@@ -417,7 +426,13 @@ contract CoreAuditInvariants is Base {
             }
             if (status == Vault.Status.Auction && !handler.ownerPriced(id)) {
                 (, uint128 endPrice,) = vault.auctions(id);
-                assertGe(endPrice, uint256(purchasePrice) * 13_000 / 10_000, "public reserve below 130%");
+                // the multiple the holding needed when it unlocked: 130% at 90 days down to 100% at a year,
+                // or 130% after a governance unlock; never below the price paid
+                uint256 bps = vault.unlockBpsOf(id) == 0 ? 13_000 : vault.unlockBpsOf(id);
+                assertGe(bps, 10_000, "unlock multiple below the price paid");
+                assertGe(
+                    endPrice, uint256(purchasePrice) * bps / 10_000, "public reserve below the unlock price"
+                );
             }
         }
         assertEq(nft.balanceOf(address(vault)), inVault);

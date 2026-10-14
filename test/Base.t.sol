@@ -69,6 +69,8 @@ abstract contract Base is Test {
         raffle = new VaultRaffle(gov, points, address(vault), randomness);
         vault.setRaffle(raffle);
         vault.setRandomness(randomness);
+        // Most tests use a handful of points; the prize-value gate has its own tests.
+        raffle.setPointsPerPrizeWei(0);
         points.setRaffle(address(raffle));
         points.setRate(address(marketplace), POINTS_RATE);
         points.setRate(address(prediction), POINTS_RATE);

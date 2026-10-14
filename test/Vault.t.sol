@@ -282,7 +282,109 @@ contract VaultTest is Base {
         assertEq(uint8(_status()), uint8(Vault.Status.Unlocked));
     }
 
-    // ------------------------------------------------------------------ players' share
+    // ------------------------------------------------------------------ review 12
+
+    /// A sample taken after the draw is known cannot tip the median it is judged on.
+    function test_unlock_judgedOnTheMedianAsOfTheDrawRequest() public {
+        vm.warp(_acquiredAt(vaultId) + 90 days - 29 days);
+        _sampleFloor(12.9 ether, 15);
+        _sampleFloor(13.5 ether, 15); // a full ring: 15 low, 15 high, lower median 12.9 < 13 required
+        vault.requestUnlockRound();
+        skip(1);
+        randomness.fulfill(randomness.lastRequestId(), _seedPicking(vaultId, 50));
+        assertTrue(vault.isPicked(vaultId));
+        assertFalse(vault.canUnlock(vaultId));
+
+        // after seeing the pick, the next day's high sample evicts the oldest low one
+        vm.warp((block.timestamp / 1 days + 1) * 1 days);
+        _pushFloor(13.5 ether);
+        vault.sampleFloor(address(nft));
+        (, uint256 current) = vault.medianFloor(address(nft));
+        assertEq(current, 13.5 ether);
+        assertTrue(vault.isPicked(vaultId));
+        assertFalse(vault.canUnlock(vaultId)); // still judged as of the request
+        vm.expectRevert(Vault.UnlockConditionsNotMet.selector);
+        vault.unlock(vaultId);
+    }
+
+    function test_requestUnlockRound_retiresThePreviousWord() public {
+        vm.warp(_acquiredAt(vaultId) + 90 days);
+        _drawUnlockRound(_seedPicking(vaultId, 50));
+        assertTrue(vault.isPicked(vaultId));
+        skip(1 days - 1); // the word would live one more second
+        vm.warp(block.timestamp); // same moment
+        skip(1); // a day after the last request
+        vault.requestUnlockRound();
+        assertFalse(vault.isPicked(vaultId));
+    }
+
+    function test_governanceUnlock_resetsTheUnlockMultiple() public {
+        vm.warp(_acquiredAt(vaultId) + 365 days - 15 days);
+        _sampleFloor(10 ether, 16);
+        _drawUnlockRound(_seedPicking(vaultId, 500));
+        vault.unlock(vaultId);
+        assertEq(vault.unlockBpsOf(vaultId), 10_000);
+
+        vm.startPrank(gov);
+        vault.relock(vaultId, block.timestamp + 1 days);
+        vault.governanceUnlock(vaultId);
+        vm.stopPrank();
+        assertEq(vault.unlockBpsOf(vaultId), 0);
+        skip(30 days);
+        _pushFloor(1);
+        vm.prank(carol);
+        vault.startAuction(vaultId);
+        (, uint128 endPrice,) = vault.auctions(vaultId);
+        assertEq(endPrice, 13 ether); // back to 130% of the 10 ETH price
+    }
+
+    function test_isPicked_onlyLockedDrawHoldings() public {
+        uint256[] memory ids = _depositMany(100, 4, 1 ether); // ids[3] is a players' holding
+        vm.warp(block.timestamp + 365 days);
+        uint256[] memory all = new uint256[](4);
+        all[0] = ids[3];
+        all[1] = 999; // does not exist
+        all[2] = vaultId;
+        all[3] = ids[0];
+        _drawUnlockRound(_seedPicking(all, 500));
+        assertFalse(vault.isPicked(ids[3]));
+        assertFalse(vault.isPicked(999));
+        assertTrue(vault.isPicked(vaultId));
+        vm.prank(gov);
+        vault.governanceUnlock(ids[0]);
+        assertFalse(vault.isPicked(ids[0]));
+    }
+
+    function test_removeFromPlayers_joinsTheMovingLockNotBefore90Days() public {
+        uint256[] memory ids = _depositMany(100, 4, 1 ether);
+        uint256 id = ids[3];
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
+        vault.removeFromPlayers(id);
+        vm.prank(gov);
+        vm.expectRevert(Vault.NotForPlayers.selector);
+        vault.removeFromPlayers(ids[0]);
+
+        vm.prank(gov);
+        vault.removeFromPlayers(id);
+        assertFalse(vault.isPlayersHolding(id));
+        (,,, uint40 acquiredAt, uint40 lockedUntil,,) = vault.holdings(id);
+        assertEq(lockedUntil, acquiredAt + 90 days);
+        skip(31 days);
+        vm.expectRevert(Vault.NotForPlayers.selector);
+        vault.releaseToPlayers(id);
+    }
+
+    function test_licences_notOnPlayersHoldings() public {
+        uint256[] memory ids = _depositMany(100, 4, 1 ether);
+        vm.prank(gov);
+        licenses.setTier(address(nft), 0, 0, 30 days, true);
+        vm.prank(bob);
+        vm.expectRevert();
+        licenses.requestLicense(ids[3], 0, "poster");
+        vm.prank(bob);
+        licenses.requestLicense(ids[0], 0, "poster");
+    }
 
     function test_playersShare_oneInFivePurchases() public {
         uint256[] memory ids = _depositMany(100, 9, 1 ether); // with the setUp purchase: ten in all
