@@ -1,14 +1,17 @@
 # FloorGuard
 
-An NFT marketplace protocol that turns its own fees into floor price support.
+An NFT marketplace protocol that spends its own fees on buying the cheapest
+tokens of the collections it trades.
 
 > **Unaudited and experimental. Do not deploy with real funds.**
 > See [SECURITY.md](SECURITY.md).
 
-Zero-royalty marketplaces reward sellers for undercutting each other, and
-collection floors bleed as a result. FloorGuard reverses the incentive: every
-fee the protocol earns on a collection becomes a budget for buying that
-collection's floor.
+Zero-royalty marketplaces reward sellers for undercutting each other.
+FloorGuard has no listings to undercut, and the part of each fee that is not
+paid to the NFT project (a project can be given up to half) becomes a budget
+for buying the cheapest tokens of that collection. How much difference that
+makes is modest: about one token bought for every fifty traded. See
+[docs/ECONOMICS-REVIEW.md](docs/ECONOMICS-REVIEW.md).
 
 The idea started as a
 [2024 white paper](https://x.com/captainPURU/status/1825613065502462081) and
@@ -31,24 +34,35 @@ flowchart LR
    Treasury, and ERC-2981 royalties are paid up to a cap. A project can also be
    given a share of the fees its collection generates.
 2. **Buyback.** The protocol quotes a standing bid for each collection. It rises
-   over time until a holder sells into it, then steps down and rises again, so it
-   finds the floor without an oracle.
+   over time until a holder sells into it, then steps down and rises again, so
+   it finds the lowest price a holder will accept without an oracle. The bid is
+   never more than the collection's budget can pay, and money that arrives late
+   does not inherit a rise nobody could have been paid. The owner sets a maximum
+   price.
 3. **Vault.** Bought NFTs are locked for at least 180 days and until the floor is
    30% above the purchase price. They are then auctioned, with proceeds returning
-   to the budget, or raffled.
+   to the budget, or raffled. If the floor never gets there they stay locked
+   unless the owner releases them. Selling one returns about enough to buy one
+   back, so auctions do not increase the number of tokens held.
 4. **Prediction markets.** Anyone can bet on a collection's floor going up or
    down. 3% of winnings funds buybacks.
-5. **Games.** Dice and coinflip against a house bankroll. The 2% edge on every
-   wager funds buybacks for the collection the player backs.
+5. **Games.** Dice, coinflip and slots against a house bankroll, and a pooled
+   lottery per collection. Half of the 2% edge on every wager and 5% of every
+   lottery pot fund buybacks for the collection the player backs; the other half
+   of the edge stays in the games bankroll, which anyone can fund for
+   redeemable shares.
 6. **Ticket raffles.** Anyone can raffle an NFT for paid tickets; 5% of ticket
    revenue funds buybacks.
 7. **IP licensing.** Licences to use the artwork of NFTs held in the Vault, with
    the fees funding buybacks.
 8. **Points and raffles.** Users earn points for the fees they generate. Points
-   are their odds of winning NFTs raffled from the Vault.
+   that have been activated before a draw are a user's weight in raffles of
+   Vault NFTs. Points can be bought by trading with oneself; see
+   [SECURITY.md](SECURITY.md).
 
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains each contract and lists
-where the code departs from the concept document.
+where the code departs from the concept document. [docs/FAIRNESS.md](docs/FAIRNESS.md)
+explains how the games' results can be checked.
 
 ## Status
 
@@ -58,9 +72,10 @@ where the code departs from the concept document.
 | Chainlink VRF adapter | Written, not tested against a live coordinator |
 | Deployment | Local chain only; simulated on Base Sepolia, not broadcast. See [docs/TESTNET.md](docs/TESTNET.md) |
 | Web app in `app/` | Reads and transactions tested against a local chain; not yet tested with a browser wallet. See [app/README.md](app/README.md) |
+| Keeper bot in `keeper/` | Tested end to end on a local chain; not run on a public network |
 | Audit | None |
 
-Slots, lotteries and a governance token from the concept document are not built. The full list is at the end of the architecture document.
+A governance token from the concept document is not built. The full list is at the end of the architecture document.
 
 ## Getting started
 
@@ -108,6 +123,7 @@ src/            contracts
 test/           unit, fuzz, invariant and end-to-end tests
 script/         deployment and local seeding
 app/            web front end
+keeper/         bot for the maintenance calls anyone may make
 docs/           architecture and the original concept documents
 ```
 
@@ -116,6 +132,18 @@ docs/           architecture and the original concept documents
 Issues and pull requests are welcome. Please run `forge fmt` and `forge test`
 before opening a pull request, and add tests for behaviour you change. Report
 vulnerabilities privately, as described in [SECURITY.md](SECURITY.md).
+
+## Supporting development
+
+FloorGuard is built in the open and has no token, no team allocation and no
+protocol fee for its developers. If you want to support the work, donations are
+welcome at:
+
+**`goldcote.eth`**
+
+Check what the name resolves to yourself before sending anything. Donations go
+to the developers, not to the protocol's Treasury, and buy nothing: no points,
+no rights and no say over the protocol.
 
 ## Licence
 

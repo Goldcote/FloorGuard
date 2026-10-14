@@ -24,7 +24,7 @@ contract AcceptOwnership is Script {
         address timelock = json.readAddress(".timelock");
         address expected = timelock == address(0) ? json.readAddress(".owner") : timelock;
 
-        string[13] memory keys = [
+        string[14] memory keys = [
             ".treasury",
             ".marketplace",
             ".buybackEngine",
@@ -35,18 +35,20 @@ contract AcceptOwnership is Script {
             ".games",
             ".ticketRaffle",
             ".ipLicenseManager",
+            ".lottery",
             ".salesFloorOracle",
             ".pushFloorOracle",
             ".randomness"
         ];
         // collect the contracts that are waiting for `expected` to accept
-        address[] memory targets = new address[](keys.length + 2);
+        address[] memory targets = new address[](keys.length + 3);
         uint256 n;
         for (uint256 i; i < keys.length; ++i) {
             n = _add(targets, n, json.readAddress(keys[i]), expected);
         }
         n = _add(targets, n, json.readAddress(".gamesRandomness"), expected);
         n = _add(targets, n, json.readAddress(".ticketRaffleRandomness"), expected);
+        n = _add(targets, n, json.readAddress(".lotteryRandomness"), expected);
         if (n == 0) {
             console2.log("Nothing is waiting to be accepted.");
             return;

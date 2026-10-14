@@ -6,12 +6,16 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {ITreasury, IPoints, IRandomnessProvider, IRandomnessConsumer} from "./interfaces/IFloorGuard.sol";
 
 /// @title Games
-/// @notice A dice game against a house bankroll. The player picks a chance of winning between 1% and
-///         95%; a coinflip is a 50% roll. An edge is taken from every wager and paid to the Treasury as
-///         a fee for the collection the player chose to back. The rest of the wager is played at fair
-///         odds, so the bankroll has no expected gain or loss: all of the house's take funds buybacks.
+/// @notice Dice and slots against a house bankroll. In dice the player picks a chance of winning between
+///         1% and 95%; a coinflip is a 50% roll. Slots pay a fixed table of multiples from one roll. An edge is taken from every wager and paid to the Treasury as
+///         a fee for the collection the player chose to back, less the share the bankroll keeps (half by
+///         default) to pay for the risk it carries. The rest of the wager is played at fair odds.
+///         Anyone can fund the bankroll for shares in it and redeem them later: holders of shares are
+///         the house. Deposits and redemptions wait for the bets open at the time to close, so they
+///         cannot be timed around a result.
 /// @dev The house's side of every open bet is set aside when the bet is placed, so the contract can
-///      always pay every outcome. Operating games of chance is regulated or prohibited in many places.
+///      always pay every outcome. Operating games of chance, and offering a share in their bankroll, is
+///      regulated or prohibited in many places.
 contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     struct Bet {
         address player;
@@ -27,8 +31,16 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     uint256 public constant MIN_CHANCE_BPS = 100;
     uint256 public constant MAX_CHANCE_BPS = 9_500;
     uint256 public constant MAX_EDGE_BPS = 1_000;
+    /// @notice The `chanceBps` recorded for a slots spin, which has no single chance of winning.
+    uint256 public constant SLOTS = 0;
+    uint256 public constant SLOTS_MAX_MULTIPLIER = 50;
     /// @notice A bet whose randomness never arrived can be refunded after this long.
-    uint256 public constant REFUND_TIMEOUT = 1 days;
+    uint256 public constant REFUND_TIMEOUT = 6 hours;
+    /// @notice After any refund, no new bet is accepted for this long.
+    uint256 public constant REFUND_PAUSE = 10 minutes;
+    /// @notice The most wagers that may be open at once, as a share of the house's funds. It bounds what
+    ///         a deposit carried out while bets are open can be made to give up.
+    uint256 public constant MAX_OPEN_WAGERS_BPS = 2_000;
     /// @notice The most the house may have at risk across all open bets, as a share of its total funds.
     uint256 public constant MAX_TOTAL_EXPOSURE_BPS = 2_000;
     uint256 private constant PAYOUT_GAS = 50_000;
@@ -42,10 +54,45 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     uint256 public minBet = 0.001 ether;
     /// @notice The most the house may stand to lose on one bet, as a share of the free bankroll.
     uint256 public maxExposureBps = 100;
+    /// @notice The largest wager, as a share of the free bankroll. Without it a near-certain dice bet
+    ///         could stake a large part of the bankroll for a small exposure.
+    uint256 public maxWagerBps = 100;
+    /// @notice The share of each edge the bankroll keeps, to pay for the risk it carries. The rest goes
+    ///         to the Treasury as buyback budget. Half by default.
+    uint256 public bankrollShareBps = 5_000;
     mapping(address collection => bool) public isSupported;
+
+    /// @dev Virtual shares make the first deposit safe against share-price manipulation.
+    uint256 private constant VIRTUAL_SHARES = 1e6;
 
     /// @notice House funds not set aside for open bets.
     uint256 public bankroll;
+    /// @notice The wagers of all open bets.
+    uint256 public openWagers;
+    /// @notice Deposits waiting to be converted to shares. They are not part of the bankroll yet.
+    mapping(address => uint256) public pendingDepositOf;
+    uint256 public totalPendingDeposits;
+    /// @notice Shares each account has asked to redeem.
+    mapping(address => uint256) public pendingRedeemOf;
+    /// @notice The number of bets that had been placed when an account last made each kind of request.
+    ///         The request can be carried out once all of those bets have closed.
+    mapping(address => uint256) public depositSeqOf;
+    mapping(address => uint256) public redeemSeqOf;
+    /// @notice Bets are numbered in the order they are placed. `placedCount` is the next number and
+    ///         every bet below `closedThrough` has been settled or refunded.
+    uint256 public placedCount;
+    uint256 public closedThrough;
+    mapping(uint256 seq => bool) private _closed;
+    mapping(uint256 requestId => uint256) private _seqOf;
+    uint256 private constant CLOSE_STEPS = 64;
+    /// @notice No new bet before this time. Set after every refund, so that a table kept full with free
+    ///         bets while randomness is down has to empty for a while.
+    uint256 public betsResumeAt;
+
+    /// @notice Shares in the house bankroll. They rise in value with the bankroll's share of the edge and
+    ///         with players' losses, and fall with players' wins.
+    uint256 public totalShares;
+    mapping(address => uint256) public sharesOf;
     /// @notice House funds set aside to pay the open bets if they win.
     uint256 public reserved;
     /// @notice Winnings that could not be delivered and wait to be withdrawn.
@@ -63,10 +110,15 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         uint256 indexed requestId, address indexed player, bool won, uint256 roll, uint256 payout, uint256 fee
     );
     event BetRefunded(uint256 indexed requestId, address indexed player, uint256 wager);
-    event BankrollFunded(address indexed from, uint256 amount);
-    event BankrollWithdrawnToTreasury(uint256 amount);
+    event DepositRequested(address indexed from, uint256 amount);
+    event DepositCancelled(address indexed from, uint256 amount);
+    event RedeemRequested(address indexed from, uint256 shares);
+    event RedeemCancelled(address indexed from);
+    event BankrollFunded(address indexed from, uint256 amount, uint256 shares);
+    event BankrollRedeemed(address indexed from, address indexed to, uint256 shares, uint256 amount);
     event Withdrawn(address indexed player, uint256 amount);
     event ParamsSet(uint256 edgeBps, uint256 minBet, uint256 maxExposureBps);
+    event RiskParamsSet(uint256 maxWagerBps, uint256 bankrollShareBps);
     event CollectionSupportSet(address indexed collection, bool supported);
     event RandomnessSet(address randomness);
     event PointsSet(address points);
@@ -75,7 +127,10 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     error InvalidChance();
     error BetTooSmall();
     error ExposureTooHigh(uint256 exposure, uint256 limit);
+    error WagerTooHigh(uint256 wager, uint256 limit);
     error TotalExposureTooHigh(uint256 total, uint256 limit);
+    error TotalWagersTooHigh(uint256 total, uint256 limit);
+    error BetsPaused(uint256 until);
     error RequestIdInUse();
     error NotAContract();
     error NotRandomness();
@@ -83,7 +138,10 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     error TooEarly(uint256 readyAt);
     error NothingOwed();
     error InvalidParams();
-    error InsufficientBankroll();
+    error InsufficientShares();
+    error NothingPending();
+    error BetsStillOpen();
+    error SlippageExceeded();
     error TransferFailed();
 
     constructor(address owner_, ITreasury treasury_, IRandomnessProvider randomness_) Ownable(owner_) {
@@ -92,6 +150,12 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     }
 
     // ------------------------------------------------------------------ playing
+
+    /// @notice The largest wager accepted right now. If it is below `minBet`, the bankroll is too small
+    ///         for any bet.
+    function maxWager() public view returns (uint256) {
+        return bankroll * maxWagerBps / BPS;
+    }
 
     /// @notice What a winning bet of `wager` at `chanceBps` pays, the wager included.
     function quote(uint256 wager, uint256 chanceBps) public view returns (uint256 payout, uint256 fee) {
@@ -107,22 +171,57 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         nonReentrant
         returns (uint256 requestId)
     {
-        if (!isSupported[collection]) revert UnsupportedCollection();
         if (chanceBps < MIN_CHANCE_BPS || chanceBps > MAX_CHANCE_BPS) revert InvalidChance();
-        if (msg.value < minBet) revert BetTooSmall();
-
         (uint256 payout, uint256 fee) = quote(msg.value, chanceBps);
-        uint256 exposure = payout - (msg.value - fee);
+        return _place(collection, chanceBps, payout - (msg.value - fee));
+    }
+
+    /// @notice Spin the slots with `msg.value`. One roll pays 50x, 10x, 5x, 2x or 1x the stake after the
+    ///         edge, or nothing, with chances chosen so that the stake is played at fair odds: see
+    ///         `slotsMultiplier`.
+    function spin(address collection) external payable nonReentrant returns (uint256 requestId) {
+        uint256 stake = msg.value - msg.value * edgeBps / BPS;
+        return _place(collection, SLOTS, stake * (SLOTS_MAX_MULTIPLIER - 1));
+    }
+
+    /// @notice What a slots roll pays, as a multiple of the stake. The chances are 0.2% for 50x, 1% for
+    ///         10x, 4% for 5x, 15% for 2x and 30% for 1x, which average exactly 1x.
+    function slotsMultiplier(uint256 roll) public pure returns (uint256) {
+        if (roll < 20) return 50;
+        if (roll < 120) return 10;
+        if (roll < 520) return 5;
+        if (roll < 2_020) return 2;
+        if (roll < 5_020) return 1;
+        return 0;
+    }
+
+    /// @dev `chanceBps` is `SLOTS` for a slots spin. `exposure` is the most the house can lose on the bet.
+    function _place(address collection, uint256 chanceBps, uint256 exposure)
+        private
+        returns (uint256 requestId)
+    {
+        if (!isSupported[collection]) revert UnsupportedCollection();
+        if (msg.value < minBet) revert BetTooSmall();
+        if (block.timestamp < betsResumeAt) revert BetsPaused(betsResumeAt);
+        uint256 limit_ = maxWager();
+        if (msg.value > limit_) revert WagerTooHigh(msg.value, limit_);
+
         uint256 limit = bankroll * maxExposureBps / BPS;
         if (exposure > limit) revert ExposureTooHigh(exposure, limit);
         uint256 totalLimit = (bankroll + reserved) * MAX_TOTAL_EXPOSURE_BPS / BPS;
         if (reserved + exposure > totalLimit) revert TotalExposureTooHigh(reserved + exposure, totalLimit);
+        uint256 wagerLimit = (bankroll + reserved) * MAX_OPEN_WAGERS_BPS / BPS;
+        if (openWagers + msg.value > wagerLimit) {
+            revert TotalWagersTooHigh(openWagers + msg.value, wagerLimit);
+        }
         bankroll -= exposure;
         reserved += exposure;
+        openWagers += msg.value;
 
         requestId = randomness.requestRandomness();
         // a replacement provider must never reuse the id of a bet that is still open
         if (bets[requestId].player != address(0)) revert RequestIdInUse();
+        _seqOf[requestId] = placedCount++;
         bets[requestId] = Bet({
             player: msg.sender,
             collection: collection,
@@ -142,6 +241,10 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         if (bet.player == address(0)) revert UnknownBet();
         delete bets[requestId];
         reserved -= bet.exposure;
+        openWagers -= bet.wager;
+        _closed[_seqOf[requestId]] = true;
+        delete _seqOf[requestId];
+        advanceClosed(2);
 
         // Randomness that arrives after the refund window is not used. Otherwise whoever saw the result
         // first could choose between letting it settle and refunding the bet.
@@ -153,19 +256,23 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         uint256 fee = uint256(bet.wager) * bet.edgeBps / BPS;
         uint256 stake = bet.wager - fee;
         uint256 roll = randomWord % BPS;
-        bool won = roll < bet.chanceBps;
         uint256 payout;
+        if (bet.chanceBps == SLOTS) payout = stake * slotsMultiplier(roll);
+        else if (roll < bet.chanceBps) payout = stake + bet.exposure;
+        // whatever the player does not win of the stake and the house's reserve returns to the bankroll
+        bankroll += stake + bet.exposure - payout;
+        bool won = payout != 0;
         if (won) {
-            payout = stake + bet.exposure;
             (bool ok,) = bet.player.call{value: payout, gas: PAYOUT_GAS}("");
             if (!ok) owedTo[bet.player] += payout;
-        } else {
-            bankroll += stake + bet.exposure;
         }
 
-        if (fee != 0) {
+        // the bankroll's share of the edge, if any, stays here; the rest goes to the Treasury
+        uint256 kept = fee * bankrollShareBps / BPS;
+        bankroll += kept;
+        if (fee - kept != 0) {
             // points follow what reached the buyback budget, not the project's share of the fee
-            uint256 toBudget = treasury.depositFee{value: fee}(bet.collection);
+            uint256 toBudget = treasury.depositFee{value: fee - kept}(bet.collection);
             if (address(points) != address(0) && toBudget != 0) {
                 try points.creditFee(bet.player, toBudget) {} catch {}
             }
@@ -181,10 +288,31 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         if (block.timestamp < readyAt) revert TooEarly(readyAt);
         delete bets[requestId];
         reserved -= bet.exposure;
+        openWagers -= bet.wager;
+        _closed[_seqOf[requestId]] = true;
+        delete _seqOf[requestId];
+        advanceClosed(2);
         _refund(requestId, bet);
     }
 
+    /// @notice Refund several late bets in one call, skipping any that are not refundable.
+    function refundMany(uint256[] calldata requestIds) external nonReentrant {
+        for (uint256 i; i < requestIds.length; ++i) {
+            uint256 requestId = requestIds[i];
+            Bet memory bet = bets[requestId];
+            if (bet.player == address(0) || block.timestamp < bet.placedAt + REFUND_TIMEOUT) continue;
+            delete bets[requestId];
+            reserved -= bet.exposure;
+            openWagers -= bet.wager;
+            _closed[_seqOf[requestId]] = true;
+            delete _seqOf[requestId];
+            advanceClosed(2);
+            _refund(requestId, bet);
+        }
+    }
+
     function _refund(uint256 requestId, Bet memory bet) private {
+        betsResumeAt = block.timestamp + REFUND_PAUSE;
         bankroll += bet.exposure;
         emit BetRefunded(requestId, bet.player, bet.wager);
         (bool ok,) = bet.player.call{value: bet.wager, gas: PAYOUT_GAS}("");
@@ -201,22 +329,201 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         if (!ok) revert TransferFailed();
     }
 
-    // ------------------------------------------------------------------ bankroll
+    // ------------------------------------------------------------------ the house
 
-    /// @notice Add to the house bankroll. Anyone may fund it; funds can only ever leave to players or to
-    ///         the Treasury.
-    function fundBankroll() external payable {
-        bankroll += msg.value;
-        emit BankrollFunded(msg.sender, msg.value);
+    // Deposits and redemptions are requests, and two rules price them.
+    //
+    // 1. A request can be carried out only once every bet that was open when it was made has been
+    //    settled or refunded. The request is therefore always priced after those results are in.
+    // 2. Bets open at the moment a request is carried out are priced against whoever carries it out: a
+    //    deposit as if the house wins them all, a redemption as if it loses them all. A request left
+    //    standing therefore cannot be used as a free option on the results of later bets.
+    //
+    // With no bet open both rules do nothing: the request is carried out at once at the house's funds
+    // per share. Only the account that made a request can carry it out, so it picks a quiet moment and
+    // names the least it will accept.
+
+    /// @notice Fund the house bankroll for shares in it. Adds `msg.value` to the caller's pending deposit
+    ///         and converts it to shares at once if no bet from before the request is still open;
+    ///         otherwise call `executeDeposit` when those bets have closed.
+    /// @param maxSpreadBps The most to give up against fair value if other bets are open, in basis
+    ///        points. If converting now would cost more, the deposit stays pending.
+    /// @return shares The shares issued now; zero if the deposit is still pending.
+    function deposit(uint256 maxSpreadBps) public payable nonReentrant returns (uint256 shares) {
+        if (msg.value == 0) revert InvalidParams();
+        pendingDepositOf[msg.sender] += msg.value;
+        totalPendingDeposits += msg.value;
+        depositSeqOf[msg.sender] = placedCount;
+        emit DepositRequested(msg.sender, msg.value);
+        return _executeDeposit(msg.sender, maxSpreadBps, false);
     }
 
-    /// @notice Move free bankroll to the Treasury's unallocated pool. There is no other way out.
-    function withdrawBankrollToTreasury(uint256 amount) external onlyOwner nonReentrant {
-        if (amount > bankroll) revert InsufficientBankroll();
-        bankroll -= amount;
-        emit BankrollWithdrawnToTreasury(amount);
-        (bool ok,) = address(treasury).call{value: amount}("");
+    /// @notice `deposit` that only converts at fair value: at once if no bet is open, otherwise it waits.
+    function fundBankroll() external payable returns (uint256 shares) {
+        return deposit(0);
+    }
+
+    /// @notice Convert the caller's pending deposit to shares. Reverts while a bet from before the
+    ///         request is still open.
+    function executeDeposit(uint256 maxSpreadBps) external nonReentrant returns (uint256 shares) {
+        return _executeDeposit(msg.sender, maxSpreadBps, true);
+    }
+
+    /// @notice Take back a pending deposit that has not been converted.
+    function cancelDeposit() external nonReentrant {
+        uint256 amount = pendingDepositOf[msg.sender];
+        if (amount == 0) revert NothingPending();
+        pendingDepositOf[msg.sender] = 0;
+        totalPendingDeposits -= amount;
+        emit DepositCancelled(msg.sender, amount);
+        (bool ok,) = msg.sender.call{value: amount}("");
         if (!ok) revert TransferFailed();
+    }
+
+    /// @notice Ask to redeem `shares` for their part of the house's funds, replacing any earlier request,
+    ///         and carry it out at once if no bet from before the request is still open; otherwise call
+    ///         `executeRedeem` when those bets have closed. The shares stay at risk until then.
+    /// @param maxSpreadBps The most to give up against fair value if other bets are open, in basis
+    ///        points. If redeeming now would cost more, the request stays pending.
+    /// @return assets The ETH paid now; zero if the redemption is still pending.
+    function redeem(uint256 shares, uint256 maxSpreadBps, address payable to)
+        external
+        nonReentrant
+        returns (uint256 assets)
+    {
+        if (shares == 0 || shares > sharesOf[msg.sender]) revert InsufficientShares();
+        // a remainder too small to ever be redeemed is taken along
+        if (sharesOf[msg.sender] - shares < VIRTUAL_SHARES) shares = sharesOf[msg.sender];
+        pendingRedeemOf[msg.sender] = shares;
+        redeemSeqOf[msg.sender] = placedCount;
+        emit RedeemRequested(msg.sender, shares);
+        return _executeRedeem(msg.sender, maxSpreadBps, to, false);
+    }
+
+    /// @notice Carry out the caller's pending redemption. Reverts while a bet from before the request is
+    ///         still open. With other bets open now, it pays only the shares' part of the free bankroll:
+    ///         see `previewRedeem`.
+    function executeRedeem(uint256 maxSpreadBps, address payable to)
+        external
+        nonReentrant
+        returns (uint256 assets)
+    {
+        return _executeRedeem(msg.sender, maxSpreadBps, to, true);
+    }
+
+    /// @notice Withdraw a pending redemption request.
+    function cancelRedeem() external {
+        if (pendingRedeemOf[msg.sender] == 0) revert NothingPending();
+        pendingRedeemOf[msg.sender] = 0;
+        emit RedeemCancelled(msg.sender);
+    }
+
+    /// @notice The fair value of `shares`: their part of the house's funds, free and set aside.
+    function shareValue(uint256 shares) public view returns (uint256) {
+        return shares * (bankroll + reserved + 1) / (totalShares + VIRTUAL_SHARES);
+    }
+
+    /// @notice What `shares` would be paid if redeemed right now: their part of the free bankroll, as if
+    ///         the house loses every bet that is open. Equal to `shareValue` when no bet is open.
+    function previewRedeem(uint256 shares) public view returns (uint256) {
+        return shares * (bankroll + 1) / (totalShares + VIRTUAL_SHARES);
+    }
+
+    /// @notice How many shares a deposit of `assets` would receive right now, priced as if the house
+    ///         wins every bet that is open.
+    function previewDeposit(uint256 assets) public view returns (uint256) {
+        return assets * (totalShares + VIRTUAL_SHARES) / (bankroll + reserved + openWagers + 1);
+    }
+
+    /// @notice Whether every bet placed before bet number `seq` has been settled or refunded, so that a
+    ///         request made at that point can be carried out.
+    function isClosedThrough(uint256 seq) public view returns (bool) {
+        uint256 pointer = closedThrough;
+        while (pointer < seq && _closed[pointer]) ++pointer;
+        return pointer >= seq;
+    }
+
+    /// @notice Move the record of closed bets forward by up to `steps`. Every bet that closes moves it by
+    ///         two and every request by up to 64, which keeps it current. After one bet stayed open far
+    ///         longer than many later ones, requests wait until this has been called enough to catch up.
+    function advanceClosed(uint256 steps) public {
+        uint256 pointer = closedThrough;
+        uint256 end = placedCount;
+        for (; steps != 0 && pointer < end && _closed[pointer]; --steps) {
+            delete _closed[pointer];
+            ++pointer;
+        }
+        closedThrough = pointer;
+    }
+
+    /// @dev `maxSpreadBps` is the most the caller will give up against fair value because bets are open.
+    ///      It is checked here, on chain, against the fair value at this moment, so it cannot be
+    ///      undermined by a preview that was already depressed. A request that is ready but too dear
+    ///      stays pending unless `strict`.
+    function _executeDeposit(address account, uint256 maxSpreadBps, bool strict)
+        private
+        returns (uint256 shares)
+    {
+        if (maxSpreadBps > BPS) revert InvalidParams();
+        uint256 amount = pendingDepositOf[account];
+        if (amount == 0) {
+            if (strict) revert NothingPending();
+            return 0;
+        }
+        advanceClosed(CLOSE_STEPS);
+        if (closedThrough < depositSeqOf[account]) {
+            if (strict) revert BetsStillOpen();
+            return 0;
+        }
+        shares = previewDeposit(amount);
+        uint256 fairShares = amount * (totalShares + VIRTUAL_SHARES) / (bankroll + reserved + 1);
+        if (shares == 0 || shares < fairShares * (BPS - maxSpreadBps) / BPS) {
+            if (strict) revert SlippageExceeded();
+            return 0;
+        }
+        pendingDepositOf[account] = 0;
+        totalPendingDeposits -= amount;
+        totalShares += shares;
+        sharesOf[account] += shares;
+        bankroll += amount;
+        emit BankrollFunded(account, amount, shares);
+    }
+
+    function _executeRedeem(address account, uint256 maxSpreadBps, address payable to, bool strict)
+        private
+        returns (uint256 assets)
+    {
+        if (maxSpreadBps > BPS) revert InvalidParams();
+        uint256 shares = pendingRedeemOf[account];
+        if (shares == 0) {
+            if (strict) revert NothingPending();
+            return 0;
+        }
+        advanceClosed(CLOSE_STEPS);
+        if (closedThrough < redeemSeqOf[account]) {
+            if (strict) revert BetsStillOpen();
+            return 0;
+        }
+        if (shares > sharesOf[account]) shares = sharesOf[account];
+        // the last holder cannot leave while bets are open: what is set aside for them would be ownerless
+        if (shares == totalShares && reserved != 0) {
+            if (strict) revert BetsStillOpen();
+            return 0;
+        }
+        assets = previewRedeem(shares);
+        if (assets < shareValue(shares) * (BPS - maxSpreadBps) / BPS) {
+            if (strict) revert SlippageExceeded();
+            return 0;
+        }
+        pendingRedeemOf[account] -= shares;
+        sharesOf[account] -= shares;
+        totalShares -= shares;
+        bankroll -= assets;
+        emit BankrollRedeemed(account, to, shares, assets);
+        if (assets != 0) {
+            (bool ok,) = to.call{value: assets}("");
+            if (!ok) revert TransferFailed();
+        }
     }
 
     // ------------------------------------------------------------------ admin
@@ -227,6 +534,13 @@ contract Games is IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
         minBet = minBet_;
         maxExposureBps = maxExposureBps_;
         emit ParamsSet(edgeBps_, minBet_, maxExposureBps_);
+    }
+
+    function setRiskParams(uint256 maxWagerBps_, uint256 bankrollShareBps_) external onlyOwner {
+        if (maxWagerBps_ > BPS || bankrollShareBps_ > BPS) revert InvalidParams();
+        maxWagerBps = maxWagerBps_;
+        bankrollShareBps = bankrollShareBps_;
+        emit RiskParamsSet(maxWagerBps_, bankrollShareBps_);
     }
 
     function setCollectionSupport(address collection, bool supported) external onlyOwner {

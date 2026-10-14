@@ -119,9 +119,10 @@ contract GamesHandler is Test {
     }
 
     function toTreasury(uint96 amount) external {
-        uint256 a = bound(amount, 0, games.bankroll());
-        vm.prank(gov);
-        games.withdrawBankrollToTreasury(a);
+        // house shares replaced the owner's withdrawal: redeem some of this handler's own shares
+        uint256 shares = bound(amount, 0, games.sharesOf(address(this)));
+        if (shares == 0) return;
+        games.redeem(shares, 0, payable(address(treasury)));
     }
 
     function claimShare() external {
@@ -161,7 +162,7 @@ contract GamesInvariantTest is Base {
         for (uint256 i; i < 3; ++i) {
             owed += games.owedTo(handler.eoas(i));
         }
-        assertEq(address(games).balance, games.bankroll() + locked + owed);
+        assertEq(address(games).balance, games.bankroll() + locked + owed + games.totalPendingDeposits());
     }
 
     /// treasury balance == budgets + unallocated + totalOwed, and totalOwed == the only recipient's claim
