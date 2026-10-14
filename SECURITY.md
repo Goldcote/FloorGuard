@@ -23,10 +23,21 @@ professional audit.
   high reading can hold an auction above the market until it is restarted.
   Anything else that settles on this oracle is exposed. Do not point the
   PredictionMarket at it. `PushFloorOracle` trusts its reporters completely.
-- **Vault unlock timing.** Because the oracle can be pushed down for free, anyone
-  can keep a holding from unlocking on its own; the owner can still unlock it.
-  Pushing the oracle up to force an early unlock costs fees and only works after
-  the 180-day lock.
+- **Vault unlock timing.** A holding unlocks on its own only when the daily
+  random draw picks it (from 90 days) and the Vault's 30-day median of daily
+  floor samples is high enough. Anyone may take the day's sample, so whoever
+  samples first each day chooses the moment. Holding the median down (free, by
+  pushing the sales oracle to 1 wei at sampling time for more than half of a
+  month) keeps holdings locked; holding it up costs the fee on four inflated
+  sales a day for half a month and still waits for the draw. Neither makes the
+  Vault sell below its reserve. The owner can unlock or relock regardless. The
+  randomness operator, or a rollup's sequencer, could withhold a day's word it
+  dislikes; that only moves unlocks to another day. Without a randomness
+  provider, holdings unlock only by governance.
+- **Raffle prizes are supply.** Every holding sent to a raffle, including the
+  players' share of purchases (one in five by default), returns a token to
+  circulation, for nothing, after 30 days of vesting. A prize in a winner's
+  wallet can be sold anywhere.
 - **Collections with open supply.** If tokens of a supported collection can still
   be minted, whoever can mint below the bid can sell fresh tokens into it and
   take the collection's whole budget. Support only fully minted collections

@@ -76,7 +76,7 @@ contract Vault is IVault, IRandomnessConsumer, Ownable2Step, ReentrancyGuard {
     uint256 public constant UNLOCK_START_BPS = 13_000;
     uint256 public constant UNLOCK_END_BPS = 10_000;
     /// @notice Chance of a holding being picked in one daily draw, at `MIN_LOCK` and at `FULL_AGE`,
-    ///         linear in between. With the floor condition met, about half of holdings unlock by six
+    ///         linear in between. With the floor condition met, about two in three holdings unlock by six
     ///         months and nearly all by a year, on dates nobody can know in advance.
     uint256 public constant DRAW_START_BPS = 50;
     uint256 public constant DRAW_END_BPS = 500;
