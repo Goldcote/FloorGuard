@@ -21,7 +21,7 @@ every call before sending it.
 | Vault raffles | `KEEPER_TASK_VAULT_RAFFLE` | `VaultRaffle.draw`, `resetDraw`, `claim` | `draw` once `drawAfter` and `nextDrawAt` have passed, no draw is in flight, no known account has pending points and `totalPoints >= minPointsToDraw`. `resetDraw` a day after an unanswered request. `claim` for every raffle with a winner. |
 | Lottery | `KEEPER_TASK_LOTTERY` | `Lottery.draw`, `resetDraw`, `abort` | `draw` rounds that have ended; `resetDraw` after a day without randomness; `abort` is opt-in. |
 | Ticket raffles | `KEEPER_TASK_TICKET_RAFFLE` | `TicketRaffle.close`, `settle`, `resetDraw`, `abort` | `close` raffles that have ended or sold out; `settle` raffles with a winner; `resetDraw` after a day without randomness; `abort` is opt-in. |
-| Games | `KEEPER_TASK_GAMES` | `Games.refund` | A bet's randomness is a day late. Open bets are found from `BetPlaced`, `BetSettled` and `BetRefunded` events and read back. |
+| Games | `KEEPER_TASK_GAMES` | `Games.refund` | A bet's randomness is late by `Games.REFUND_TIMEOUT` (six hours). Open bets are found from `BetPlaced`, `BetSettled` and `BetRefunded` events and read back. |
 | Vault | `KEEPER_TASK_VAULT` | `Vault.unlock`, `startAuction` | `unlock` when `canUnlock` is true. `startAuction` is opt-in. |
 | Monitoring | `KEEPER_TASK_MONITOR` | none | See [Monitoring](#monitoring). |
 
