@@ -28,12 +28,19 @@ professional audit.
   floor samples is high enough. Anyone may take the day's sample, so whoever
   samples first each day chooses the moment. Holding the median down (free, by
   pushing the sales oracle to 1 wei at sampling time for more than half of a
-  month) keeps holdings locked; holding it up costs the fee on four inflated
-  sales a day for half a month and still waits for the draw. Neither makes the
+  month) keeps every holding of a collection locked: the moving lock runs only
+  while nobody wants it stopped, and in a falling market every holder wants it
+  stopped. Holding the median up costs the fee on about four inflated sales a
+  week in a thin market (they stay in the sales oracle's median for seven days)
+  for half a month, and still waits for the draw. Unlocks are judged on the
+  median as it stood when the draw was requested, so a sample taken after the
+  draw is known does not count. Neither makes the
   Vault sell below its reserve. The owner can unlock or relock regardless. The
   randomness operator, or a rollup's sequencer, could withhold a day's word it
   dislikes; that only moves unlocks to another day. Without a randomness
   provider, holdings unlock only by governance.
+- **Weekly cap order.** When more holdings are picked than the weekly cap
+  allows, whoever calls `unlock` first chooses which of them unlock.
 - **Raffle prizes are supply.** Every holding sent to a raffle, including the
   players' share of purchases (one in five by default), returns a token to
   circulation, for nothing, after 30 days of vesting. A prize in a winner's
@@ -110,9 +117,10 @@ professional audit.
   operating the games. The latest hardening has tests but no independent
   review, and the randomised campaigns written for earlier versions no longer
   apply and were removed.
-- **Shared randomness subscription.** The deploy script puts all four randomness
-  consumers (vault raffle, games, ticket raffle and lottery) on one Chainlink
-  VRF subscription. Many minimum-size bets can drain it and stall every draw
+- **Shared randomness subscription.** The deploy script puts all five randomness
+  consumers (vault raffle, Vault unlock draw, games, ticket raffle and lottery)
+  on one Chainlink VRF subscription. Anyone can trigger the Vault's request
+  once a day, about 365 paid requests a year. Many minimum-size bets can drain it and stall every draw
   until it is refilled. Use separate subscriptions and a `minBet` that covers
   the cost of a request.
 - **No slippage guard on bets.** The owner can change the games edge (up to 10%)

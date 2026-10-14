@@ -208,22 +208,35 @@ moment, and never all at once.
   day is unknown until it comes. A word can be used for a day after it arrives.
 - **A floor that takes a month to move.** Anyone can call `sampleFloor` once a
   day per collection to record the oracle's floor. The unlock condition reads
-  the lower median of the last 30 days of samples (`medianFloor`), usable with
-  at least 15. Moving it takes control of more than half of a month's samples,
-  not of one moment.
+  the lower median of the last 30 days of samples, usable with at least 15, as
+  it stood when the day's draw was requested (`drawMedianFloor`): the first
+  sample after a request records that median before it can push an old sample
+  out, so a sample taken once the draw is known cannot change the outcome.
+  Moving the median takes more than half of a month's samples, not one moment.
+  A collection whose oracle often has no fresh price (the sales oracle needs
+  three sales within seven days; the Vault rejects prices older than three
+  days) may never collect 15 samples; its holdings then unlock only by
+  governance, or once it reads a push oracle.
 - **A required floor that falls with age.** A picked holding unlocks only if
   that median is at least `requiredFloorBps(age)` of its purchase price: 130% at
   90 days, falling in a straight line to 100% at a year. A holding bought near a
   peak is not locked forever once the market has come back, but the Vault never
   sells below what it paid. The multiple used is recorded (`unlockBpsOf`) and
   is the holding's unlock price for its auction.
-- **A weekly release cap.** At most 5% of a collection's holdings, and at least
-  one, can unlock in any seven days (`releaseAllowance`), so a rally cannot
-  release a whole vintage at once.
+- **A weekly release cap.** At most 5% of a collection's holdings (counted when
+  the window opens, players' holdings included), and at least one, can unlock in
+  a seven-day window that opens with the first unlock after the last one closed
+  (`releaseAllowance`), so a rally cannot release a whole vintage at once. The
+  windows are fixed, not rolling: up to twice the cap less one can unlock close
+  together across a boundary. Picked holdings compete for the cap, and whoever
+  calls `unlock` first chooses which of them uses it. Governance unlocks do not
+  count, and a relock does not return the slot.
 - `unlock` is permissionless and succeeds when all of the above hold
   (`canUnlock`).
 - The owner can `governanceUnlock` early, or `relock` to extend. Without a
-  randomness provider, holdings unlock only by governance.
+  randomness provider, holdings unlock only by governance (a word already
+  received stays usable for the rest of its day). Anyone can trigger one paid
+  randomness request a day, even when no holding could unlock.
 
 ### The players' share
 
@@ -232,7 +245,10 @@ moment, and never all at once.
 running remainder. Such a holding is locked for 30 days (`PLAYERS_LOCK`) and
 never goes through the draw: after 30 days anyone can call `releaseToPlayers`,
 which sends it to the vault raffle, where points holders (traders and players
-alike) compete for it. Every token given to players is a token back in
+alike) compete for it. The owner can take a holding out of the players' share
+(`removeFromPlayers`), for example while points are too thin for a fair raffle;
+it then joins the moving lock, never before 90 days. Players' holdings cannot be
+licensed. Every token given to players is a token back in
 circulation, so the share trades supply reduction for something to play for:
 with the default, the bid still buys one token for every fifty traded, but
 about one in sixty-two stays off the market.
@@ -246,12 +262,9 @@ about one in sixty-two stays off the market.
   unlock price (the multiple recorded at unlock, 130% after a governance unlock,
   times the purchase price) and an owner-set minimum for the collection
   (`minReserveOf`).
-- While a holding is unlocked, the owner can `sendToRaffle`, `relock` or
-  `startAuction`. If it is still unlocked 30 days after it unlocked (or after an
-  auction on it was cancelled), anyone can start the auction.
 - The auction opens at 16 times its reserve, or 16 times the median floor
-  recorded when the holding unlocked if that is higher. The price halves every day and holds
-  at the reserve. The opening price is deliberately far above the market, so the
+  recorded when the holding unlocked if that is higher. The price halves every
+  day and holds at the reserve. The opening price is deliberately far above the market, so the
   sale price is found by buyers competing on the way down. With a single
   interested buyer the sale price is the reserve. This matters because
   the sales oracle can be pushed down for free: a low reading lowers the reserve
@@ -466,6 +479,14 @@ points to steer the result. The winner keeps 20% of their points. Randomness
 that arrives more than a day late resets the draw instead of picking a winner,
 a request abandoned through `resetDraw` is never accepted later, and a reset
 draw cannot be requested again for an hour.
+
+A raffle cannot be drawn until the activated points are at least
+`minPointsRequired`: the larger of the owner's `minPointsToDraw` and
+`pointsPerPrizeWei` (10,000 by default) times what the Vault paid for the prize.
+At the deployed rate of 2,500 points per ETH of fees that means fees of at least
+four times the prize's cost behind the activated points, the bound below which
+a raffle can be farmed for profit. Prizes waiting for enough points stay in the
+raffle contract.
 
 A won prize vests for `vestingPeriod` (30 days by default, at most 180) before
 `claim` will deliver it. Once a prize is in the winner's wallet it can be sold

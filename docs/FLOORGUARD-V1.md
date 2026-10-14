@@ -7,7 +7,7 @@ what FloorGuard is. Every mechanism described here exists in this repository; ev
 test, a model or a review in it.*
 
 > **Status, stated first.** The code is an unaudited prototype. Nothing is deployed to a public network.
-> It has been through eleven automated (AI) review passes, an economics review and a front-end security
+> It has been through twelve automated (AI) review passes, an economics review and a front-end security
 > review, all recorded in [AUDIT.md](AUDIT.md) — not a professional audit. The games, the lottery and
 > paid raffles are regulated or prohibited in many places. This paper is written for people who might help
 > build it, not for anyone deciding whether to put money in. There is no token and nothing to buy.
@@ -327,7 +327,7 @@ together. Each is optional, and each has a cost that is stated here rather than 
 | **The house** | Anyone can fund the bankroll for shares and redeem later | — | Holders can lose part or all; leaving a busy table costs a spread; regulated as its own activity in some places |
 | **Lottery** | Weekly ETH pot per collection | 5% of the pot | Gambling regulation |
 | **Ticket raffles** | Anyone raffles an NFT for paid tickets | 5% of ticket revenue | Creators can dilute buyers late |
-| **Vault raffles & points** | Vault NFTs, including one purchase in five, raffled to fee payers, weighted by points; prizes vest 30 days | — | Points can be bought by self-trading; safe only while prizes are small against activated points. Every prize is a token back in circulation |
+| **Vault raffles & points** | Vault NFTs, including one purchase in five, raffled to fee payers, weighted by points; prizes vest 30 days | — | Points can be bought by self-trading; a draw needs activated points backed by fees of four times the prize. Every prize is a token back in circulation |
 
 **The house deserves its own sentence.** It was redesigned three times in one night after three reviews in
 a row found a way to take money from passive share holders. The design that stands combines two rules —
@@ -412,6 +412,7 @@ lock rules):
 | Reviews 1–7 | All contracts, then each new module and each fix; a whole-system randomised campaign of 150,000 calls | 4 High fixed; every invariant held |
 | Economics review | Whether the mechanism does what it claims | Bid overpaid systematically; redesigned |
 | Reviews 8–11 | The redesigned bid; three house designs | 3 High in the house, each fixed; the final design shown safe against advance knowledge |
+| Review 12 | The Vault's moving lock and players' share | No High; 2 Medium fixed (raffle points gate, median judged as of the draw) |
 | Front-end review | The web app | 2 High (amounts not bound to the review), fixed |
 | Static analysis | Slither | Nothing actionable |
 

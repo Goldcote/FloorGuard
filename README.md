@@ -84,7 +84,7 @@ explains how the games' results can be checked.
 | Deployment | Local chain only; simulated on Base Sepolia, not broadcast. See [docs/TESTNET.md](docs/TESTNET.md) |
 | Web app in `app/` | Every flow tested against a local chain with a built-in test account; not yet tested with a real browser wallet. Includes a demo mode that needs no wallet. See [app/README.md](app/README.md) |
 | Keeper bot in `keeper/` | Tested end to end on a local chain; not run on a public network. See [keeper/README.md](keeper/README.md) |
-| Reviews | Eleven automated review passes, an economics review and a front-end security review, recorded in [docs/AUDIT.md](docs/AUDIT.md). The latest changes to the games bankroll ("the house") have not been reviewed |
+| Reviews | Twelve automated review passes, an economics review and a front-end security review, recorded in [docs/AUDIT.md](docs/AUDIT.md). The latest changes to the games bankroll ("the house") have not been reviewed |
 | Audit | None |
 
 A governance token from the concept document is not built. The full list is at the end of the architecture document.
