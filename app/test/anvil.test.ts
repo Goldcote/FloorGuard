@@ -15,7 +15,7 @@
 // seeded state as it found it. Without a reachable, deployed anvil the suite is skipped. The tests
 // build on each other, in order.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { parseEther, type Address } from "viem";
+import { encodeAbiParameters, keccak256, parseEther, type Address } from "viem";
 import {
   buybackEngineAbi,
   erc721Abi,
@@ -63,10 +63,13 @@ import {
   refundBetCall,
   refundLotteryCall,
   refundTicketsCall,
+  releaseToPlayersCall,
   requestLicenseCall,
+  requestUnlockRoundCall,
   resetLotteryDrawCall,
   resetTicketDrawCall,
   resolveMarketCall,
+  sampleFloorCall,
   sellCall,
   settleTicketRaffleCall,
   spinCall,
@@ -117,17 +120,19 @@ import {
   readTicketRaffles,
   readTokenState,
   readUserBets,
+  sampledToday,
   SLOTS_MAX_MULTIPLIER,
   SLOTS_PAY_TABLE,
   slotsExposure,
   slotsLine,
   slotsMultiplier,
   TicketRaffleStatus,
+  unlockDrawState,
   ticketRaffleWouldRefund,
   withSlippage,
 } from "../src/lib/reads";
 import { bidState } from "../src/viz/charts";
-import { auctionPriceAt, baseAfterFill, bidAt, payableBid, saleSplit, unlockPrice } from "../src/viz/curves";
+import { auctionPriceAt, baseAfterFill, bidAt, drawChanceBps, payableBid, releaseCap, requiredFloorBps, saleSplit, unlockPrice, VAULT } from "../src/viz/curves";
 import { readSalesFloors } from "../src/viz/data";
 import { client, DAY, deployment, gained, raw, ready, revertOf, send, timeOf, warpTo } from "./anvilHarness";
 
@@ -317,11 +322,13 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
       ["Lottery", true],
       ["Ticket raffles", true],
       ["Vault raffles", true],
+      ["Vault unlock draw", true],
     ]);
     expect(fairness.sources[0].provider).toBe(d.gamesRandomness);
     expect(fairness.sources[1].provider).toBe(d.lotteryRandomness);
     expect(fairness.sources[2].provider).toBe(d.ticketRaffleRandomness);
     expect(fairness.sources[3].provider).toBe(d.randomness);
+    expect(fairness.sources[4].provider).toBe(d.vaultRandomness);
     expect(fairness).toMatchObject({
       gamesOwner: owner,
       ownerIsContract: false,
@@ -403,7 +410,7 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
     expect(vault.owner).toBe(owner);
     expect(await vaultRead("minReserveOf", collection)).toBe(0n);
 
-    expect(await readRaffles(client, d)).toEqual({ raffles: [], raffleCount: 0n, totalPoints: 0n, nextDrawAt: 0, drawInFlight: false, minPointsToDraw: 0n });
+    expect(await readRaffles(client, d)).toEqual({ raffles: [], raffleCount: 0n, totalPoints: 0n, nextDrawAt: 0, drawInFlight: false, minPointsToDraw: 0n, vestingPeriod: 30 * DAY, pointsPerPrizeWei: 10_000n });
 
     // The seed approved the marketplace for all of the owner's tokens.
     expect(await readTokenState(client, collection, 1n, d.marketplace)).toEqual({ owner, approved: true });
@@ -536,9 +543,12 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
       acquiredAt: soldAt,
       status: HoldingStatus.Locked,
       canUnlock: false,
+      players: false,
+      picked: false,
       auction: undefined,
     });
-    expect(holdings[0].lockedUntil - holdings[0].acquiredAt).toBe(180 * DAY);
+    // no part in the unlock draw for 90 days
+    expect(holdings[0].lockedUntil - holdings[0].acquiredAt).toBe(90 * DAY);
     expect(await revertOf(seller, unlockCall(d, 1n))).toMatchObject({ name: "UnlockConditionsNotMet" });
 
     // --- the bid when the budget cannot pay the curve (on a snapshot of its own)
@@ -1187,39 +1197,106 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
       expect(await auction(1n)).toEqual({ startPrice: 160n * ETH, endPrice: 10n * ETH, startTime: restarted, currentPrice: 160n * ETH, atReserve: false, ownerPriced: false });
       await send(owner, vault("setMinReserve", [collection, 0n]));
 
-      // A holding that unlocks on its own: the lock has ended and the floor is 130% of the price paid.
+      // A holding that unlocks on its own: 90 days on, today's draw picks it, the 30-day median floor
+      // is at the multiple its age requires, and the weekly release cap has room.
       const sale = await send(owner, sellCall(d, collection, 5n, 0n)); // the seed approved the engine for the owner's tokens
       let second = (await readHoldings(client, d)).holdings[0];
-      expect(second).toMatchObject({ id: 2n, tokenId: 5n, status: HoldingStatus.Locked, canUnlock: false, acquiredAt: await timeOf(sale) });
+      expect(second).toMatchObject({ id: 2n, tokenId: 5n, status: HoldingStatus.Locked, canUnlock: false, players: false, picked: false, acquiredAt: await timeOf(sale) });
+      expect(second.lockedUntil).toBe(second.acquiredAt + VAULT.MIN_LOCK);
       const paid = second.purchasePrice;
-      await warpTo(second.lockedUntil);
-      // no sale in the last seven days: no floor, so the price lock stays shut
-      expect((await readHoldings(client, d)).holdings[0].canUnlock).toBe(false);
-      expect(await revertOf(buyer, unlockCall(d, 2n))).toMatchObject({ name: "UnlockConditionsNotMet" });
-      await recordSales(2n * ETH, 3);
-      expect(2n * ETH).toBeGreaterThanOrEqual(unlockPrice(paid));
-      expect((await readHoldings(client, d)).holdings[0].canUnlock).toBe(true);
+      let vs = await readHoldings(client, d);
+      expect(vs.draw).toEqual({ randomness: d.vaultRandomness, requestedAt: 0, pending: false, requestId: 0n, seedRequestedAt: 0, seedArrivedAt: 0 });
+      // two held (#1 on auction, #2): 5% of that is nothing, so the cap is one a week
+      expect(vs.collections[collection.toLowerCase()]).toEqual({ median: undefined, samples: 0, lastSampleSlot: 0, allowance: 1, held: 2, window: { start: 0, cap: 0, used: 0 } });
+      expect(unlockDrawState(vs.draw, second.acquiredAt)).toEqual({ live: false, inFlight: false, nextAt: 0 });
+
+      // The ramps are the contract's, to the basis point.
+      const vaultView = <T>(functionName: string, args: readonly unknown[]) => client.readContract({ address: d.vault, abi: vaultAbi, functionName, args } as never) as Promise<T>;
+      for (const age of [0, VAULT.MIN_LOCK, VAULT.MIN_LOCK + 1, 100 * DAY + 7, 200 * DAY, VAULT.FULL_AGE - 1, VAULT.FULL_AGE, 2 * VAULT.FULL_AGE]) {
+        expect(await vaultView<bigint>("requiredFloorBps", [BigInt(age)])).toBe(BigInt(requiredFloorBps(age)));
+        expect(await vaultView<bigint>("drawChanceBps", [BigInt(age)])).toBe(BigInt(drawChanceBps(age)));
+      }
+
+      // A daily floor sample from day 75: 16 by day 90, one a day, each from a fresh oracle floor of 2 ETH.
+      for (let day = 75; day <= 90; day++) {
+        await warpTo(second.acquiredAt + day * DAY);
+        await recordSales(2n * ETH, day === 75 ? 3 : 1); // the Vault reads only a fresh oracle floor
+        await send(buyer, sampleFloorCall(d, collection));
+        if (day === 75) {
+          expect(await revertOf(seller, sampleFloorCall(d, collection))).toMatchObject({ name: "AlreadySampled", message: "Today's floor sample for this collection has already been taken." });
+          vs = await readHoldings(client, d);
+          expect(sampledToday(vs.collections[collection.toLowerCase()], await readChainTime(client))).toBe(true);
+          expect(vs.collections[collection.toLowerCase()]).toMatchObject({ median: undefined, samples: 1 }); // 15 needed
+        }
+        if (day === 88) {
+          // a draw requested before the lock ends picks nothing, whatever its word
+          const asked = await timeOf(await send(buyer, requestUnlockRoundCall(d)));
+          vs = await readHoldings(client, d);
+          expect(vs.draw).toMatchObject({ pending: true, requestedAt: asked });
+          expect(asked).toBeLessThan(second.lockedUntil);
+          expect(await revertOf(seller, requestUnlockRoundCall(d))).toMatchObject({ name: "RoundInFlight" });
+          await send(seller, mockFulfillCall(d.vaultRandomness, vs.draw.requestId, 0n));
+          expect((await readHoldings(client, d)).holdings[0]).toMatchObject({ picked: false, canUnlock: false });
+        }
+      }
+      vs = await readHoldings(client, d);
+      expect(vs.collections[collection.toLowerCase()]).toMatchObject({ median: 2n * ETH, samples: 16 });
+      expect(unlockDrawState(vs.draw, await readChainTime(client))).toMatchObject({ live: false, inFlight: false, nextAt: vs.draw.requestedAt + DAY });
+
+      // Day 90: the lock is over. The draw's word decides; find one that picks holding #2 at a 0.5% chance.
+      const roll = (word: bigint, id: bigint) => BigInt(keccak256(encodeAbiParameters([{ type: "uint256" }, { type: "uint256" }], [word, id]))) % 10_000n;
+      let word = 1n;
+      while (roll(word, 2n) >= BigInt(drawChanceBps(VAULT.MIN_LOCK))) word++;
+      const missWord = roll(word + 1n, 2n) >= 50n ? word + 1n : word + 2n;
+      const requested = await timeOf(await send(other, requestUnlockRoundCall(d)));
+      expect(await revertOf(seller, requestUnlockRoundCall(d))).toMatchObject({ name: "RoundInFlight", message: "Today's draw has been requested and is waiting for its random number." });
+      // first a word that misses it, on a snapshot of its own
+      await isolated(async () => {
+        await send(seller, mockFulfillCall(d.vaultRandomness, (await readHoldings(client, d)).draw.requestId, missWord));
+        expect((await readHoldings(client, d)).holdings[0]).toMatchObject({ picked: false, canUnlock: false });
+        expect(await revertOf(buyer, unlockCall(d, 2n))).toMatchObject({ name: "UnlockConditionsNotMet" });
+      });
+      const answered = await timeOf(await send(seller, mockFulfillCall(d.vaultRandomness, (await readHoldings(client, d)).draw.requestId, word)));
+      vs = await readHoldings(client, d);
+      expect(vs.draw).toMatchObject({ pending: false, requestedAt: requested, seedRequestedAt: requested, seedArrivedAt: answered });
+      // the unlock condition uses the median as it stood when the draw was requested
+      expect(vs.collections[collection.toLowerCase()]).toMatchObject({ median: 2n * ETH, drawMedian: 2n * ETH });
+      expect(unlockDrawState(vs.draw, answered)).toEqual({ live: true, inFlight: false, nextAt: requested + DAY });
+      expect(await revertOf(seller, requestUnlockRoundCall(d))).toMatchObject({ name: "TooEarly", args: [BigInt(requested + DAY)] });
+      const age = requested - second.acquiredAt;
+      expect(age - VAULT.MIN_LOCK).toBeGreaterThanOrEqual(0);
+      expect(age - VAULT.MIN_LOCK).toBeLessThan(60); // a block or two after day 90
+      // picked; the 2 ETH median is above 130% of what was paid; the cap has room
+      expect(vs.holdings[0]).toMatchObject({ id: 2n, picked: true, canUnlock: true });
+      expect(2n * ETH).toBeGreaterThanOrEqual((paid * BigInt(requiredFloorBps(age))) / BPS);
+
       const unlockedAt = await timeOf(await send(buyer, unlockCall(d, 2n))); // anyone may unlock
-      second = (await readHoldings(client, d)).holdings[0];
+      vs = await readHoldings(client, d);
+      second = vs.holdings[0];
       expect(second).toMatchObject({ status: HoldingStatus.Unlocked, unlockedAt, canUnlock: false });
-      // the floor seen at the unlock is remembered
+      // the weekly window opened with a cap of one, now used
+      expect(vs.collections[collection.toLowerCase()]).toMatchObject({ allowance: 0, held: 2, window: { start: unlockedAt, cap: releaseCap(2), used: 1 } });
+      // the median floor seen at the unlock is remembered, and the multiple it unlocked at
       expect(await vaultRead("unlockFloorOf", 2n)).toBe(2n * ETH);
-      // The floor then falls to 0.5 ETH. The reserve is 130% of the price paid, but the auction
-      // opens at 16 times the floor seen at the unlock, which is higher.
+      const unlockBps = await vaultView<bigint>("unlockBpsOf", [2n]);
+      expect(unlockBps).toBe(BigInt(requiredFloorBps(age)));
+      const reserveOf2 = (paid * unlockBps) / BPS;
+      // The floor then falls to 0.5 ETH. The reserve is the multiple it unlocked at, but the auction
+      // opens at 16 times the median floor seen at the unlock, which is higher.
       await recordSales(parseEther("0.5"), 4);
       expect(await readFloor(client, d.salesFloorOracle, collection)).toMatchObject({ ok: true, price: parseEther("0.5") });
       expect(await revertOf(seller, startAuctionCall(d, 2n))).toMatchObject({ name: "GovernanceWindowOpen", args: [BigInt(unlockedAt + 30 * DAY)] });
       restarted = await timeOf(await send(owner, startAuctionCall(d, 2n)));
       a = await auction(2n);
-      expect(unlockPrice(paid)).toBeLessThan(2n * ETH);
-      expect(a).toEqual({ startPrice: 32n * ETH, endPrice: unlockPrice(paid), startTime: restarted, currentPrice: 32n * ETH, atReserve: false, ownerPriced: false });
+      expect(reserveOf2).toBeLessThan(2n * ETH);
+      expect(a).toEqual({ startPrice: 32n * ETH, endPrice: reserveOf2, startTime: restarted, currentPrice: 32n * ETH, atReserve: false, ownerPriced: false });
       // more than four halvings from 32 ETH: the mirror finds the exact second
       const reachesAt = auctionReachesReserveAt(a, DAY);
       expect(reachesAt).toBeGreaterThan(restarted + 4 * DAY);
       await warpTo(reachesAt - 1);
       expect((await auction(2n)).atReserve).toBe(false);
       await warpTo(reachesAt);
-      expect(await auction(2n)).toMatchObject({ atReserve: true, currentPrice: unlockPrice(paid) });
+      expect(await auction(2n)).toMatchObject({ atReserve: true, currentPrice: reserveOf2 });
       // five halvings take 32 ETH under the reserve: restartable six days after it opened
       const restartAt = auctionRestartableAt(a, DAY, DAY);
       expect(restartAt).toBe(restarted + 6 * DAY);
@@ -1284,6 +1361,16 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
     await send(owner, raffle("setMinPointsToDraw", [parseEther("100")]));
     expect((await readRaffles(client, d)).minPointsToDraw).toBe(parseEther("100"));
     await warpTo(state.raffles[0].drawAfter);
+    // By default a raffle also needs 10,000 activated points per wei the Vault paid for the prize:
+    // thousands of points for a token bought near 1 ETH, far above the 50 active here.
+    const prize = (await readRaffles(client, d)).raffles[1];
+    const prizeValue = await client.readContract({ address: d.vaultRaffle, abi: vaultRaffleAbi, functionName: "prizeValueOf", args: [1n] });
+    expect(prizeValue).toBe((await readHoldings(client, d)).holdings.find((h) => h.id === 2n)!.purchasePrice);
+    expect(prize.minPointsRequired).toBe(prizeValue * 10_000n);
+    expect(await revertOf(buyer, drawRaffleCall(d, 1n))).toMatchObject({ name: "BelowMinPoints", args: [parseEther("50"), prizeValue * 10_000n] });
+    // This test's few points cannot meet that: the owner turns the check by value off.
+    await send(owner, raffle("setPointsPerPrizeWei", [0n]));
+    expect((await readRaffles(client, d)).raffles[1].minPointsRequired).toBe(parseEther("100"));
     const below = await revertOf(buyer, drawRaffleCall(d, 1n));
     expect(below).toMatchObject({ name: "BelowMinPoints", args: [parseEther("50"), parseEther("100")], message: "Only 50 points are activated; a draw needs at least 100." });
     // The owner's pending points are activated (by anyone): 50 from the sales + 30 from the market.
@@ -1312,9 +1399,10 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
     expect(await revertOf(buyer, drawRaffleCall(d, 2n))).toMatchObject({ name: "TooEarly", args: [BigInt(drawn + 3_600)] });
     expect((await readPoints(client, d, seller)).active).toBe(parseEther("10"));
 
-    await send(buyer, claimRaffleCall(d, 1n));
-    expect((await readRaffles(client, d)).raffles[1].status).toBe(RaffleStatus.Claimed);
-    expect(await ownerOf(4n)).toBe(seller);
+    // The prize vests for 30 days: nobody can deliver it before.
+    expect(state.vestingPeriod).toBe(30 * DAY);
+    expect(state.raffles[1].claimableAt).toBe(drawn + 30 * DAY);
+    expect(await revertOf(buyer, claimRaffleCall(d, 1n))).toMatchObject({ name: "TooEarly", args: [BigInt(drawn + 30 * DAY)] });
 
     // 90 points are left: below the minimum again.
     await warpTo(drawn + 3_600);
@@ -1336,14 +1424,89 @@ describe.skipIf(!ready)("FloorGuard app against a seeded anvil", () => {
     expect(request).toBe(3n);
     // Points 0..10 are the seller's, 10..90 the owner's.
     await send(buyer, mockFulfillCall(d.randomness, request, parseEther("90") * 5n + parseEther("10")));
-    expect((await readRaffles(client, d)).raffles[0]).toMatchObject({ status: RaffleStatus.Won, winner: owner });
+    const secondWin = (await readRaffles(client, d)).raffles[0];
+    expect(secondWin).toMatchObject({ status: RaffleStatus.Won, winner: owner });
     expect(await readPoints(client, d, owner)).toEqual({ active: parseEther("16"), pending: 0n });
-    await send(seller, claimRaffleCall(d, 2n)); // anyone may deliver the prize
-    expect(await ownerOf(5n)).toBe(owner);
+    // Once vested, anyone may deliver each prize (on a snapshot of its own: it moves the clock a month).
+    await isolated(async () => {
+      await warpTo(drawn + 30 * DAY - 1);
+      expect(await revertOf(buyer, claimRaffleCall(d, 1n))).toMatchObject({ name: "TooEarly" });
+      await warpTo(drawn + 30 * DAY);
+      await send(buyer, claimRaffleCall(d, 1n));
+      expect((await readRaffles(client, d)).raffles[1].status).toBe(RaffleStatus.Claimed);
+      expect(await ownerOf(4n)).toBe(seller);
+      await warpTo(secondWin.claimableAt);
+      await send(seller, claimRaffleCall(d, 2n)); // anyone may deliver the prize
+      expect(await ownerOf(5n)).toBe(owner);
+    });
 
     // The push oracle's price is over a day old now; both oracle states still render.
     expect(await readFloor(client, d.pushFloorOracle, collection)).toMatchObject({ ok: true, price: parseEther("1.2") });
     expect(await readFloor(client, d.salesFloorOracle, collection)).toMatchObject({ ok: false, errorName: "InsufficientData" });
+  });
+
+  it("vault: one purchase in five is set aside for players, locked 30 days, then raffled; its prize vests", async () => {
+    await isolated(async () => {
+      const vaultView = <T>(functionName: string, args: readonly unknown[]) => client.readContract({ address: d.vault, abi: vaultAbi, functionName, args } as never) as Promise<T>;
+      expect(await vaultView<bigint>("playersShareBps", [])).toBe(2_000n);
+      await send(owner, raw(d.buybackEngine, buybackEngineAbi, "setFillCooldown", [collection, 0n]));
+      // Sell the owner's tokens into the bid until a fifth purchase comes up.
+      let players: bigint | undefined;
+      for (const token of [6n, 7n, 8n, 9n, 10n]) {
+        if (players !== undefined) break;
+        if ((await ownerOf(token)).toLowerCase() !== owner.toLowerCase()) continue;
+        await send(owner, sellCall(d, collection, token, 0n));
+        const latest = (await readHoldings(client, d)).holdings[0];
+        // the running remainder sets aside exactly every fifth purchase of the collection
+        expect(latest.players).toBe(latest.id % 5n === 0n);
+        if (latest.players) players = latest.id;
+      }
+      expect(players).toBeDefined();
+      let state = await readHoldings(client, d);
+      const h = state.holdings.find((x) => x.id === players)!;
+      expect(h).toMatchObject({ status: HoldingStatus.Locked, players: true, canUnlock: false });
+      expect(h.lockedUntil - h.acquiredAt).toBe(VAULT.PLAYERS_LOCK);
+      const held = state.collections[collection.toLowerCase()].held;
+      // nobody can unlock it by the draw or send it early; an ordinary holding cannot go to players
+      expect(await revertOf(buyer, unlockCall(d, h.id))).toMatchObject({ name: "UnlockConditionsNotMet" });
+      expect(await revertOf(buyer, releaseToPlayersCall(d, h.id))).toMatchObject({ name: "TooEarly", args: [BigInt(h.lockedUntil)] });
+      expect(await revertOf(buyer, releaseToPlayersCall(d, h.id - 1n))).toMatchObject({ name: "NotForPlayers", message: "This holding is not set aside for players." });
+      // it cannot be licensed, and only the owner can take it out of the players' share
+      expect(await revertOf(buyer, requestLicenseCall(d, h.id, 0, "", 0n))).toMatchObject({ name: "NotInVault" });
+      expect(await revertOf(buyer, raw(d.vault, vaultAbi, "removeFromPlayers", [h.id]))).toMatchObject({ name: "OwnableUnauthorizedAccount" });
+
+      await warpTo(h.lockedUntil);
+      await send(owner, raw(d.vaultRaffle, vaultRaffleAbi, "setPointsPerPrizeWei", [10_000n])); // the default, which the raffle test above turned off
+      const before = await readRaffles(client, d);
+      const released = await timeOf(await send(other, releaseToPlayersCall(d, h.id))); // anyone may send it
+      state = await readHoldings(client, d);
+      expect(state.holdings.find((x) => x.id === players)).toMatchObject({ status: HoldingStatus.Released });
+      expect(state.collections[collection.toLowerCase()].held).toBe(held - 1);
+      let raffles = await readRaffles(client, d);
+      expect(raffles.raffleCount).toBe(before.raffleCount + 1n);
+      const prize = raffles.raffles[0];
+      expect(prize).toMatchObject({ tokenId: h.tokenId, status: RaffleStatus.Open, claimableAt: 0 });
+      expect(prize.drawAfter).toBe(released + 7 * DAY);
+      expect(await ownerOf(h.tokenId)).toBe(d.vaultRaffle);
+      expect(await revertOf(buyer, releaseToPlayersCall(d, h.id))).toMatchObject({ name: "WrongStatus" });
+
+      // Drawn among points holders, it vests for 30 days before it can be delivered. Its value needs
+      // more points than this chain has, so the draw waits until the owner lowers the requirement.
+      await warpTo(Math.max(prize.drawAfter, raffles.nextDrawAt));
+      expect(prize.minPointsRequired).toBe(h.purchasePrice * 10_000n);
+      expect(await revertOf(buyer, drawRaffleCall(d, prize.id))).toMatchObject({ name: "BelowMinPoints", args: [raffles.totalPoints, prize.minPointsRequired] });
+      await send(owner, raw(d.vaultRaffle, vaultRaffleAbi, "setPointsPerPrizeWei", [0n]));
+      await send(buyer, drawRaffleCall(d, prize.id));
+      const request = (await readRaffles(client, d)).raffles[0].requestId!;
+      const drawn = await timeOf(await send(buyer, mockFulfillCall(d.randomness, request, 0n)));
+      raffles = await readRaffles(client, d);
+      const won = raffles.raffles[0];
+      expect(won).toMatchObject({ status: RaffleStatus.Won, claimableAt: drawn + raffles.vestingPeriod });
+      expect(await revertOf(other, claimRaffleCall(d, prize.id))).toMatchObject({ name: "TooEarly", message: expect.stringMatching(/^Too early: possible from /) });
+      await warpTo(won.claimableAt);
+      await send(other, claimRaffleCall(d, prize.id));
+      expect(await ownerOf(h.tokenId)).toBe(won.winner);
+    });
   });
 
   it("slots: pay table, wager limits, spin and mock settle at each kind of result, the fee split", async () => {

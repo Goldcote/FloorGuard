@@ -34,7 +34,8 @@ export function Licences() {
       </Notice>
       <QueryView query={query}>
         {({ holdings, maxScopeLength }) => {
-          const lockable = holdings.filter((h) => h.holding.status === HoldingStatus.Locked);
+          // a players' holding goes to a raffle when its 30 days end, so it cannot be licensed
+          const lockable = holdings.filter((h) => h.holding.status === HoldingStatus.Locked && !h.holding.players);
           const selected = lockable.find((h) => h.holding.id.toString() === holdingId) ?? lockable[0];
           const tier = selected?.tiers.find((t) => t.tier.toString() === tierText) ?? selected?.tiers[0];
           const scopeBytes = byteLength(scope);
@@ -63,6 +64,7 @@ export function Licences() {
                 <div className="licence-wall">
                   {holdings.map(({ holding, tiers, licenses, banned }) => {
                     const locked = holding.status === HoldingStatus.Locked;
+                    const licensable = locked && !holding.players;
                     const isSelected = selected?.holding.id === holding.id;
                     return (
                       <article key={holding.id.toString()} className={isSelected ? "licence-card on" : "licence-card"}>
@@ -79,6 +81,7 @@ export function Licences() {
                           </div>
                         </header>
                         {!locked && <p className="muted small">Unlocked: no new licences. Only holdings still locked in the vault can be licensed.</p>}
+                        {locked && holding.players && <p className="muted small">Set aside for players: no licences, as it goes to the players' raffle after 30 days.</p>}
                         {tiers.length === 0 ? (
                           <p className="muted small">No licence tiers are set for this collection.</p>
                         ) : (
@@ -91,7 +94,7 @@ export function Licences() {
                                   type="button"
                                   className={on ? "licence-tier on" : "licence-tier"}
                                   aria-pressed={on}
-                                  disabled={!locked}
+                                  disabled={!licensable}
                                   onClick={() => {
                                     setHoldingId(holding.id.toString());
                                     setTierText(t.tier.toString());

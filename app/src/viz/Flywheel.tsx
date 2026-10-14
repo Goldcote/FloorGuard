@@ -450,7 +450,7 @@ export const Flywheel = forwardRef<
           </text>
         )}
         <text className="fly-sub" x={pad} y={n.vault.h - pad} fontSize={fs.sub}>
-          180 days and floor +30%
+          daily draw from day 90
         </text>
       </g>
 

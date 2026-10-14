@@ -144,9 +144,53 @@ export function fillsCovered(budget: bigint, bid: bigint): number {
 
 // ---------------------------------------------------------------- the vault's locks
 
-/** A holding unlocks only at a floor of 130% of its purchase price (`Vault`). */
-export const UNLOCK_BPS = 13_000n;
+/**
+ * The Vault's moving lock (`Vault.sol`). From `MIN_LOCK` a holding takes part in a daily random draw,
+ * with a chance that rises with its age; a picked holding unlocks only if the collection's 30-day
+ * median floor reaches a multiple of its purchase price that falls with age, and only while the
+ * collection's weekly release cap has room.
+ */
+export const VAULT = {
+  MIN_LOCK: 90 * DAY,
+  FULL_AGE: 365 * DAY,
+  UNLOCK_START_BPS: 13_000,
+  UNLOCK_END_BPS: 10_000,
+  DRAW_START_BPS: 50,
+  DRAW_END_BPS: 500,
+  ROUND_INTERVAL: DAY,
+  ROUND_TIMEOUT: DAY,
+  SEED_LIFETIME: DAY,
+  SAMPLE_INTERVAL: DAY,
+  FLOOR_SAMPLES: 30,
+  MIN_FLOOR_SAMPLES: 15,
+  RELEASE_PERIOD: 7 * DAY,
+  RELEASE_CAP_BPS: 500,
+  PLAYERS_LOCK: 30 * DAY,
+} as const;
+
+/** `Vault._ramp`: linear from `atStart` at `MIN_LOCK` to `atEnd` at `FULL_AGE`, flat outside. */
+function ramp(age: number, atStart: number, atEnd: number): number {
+  if (age <= VAULT.MIN_LOCK) return atStart;
+  if (age >= VAULT.FULL_AGE) return atEnd;
+  const progress = BigInt(Math.floor(age - VAULT.MIN_LOCK));
+  const span = BigInt(VAULT.FULL_AGE - VAULT.MIN_LOCK);
+  return atStart > atEnd
+    ? atStart - Number((BigInt(atStart - atEnd) * progress) / span)
+    : atStart + Number((BigInt(atEnd - atStart) * progress) / span);
+}
+/** `Vault.requiredFloorBps`: the 30-day median floor a holding of this age needs, in basis points of its price. */
+export const requiredFloorBps = (age: number): number => ramp(age, VAULT.UNLOCK_START_BPS, VAULT.UNLOCK_END_BPS);
+/** `Vault.drawChanceBps`: the chance, in basis points, that one daily draw picks a holding of this age. */
+export const drawChanceBps = (age: number): number => ramp(age, VAULT.DRAW_START_BPS, VAULT.DRAW_END_BPS);
+/** The floor a holding needs at this age (`Vault._required`). */
+export const requiredFloor = (purchasePrice: bigint, age: number): bigint => (purchasePrice * BigInt(requiredFloorBps(age))) / BPS;
+/** The unlock price at the start of the ramp, 130% of the purchase price: the reserve after a governance unlock. */
+export const UNLOCK_BPS = BigInt(VAULT.UNLOCK_START_BPS);
 export const unlockPrice = (purchasePrice: bigint): bigint => (purchasePrice * UNLOCK_BPS) / BPS;
+/** `Vault._newCap`: a new weekly window lets 5% of the collection's held holdings unlock, and at least one. */
+export const releaseCap = (held: number): number => Math.max(1, Math.floor((held * VAULT.RELEASE_CAP_BPS) / 10_000));
+/** A basis-points multiple as a percentage, without trailing zeros ("117.5%"). */
+export const bpsPercent = (bps: number): string => `${Number((bps / 100).toFixed(2))}%`;
 
 /** The time lock: how far through it the holding is, and what is left. */
 export function timeLock(acquiredAt: number, lockedUntil: number, now: number): { progress: number; remaining: number; open: boolean } {
@@ -156,14 +200,16 @@ export function timeLock(acquiredAt: number, lockedUntil: number, now: number): 
 }
 
 /**
- * The price lock: the floor against the 130% trigger. `ratio` is floor / purchase price (1.3 opens
- * it); `progress` is how far the floor has come from the purchase price to the trigger, 0..1.
+ * The price condition: a floor against the required multiple of the purchase price (130% unless
+ * given). `ratio` is floor / purchase price; `progress` is how far the floor has come from the
+ * purchase price to the trigger, 0..1.
  */
-export function priceLock(purchasePrice: bigint, floor: bigint | undefined): { trigger: bigint; ratio: number; progress: number; open: boolean } {
-  const trigger = unlockPrice(purchasePrice);
+export function priceLock(purchasePrice: bigint, floor: bigint | undefined, requiredBps: number = VAULT.UNLOCK_START_BPS): { trigger: bigint; ratio: number; progress: number; open: boolean } {
+  const trigger = (purchasePrice * BigInt(requiredBps)) / BPS;
   if (floor === undefined || purchasePrice === 0n) return { trigger, ratio: 0, progress: 0, open: false };
   const ratio = Number((floor * 10_000n) / purchasePrice) / 10_000;
-  return { trigger, ratio, progress: Math.min(1, Math.max(0, (ratio - 1) / 0.3)), open: floor >= trigger };
+  const span = requiredBps / 10_000 - 1;
+  return { trigger, ratio, progress: span <= 0 ? (floor >= trigger ? 1 : 0) : Math.min(1, Math.max(0, (ratio - 1) / span)), open: floor >= trigger };
 }
 
 // ---------------------------------------------------------------- the falling auction

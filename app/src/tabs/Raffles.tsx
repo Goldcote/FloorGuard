@@ -32,8 +32,9 @@ function VaultRaffleCard({ r, state, myPoints }: { r: Raffle; state: RafflesStat
   useRevealClock();
   const isLocal = chainId === LOCAL_CHAIN_ID;
   const { totalPoints, nextDrawAt, drawInFlight } = state;
-  // Read from the contract when the deployment has it: a draw needs this many activated points in total.
-  const minPoints = state.minPointsToDraw ?? 0n;
+  // `VaultRaffle.minPointsRequired`: the larger of the owner's minimum and the prize's cost times
+  // `pointsPerPrizeWei`, so that the fees behind the points are large against the prize.
+  const minPoints = r.minPointsRequired;
 
   const won = r.status === RaffleStatus.Won || r.status === RaffleStatus.Claimed;
   const phase = observeReveal(`vaultRaffle:${chainId}:${r.id}`, r.status === RaffleStatus.Open || r.status === RaffleStatus.Drawing ? "pending" : won ? "settled" : "other", VAULT_DRAW_REVEAL_MS);
@@ -42,6 +43,8 @@ function VaultRaffleCard({ r, state, myPoints }: { r: Raffle; state: RafflesStat
   // A draw needs both the raffle's own announce period and the contract-wide cooldown that follows any reset draw.
   const drawableAt = Math.max(r.drawAfter, nextDrawAt);
   const mine = revealed && !!user && r.winner.toLowerCase() === user.toLowerCase();
+  // A won prize vests: it can be delivered only from `claimableAt`.
+  const vesting = r.status === RaffleStatus.Won && now < r.claimableAt;
   const odds = myPoints !== undefined ? share(myPoints, totalPoints) : 0;
 
   useEffect(() => {
@@ -75,7 +78,7 @@ function VaultRaffleCard({ r, state, myPoints }: { r: Raffle; state: RafflesStat
     ]);
   const claim = () =>
     void run(`Claim raffle #${r.id} prize`, single("Claim prize", claimRaffleCall(d!, r.id)), [
-      `Sends token #${r.tokenId} to the winner, ${r.winner}. Anyone may do this; you pay only the transaction fee.`,
+      `Sends token #${r.tokenId} to the winner, ${r.winner}. Anyone may do this now that it has vested; you pay only the transaction fee.`,
     ]);
 
   return (
@@ -111,7 +114,7 @@ function VaultRaffleCard({ r, state, myPoints }: { r: Raffle; state: RafflesStat
               <dt>All active points</dt>
               <dd>{formatPoints(totalPoints)}</dd>
             </div>
-            {minPoints > 0n && (
+            {minPoints > 0n && r.status === RaffleStatus.Open && (
               <div>
                 <dt>Needed for a draw</dt>
                 <dd>{formatPoints(minPoints)}</dd>
@@ -134,7 +137,7 @@ function VaultRaffleCard({ r, state, myPoints }: { r: Raffle; state: RafflesStat
             <p className="muted small">
               {totalPoints >= minPoints
                 ? "Enough points are activated for a draw."
-                : `A draw needs ${formatPoints(minPoints)} activated points in total; ${formatPoints(totalPoints)} are activated so far.`}
+                : `Needs ${formatPoints(minPoints)} activated points (has ${formatPoints(totalPoints)}).`}
             </p>
           </div>
         )}
@@ -145,8 +148,12 @@ function VaultRaffleCard({ r, state, myPoints }: { r: Raffle; state: RafflesStat
               ? " "
               : revealed
                 ? mine
-                  ? `You won token #${r.tokenId}.`
-                  : `Token #${r.tokenId} is won.`
+                  ? vesting
+                    ? `You won token #${r.tokenId}. It vests until ${dateTime(r.claimableAt)}.`
+                    : `You won token #${r.tokenId}.`
+                  : vesting
+                    ? `Token #${r.tokenId} is won. It vests until ${dateTime(r.claimableAt)}.`
+                    : `Token #${r.tokenId} is won.`
                 : "Nobody buys tickets: your chance is your share of all active points when the draw is requested."}
         </p>
         {revealed && (
@@ -166,7 +173,7 @@ function VaultRaffleCard({ r, state, myPoints }: { r: Raffle; state: RafflesStat
                     ? "Another raffle's draw is in flight; only one can run at a time"
                     : totalPoints === 0n
                       ? "Nobody holds active points yet"
-                      : totalPoints < minPoints && `A draw needs ${formatPoints(minPoints)} activated points; there are ${formatPoints(totalPoints)}`
+                      : totalPoints < minPoints && `Needs ${formatPoints(minPoints)} activated points (has ${formatPoints(totalPoints)})`
               }
             >
               Draw
@@ -179,9 +186,14 @@ function VaultRaffleCard({ r, state, myPoints }: { r: Raffle; state: RafflesStat
             </ActionButton>
           )}
           {r.status === RaffleStatus.Won && revealed && (
-            <ActionButton className="big" onClick={claim}>
+            <ActionButton className="big" onClick={claim} blocked={vesting && `The prize vests until ${dateTime(r.claimableAt)}`}>
               Claim: deliver the prize
             </ActionButton>
+          )}
+          {r.status === RaffleStatus.Won && revealed && vesting && (
+            <span className="muted small">
+              Vests until {dateTime(r.claimableAt)}; anyone can deliver it from then.
+            </span>
           )}
         </div>
       </div>
@@ -204,15 +216,20 @@ export function Raffles() {
         {(state) => (
           <>
             {state.raffles.length === 0 ? (
-              <Empty title="No vault raffles yet.">The owner can send an unlocked holding to a raffle.</Empty>
+              <Empty title="No vault raffles yet.">
+                One vault purchase in five goes to players 30 days after it was bought; the owner can also send an unlocked holding.
+              </Empty>
             ) : (
               state.raffles.map((r) => <VaultRaffleCard key={r.id.toString()} r={r} state={state} myPoints={user ? mine.data?.active : undefined} />)
             )}
             <Card title="Vault raffles (for points holders)">
               <p className="muted">
-                Unlocked vault tokens raffled to points holders. Nobody buys tickets: the chance of winning is your share of all
-                active points when the draw is requested (activate pending points on the Overview tab first). Anyone can request
-                the draw after the announce period, and anyone can send a drawn prize to its winner. The draw emits only the
+                Vault tokens raffled to points holders: the players' share (one purchase in five, after 30 days in the vault) and
+                any unlocked holding the owner sends. Nobody buys tickets: the chance of winning is your share of all active points
+                when the draw is requested (activate pending points on the Overview tab first). Anyone can request the draw after
+                the announce period, once enough points are activated: the owner's minimum, or{" "}
+                {formatPoints(state.pointsPerPrizeWei * 10n ** 18n)} points per ETH the vault paid for the prize if that is more, so that the fees behind the points are large against the prize. A won prize vests for {Math.round(state.vestingPeriod / 86_400)} days; then anyone can send it to its winner.
+                Until then the winner cannot sell it; once delivered it is an ordinary NFT in their wallet. The draw emits only the
                 winner, not the point number, so this draw cannot be recomputed in the browser; its transaction is on the chain.
               </p>
             </Card>

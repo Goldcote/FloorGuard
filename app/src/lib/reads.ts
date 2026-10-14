@@ -452,6 +452,10 @@ export type Holding = {
   unlockedAt: number;
   status: number;
   canUnlock: boolean;
+  /** `Vault.isPlayersHolding`: set aside for players; it goes to the vault raffle after its lock, never to the unlock draw. */
+  players: boolean;
+  /** `Vault.isPicked`: the current draw picked this holding (it still needs the floor and the release cap to unlock). */
+  picked: boolean;
   /** Present while `status` is Auction. */
   auction?: {
     startPrice: bigint;
@@ -512,7 +516,57 @@ export type VaultState = {
   auctionHalfLife: number;
   /** An unsold auction rests at its reserve for this many seconds before it can be restarted. */
   auctionRestartDwell: number;
+  /** The daily unlock draw. */
+  draw: UnlockDraw;
+  /** Per collection with holdings listed, keyed by lower-case address. */
+  collections: Record<string, VaultCollection>;
+  /** `Vault.playersShareBps`: the share of purchases set aside for players. */
+  playersShareBps: number;
 };
+
+/** The Vault's daily unlock draw (`requestUnlockRound` / `fulfillRandomness`). */
+export type UnlockDraw = {
+  /** Zero address: no provider, so no draw; holdings unlock only by governance. */
+  randomness: Address;
+  /** When the last draw was requested (0: never). The next request is possible a day after it. */
+  requestedAt: number;
+  /** A request is waiting for its random number. */
+  pending: boolean;
+  /** The request in flight (the "Local only" button on anvil answers it). */
+  requestId: bigint;
+  /** When the draw behind the current result was requested and when its number arrived (0: none yet). */
+  seedRequestedAt: number;
+  seedArrivedAt: number;
+};
+
+/** A collection's floor samples and release cap in the Vault. */
+export type VaultCollection = {
+  /** `Vault.medianFloor`: the lower median of the last 30 days' samples now; undefined with fewer than 15. */
+  median: bigint | undefined;
+  /** `Vault.drawMedianFloor`: the same median as it stood when the current draw was requested. The unlock condition uses this one. */
+  drawMedian: bigint | undefined;
+  /** Samples taken so far, all time (`Vault.sampleCount`). */
+  samples: number;
+  /** Day index of the last sample plus one (`Vault.lastSampleSlot`); 0 before the first. */
+  lastSampleSlot: number;
+  /** `Vault.releaseAllowance`: holdings that can still unlock in the current weekly window. */
+  allowance: number;
+  /** Holdings of the collection still in the Vault (`Vault.heldCount`). */
+  held: number;
+  /** The current weekly window (`Vault.releaseWindows`); start 0 before the first unlock by draw. */
+  window: { start: number; cap: number; used: number };
+};
+
+/** Whether the current draw result can still be used, and when the next draw can be requested. */
+export function unlockDrawState(draw: UnlockDraw, now: number, interval = 86_400, timeout = 86_400, lifetime = 86_400): { live: boolean; inFlight: boolean; nextAt: number } {
+  const live = draw.seedArrivedAt !== 0 && now < draw.seedArrivedAt + lifetime;
+  const inFlight = draw.pending && now < draw.requestedAt + timeout;
+  const nextAt = draw.requestedAt === 0 ? 0 : Math.max(draw.requestedAt + interval, inFlight ? draw.requestedAt + timeout : 0);
+  return { live, inFlight, nextAt };
+}
+
+/** Today's sample has been taken (`Vault.sampleFloor` would revert with `AlreadySampled`). */
+export const sampledToday = (c: Pick<VaultCollection, "lastSampleSlot">, now: number, interval = 86_400): boolean => c.lastSampleSlot >= Math.floor(now / interval) + 1;
 
 const holdingsInFlight = new WeakMap<Client, Map<string, Promise<VaultState>>>();
 
@@ -533,19 +587,28 @@ export function readHoldings(client: Client, d: Deployment): Promise<VaultState>
 
 async function fetchHoldings(client: Client, d: Deployment): Promise<VaultState> {
   const vault = { address: d.vault, abi: vaultAbi } as const;
-  const [holdingCount, owner, governanceWindow, auctionStartMultiple, auctionHalfLife, auctionRestartDwell] = await Promise.all([
+  const [holdingCount, owner, governanceWindow, auctionStartMultiple, auctionHalfLife, auctionRestartDwell, randomness, requestedAt, pending, requestId, seedRequestedAt, seedArrivedAt, playersShareBps] = await Promise.all([
     readContract(client, { ...vault, functionName: "holdingCount" }),
     readContract(client, { ...vault, functionName: "owner" }),
     readContract(client, { ...vault, functionName: "GOVERNANCE_WINDOW" }),
     readContract(client, { ...vault, functionName: "AUCTION_START_MULTIPLE" }),
     readContract(client, { ...vault, functionName: "AUCTION_HALF_LIFE" }),
     readContract(client, { ...vault, functionName: "AUCTION_RESTART_DWELL" }),
+    readContract(client, { ...vault, functionName: "randomness" }),
+    readContract(client, { ...vault, functionName: "roundRequestedAt" }),
+    readContract(client, { ...vault, functionName: "roundPending" }),
+    readContract(client, { ...vault, functionName: "roundRequestId" }),
+    readContract(client, { ...vault, functionName: "seedRequestedAt" }),
+    readContract(client, { ...vault, functionName: "seedArrivedAt" }),
+    readContract(client, { ...vault, functionName: "playersShareBps" }),
   ]);
   const holdings = await Promise.all(
     recentIds(holdingCount).map(async (id): Promise<Holding> => {
-      const [holding, canUnlock] = await Promise.all([
+      const [holding, canUnlock, players, picked] = await Promise.all([
         readContract(client, { ...vault, functionName: "holdings", args: [id] }),
         readContract(client, { ...vault, functionName: "canUnlock", args: [id] }),
+        readContract(client, { ...vault, functionName: "isPlayersHolding", args: [id] }),
+        readContract(client, { ...vault, functionName: "isPicked", args: [id] }),
       ]);
       const [collection, tokenId, purchasePrice, acquiredAt, lockedUntil, unlockedAt, status] = holding;
       let auction: Holding["auction"];
@@ -558,8 +621,28 @@ async function fetchHoldings(client: Client, d: Deployment): Promise<VaultState>
         ]);
         auction = { startPrice, endPrice, startTime, currentPrice, atReserve: currentPrice <= endPrice, ownerPriced };
       }
-      return { id, collection, tokenId, purchasePrice, acquiredAt, lockedUntil, unlockedAt, status, canUnlock, auction };
+      return { id, collection, tokenId, purchasePrice, acquiredAt, lockedUntil, unlockedAt, status, canUnlock, players, picked, auction };
     }),
+  );
+  const unique = [...new Set(holdings.map((h) => h.collection.toLowerCase()))] as Address[];
+  const collections = Object.fromEntries(
+    await Promise.all(
+      unique.map(async (collection): Promise<[string, VaultCollection]> => {
+        const [[usable, median], [drawUsable, drawMedian], samples, lastSampleSlot, allowance, held, [start, cap, used]] = await Promise.all([
+          readContract(client, { ...vault, functionName: "medianFloor", args: [collection] }),
+          readContract(client, { ...vault, functionName: "drawMedianFloor", args: [collection] }),
+          readContract(client, { ...vault, functionName: "sampleCount", args: [collection] }),
+          readContract(client, { ...vault, functionName: "lastSampleSlot", args: [collection] }),
+          readContract(client, { ...vault, functionName: "releaseAllowance", args: [collection] }),
+          readContract(client, { ...vault, functionName: "heldCount", args: [collection] }),
+          readContract(client, { ...vault, functionName: "releaseWindows", args: [collection] }),
+        ]);
+        return [
+          collection,
+          { median: usable ? median : undefined, drawMedian: drawUsable ? drawMedian : undefined, samples: Number(samples), lastSampleSlot: Number(lastSampleSlot), allowance: Number(allowance), held: Number(held), window: { start, cap, used } },
+        ];
+      }),
+    ),
   );
   return {
     holdings,
@@ -569,6 +652,9 @@ async function fetchHoldings(client: Client, d: Deployment): Promise<VaultState>
     auctionStartMultiple: Number(auctionStartMultiple),
     auctionHalfLife: Number(auctionHalfLife),
     auctionRestartDwell: Number(auctionRestartDwell),
+    draw: { randomness, requestedAt, pending, requestId, seedRequestedAt, seedArrivedAt },
+    collections,
+    playersShareBps: Number(playersShareBps),
   };
 }
 
@@ -587,6 +673,10 @@ export type Raffle = {
   winner: Address;
   /** While Drawing: the randomness request in flight. */
   requestId?: bigint;
+  /** Once won: when the prize has vested and can be claimed (`VaultRaffle.claimableAt`). 0 before a winner is drawn. */
+  claimableAt: number;
+  /** `VaultRaffle.minPointsRequired`: activated points needed to draw it, the larger of the minimum and the prize's value times `pointsPerPrizeWei`. */
+  minPointsRequired: bigint;
 };
 
 export type Raffles = {
@@ -599,17 +689,23 @@ export type Raffles = {
   drawInFlight: boolean;
   /** No draw while fewer points than this are activated (0: no minimum). */
   minPointsToDraw: bigint;
+  /** Time from a winner being drawn to the prize becoming claimable (`VaultRaffle.vestingPeriod`). */
+  vestingPeriod: number;
+  /** Activated points a raffle needs per wei the Vault paid for its prize (0: no such check). */
+  pointsPerPrizeWei: bigint;
 };
 
 export async function readRaffles(client: Client, d: Deployment): Promise<Raffles> {
   if (isDemo(client)) return demoReads.raffles();
   const raffle = { address: d.vaultRaffle, abi: vaultRaffleAbi } as const;
-  const [raffleCount, nextDrawAt, freezeCount, totalPoints, minPointsToDraw] = await Promise.all([
+  const [raffleCount, nextDrawAt, freezeCount, totalPoints, minPointsToDraw, vestingPeriod, pointsPerPrizeWei] = await Promise.all([
     readContract(client, { ...raffle, functionName: "raffleCount" }),
     readContract(client, { ...raffle, functionName: "nextDrawAt" }),
     readContract(client, { address: d.points, abi: pointsAbi, functionName: "freezeCount" }),
     readContract(client, { address: d.points, abi: pointsAbi, functionName: "totalPoints" }),
     readContract(client, { ...raffle, functionName: "minPointsToDraw" }),
+    readContract(client, { ...raffle, functionName: "vestingPeriod" }),
+    readContract(client, { ...raffle, functionName: "pointsPerPrizeWei" }),
   ]);
   const raffles = await Promise.all(
     recentIds(raffleCount).map(async (id): Promise<Raffle> => {
@@ -618,14 +714,15 @@ export async function readRaffles(client: Client, d: Deployment): Promise<Raffle
         functionName: "raffles",
         args: [id],
       });
-      const requestId =
-        status === RaffleStatus.Drawing
-          ? await readContract(client, { ...raffle, functionName: "currentRequest", args: [id] })
-          : undefined;
-      return { id, collection, tokenId, drawAfter, requestedAt, status, winner, requestId };
+      const [requestId, claimableAt, minPointsRequired] = await Promise.all([
+        status === RaffleStatus.Drawing ? readContract(client, { ...raffle, functionName: "currentRequest", args: [id] }) : undefined,
+        status === RaffleStatus.Won || status === RaffleStatus.Claimed ? readContract(client, { ...raffle, functionName: "claimableAt", args: [id] }) : 0n,
+        readContract(client, { ...raffle, functionName: "minPointsRequired", args: [id] }),
+      ]);
+      return { id, collection, tokenId, drawAfter, requestedAt, status, winner, requestId, claimableAt: Number(claimableAt), minPointsRequired };
     }),
   );
-  return { raffles, raffleCount, totalPoints, nextDrawAt: Number(nextDrawAt), drawInFlight: freezeCount !== 0n, minPointsToDraw };
+  return { raffles, raffleCount, totalPoints, nextDrawAt: Number(nextDrawAt), drawInFlight: freezeCount !== 0n, minPointsToDraw, vestingPeriod: Number(vestingPeriod), pointsPerPrizeWei };
 }
 
 // ---------------------------------------------------------------- games
@@ -1450,7 +1547,7 @@ export async function readDrawProof(
 }
 
 export type RandomnessSource = {
-  module: "Games" | "Lottery" | "Ticket raffles" | "Vault raffles";
+  module: "Games" | "Lottery" | "Ticket raffles" | "Vault raffles" | "Vault unlock draw";
   provider: Address;
   /**
    * "mock": the provider answers like test/mocks/MockRandomness.sol, where whoever calls `fulfill`
@@ -1497,12 +1594,13 @@ export async function readFairnessStatus(client: Client, d: Deployment): Promise
   const games = { address: d.games, abi: gamesAbi } as const;
   const lottery = { address: d.lottery, abi: lotteryAbi } as const;
   const ticketRaffle = { address: d.ticketRaffle, abi: ticketRaffleAbi } as const;
-  const [gamesRng, lotteryRng, ticketRng, vaultRng, gamesOwner, edgeBps, minBet, maxExposureBps, maxTotalExposureBps, refundTimeout, lotteryFee, lotteryMinPot, raffleFee, raffleMinPot, maxWagerBps, bankrollShareBps] =
+  const [gamesRng, lotteryRng, ticketRng, vaultRng, unlockRng, gamesOwner, edgeBps, minBet, maxExposureBps, maxTotalExposureBps, refundTimeout, lotteryFee, lotteryMinPot, raffleFee, raffleMinPot, maxWagerBps, bankrollShareBps] =
     await Promise.all([
       readContract(client, { ...games, functionName: "randomness" }),
       readContract(client, { ...lottery, functionName: "randomness" }),
       readContract(client, { ...ticketRaffle, functionName: "randomness" }),
       readContract(client, { address: d.vaultRaffle, abi: vaultRaffleAbi, functionName: "randomness" }),
+      readContract(client, { address: d.vault, abi: vaultAbi, functionName: "randomness" }),
       readContract(client, { ...games, functionName: "owner" }),
       readContract(client, { ...games, functionName: "edgeBps" }),
       readContract(client, { ...games, functionName: "minBet" }),
@@ -1521,6 +1619,7 @@ export async function readFairnessStatus(client: Client, d: Deployment): Promise
     ["Lottery", lotteryRng],
     ["Ticket raffles", ticketRng],
     ["Vault raffles", vaultRng],
+    ["Vault unlock draw", unlockRng],
   ] as const;
   const [mocks, ownerCode] = await Promise.all([
     Promise.all(providers.map(([, provider]) => isMockRandomness(client, provider))),

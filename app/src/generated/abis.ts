@@ -2269,6 +2269,58 @@ export const vaultAbi = [
   },
   {
     "type": "function",
+    "name": "DRAW_END_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "DRAW_START_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "FLOOR_SAMPLES",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "FULL_AGE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "GOVERNANCE_WINDOW",
     "inputs": [],
     "outputs": [
@@ -2282,7 +2334,7 @@ export const vaultAbi = [
   },
   {
     "type": "function",
-    "name": "LOCK_DURATION",
+    "name": "MAX_PLAYERS_SHARE_BPS",
     "inputs": [],
     "outputs": [
       {
@@ -2295,7 +2347,137 @@ export const vaultAbi = [
   },
   {
     "type": "function",
-    "name": "UNLOCK_BPS",
+    "name": "MIN_FLOOR_SAMPLES",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MIN_LOCK",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "PLAYERS_LOCK",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "RELEASE_CAP_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "RELEASE_PERIOD",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "ROUND_INTERVAL",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "ROUND_TIMEOUT",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "SAMPLE_INTERVAL",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "SEED_LIFETIME",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "UNLOCK_END_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "UNLOCK_START_BPS",
     "inputs": [],
     "outputs": [
       {
@@ -2408,6 +2590,49 @@ export const vaultAbi = [
   },
   {
     "type": "function",
+    "name": "drawChanceBps",
+    "inputs": [
+      {
+        "name": "age",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "drawMedianFloor",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "usable",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
+        "name": "median",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "engine",
     "inputs": [],
     "outputs": [
@@ -2421,6 +2646,24 @@ export const vaultAbi = [
   },
   {
     "type": "function",
+    "name": "fulfillRandomness",
+    "inputs": [
+      {
+        "name": "requestId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "randomWord",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "governanceUnlock",
     "inputs": [
       {
@@ -2431,6 +2674,25 @@ export const vaultAbi = [
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "heldCount",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -2515,11 +2777,121 @@ export const vaultAbi = [
   },
   {
     "type": "function",
+    "name": "isPicked",
+    "inputs": [
+      {
+        "name": "vaultId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "isPlayersHolding",
+    "inputs": [
+      {
+        "name": "vaultId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "lastSampleSlot",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "maxOracleAge",
     "inputs": [],
     "outputs": [
       {
         "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "medianFloor",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "usable",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
+        "name": "median",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "medianFloorAt",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "asOf",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "usable",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
+        "name": "median",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -2586,6 +2958,38 @@ export const vaultAbi = [
   },
   {
     "type": "function",
+    "name": "playersCredit",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "playersShareBps",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "raffle",
     "inputs": [],
     "outputs": [
@@ -2593,6 +2997,19 @@ export const vaultAbi = [
         "name": "",
         "type": "address",
         "internalType": "contract IVaultRaffle"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "randomness",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract IRandomnessProvider"
       }
     ],
     "stateMutability": "view"
@@ -2628,6 +3045,73 @@ export const vaultAbi = [
   },
   {
     "type": "function",
+    "name": "releaseAllowance",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "releaseToPlayers",
+    "inputs": [
+      {
+        "name": "vaultId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "raffleId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "releaseWindows",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "start",
+        "type": "uint40",
+        "internalType": "uint40"
+      },
+      {
+        "name": "cap",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "used",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "relock",
     "inputs": [
       {
@@ -2646,10 +3130,185 @@ export const vaultAbi = [
   },
   {
     "type": "function",
+    "name": "removeFromPlayers",
+    "inputs": [
+      {
+        "name": "vaultId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "renounceOwnership",
     "inputs": [],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "requestUnlockRound",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "requiredFloorBps",
+    "inputs": [
+      {
+        "name": "age",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "roundNonce",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "roundPending",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "roundRequestId",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "roundRequestedAt",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint40",
+        "internalType": "uint40"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "roundSeed",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "sampleCount",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "sampleFloor",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "seedArrivedAt",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint40",
+        "internalType": "uint40"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "seedNonce",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "seedRequestedAt",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint40",
+        "internalType": "uint40"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -2729,6 +3388,19 @@ export const vaultAbi = [
   },
   {
     "type": "function",
+    "name": "setPlayersShare",
+    "inputs": [
+      {
+        "name": "bps",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setRaffle",
     "inputs": [
       {
@@ -2739,6 +3411,57 @@ export const vaultAbi = [
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setRandomness",
+    "inputs": [
+      {
+        "name": "randomness_",
+        "type": "address",
+        "internalType": "contract IRandomnessProvider"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "snapMedianOf",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "snapNonceOf",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -2814,6 +3537,25 @@ export const vaultAbi = [
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "unlockBpsOf",
+    "inputs": [
+      {
+        "name": "vaultId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -2943,6 +3685,25 @@ export const vaultAbi = [
   },
   {
     "type": "event",
+    "name": "FloorSampled",
+    "inputs": [
+      {
+        "name": "collection",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "price",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "MaxOracleAgeSet",
     "inputs": [
       {
@@ -3026,6 +3787,19 @@ export const vaultAbi = [
   },
   {
     "type": "event",
+    "name": "PlayersShareSet",
+    "inputs": [
+      {
+        "name": "playersShareBps",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "RaffleSet",
     "inputs": [
       {
@@ -3033,6 +3807,38 @@ export const vaultAbi = [
         "type": "address",
         "indexed": false,
         "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "RandomnessSet",
+    "inputs": [
+      {
+        "name": "randomness",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "ReleasedToPlayers",
+    "inputs": [
+      {
+        "name": "vaultId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "raffleId",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
       }
     ],
     "anonymous": false
@@ -3051,6 +3857,19 @@ export const vaultAbi = [
         "name": "lockedUntil",
         "type": "uint256",
         "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "RemovedFromPlayers",
+    "inputs": [
+      {
+        "name": "vaultId",
+        "type": "uint256",
+        "indexed": true,
         "internalType": "uint256"
       }
     ],
@@ -3077,6 +3896,51 @@ export const vaultAbi = [
   },
   {
     "type": "event",
+    "name": "UnlockRoundExpired",
+    "inputs": [
+      {
+        "name": "requestId",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "UnlockRoundRequested",
+    "inputs": [
+      {
+        "name": "requestId",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "UnlockRoundSeeded",
+    "inputs": [
+      {
+        "name": "requestId",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "seed",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "Unlocked",
     "inputs": [
       {
@@ -3093,6 +3957,11 @@ export const vaultAbi = [
       }
     ],
     "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "AlreadySampled",
+    "inputs": []
   },
   {
     "type": "error",
@@ -3122,12 +3991,37 @@ export const vaultAbi = [
   },
   {
     "type": "error",
+    "name": "InvalidShare",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoRaffle",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoRandomness",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NotEngine",
     "inputs": []
   },
   {
     "type": "error",
+    "name": "NotForPlayers",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NotHeld",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotRandomness",
     "inputs": []
   },
   {
@@ -3180,8 +4074,29 @@ export const vaultAbi = [
   },
   {
     "type": "error",
+    "name": "RoundInFlight",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "StaleOracle",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "StaleRequest",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TooEarly",
+    "inputs": [
+      {
+        "name": "readyAt",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",
@@ -4699,6 +5614,19 @@ export const vaultRaffleAbi = [
   },
   {
     "type": "function",
+    "name": "MAX_VESTING_PERIOD",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "REDRAW_COOLDOWN",
     "inputs": [],
     "outputs": [
@@ -4742,6 +5670,25 @@ export const vaultRaffleAbi = [
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "claimableAt",
+    "inputs": [
+      {
+        "name": "raffleId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -4795,6 +5742,25 @@ export const vaultRaffleAbi = [
   },
   {
     "type": "function",
+    "name": "minPointsRequired",
+    "inputs": [
+      {
+        "name": "raffleId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "minPointsToDraw",
     "inputs": [],
     "outputs": [
@@ -4830,6 +5796,11 @@ export const vaultRaffleAbi = [
       },
       {
         "name": "tokenId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "value",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -4878,6 +5849,38 @@ export const vaultRaffleAbi = [
         "name": "",
         "type": "address",
         "internalType": "contract IPoints"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "pointsPerPrizeWei",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "prizeValueOf",
+    "inputs": [
+      {
+        "name": "raffleId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -5019,12 +6022,38 @@ export const vaultRaffleAbi = [
   },
   {
     "type": "function",
+    "name": "setPointsPerPrizeWei",
+    "inputs": [
+      {
+        "name": "pointsPerPrizeWei_",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setRandomness",
     "inputs": [
       {
         "name": "randomness_",
         "type": "address",
         "internalType": "contract IRandomnessProvider"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setVestingPeriod",
+    "inputs": [
+      {
+        "name": "vestingPeriod_",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "outputs": [],
@@ -5052,6 +6081,19 @@ export const vaultRaffleAbi = [
         "name": "",
         "type": "address",
         "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "vestingPeriod",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -5154,6 +6196,19 @@ export const vaultRaffleAbi = [
   },
   {
     "type": "event",
+    "name": "PointsPerPrizeWeiSet",
+    "inputs": [
+      {
+        "name": "pointsPerPrizeWei",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "PrizeClaimed",
     "inputs": [
       {
@@ -5217,6 +6272,19 @@ export const vaultRaffleAbi = [
   },
   {
     "type": "event",
+    "name": "VestingPeriodSet",
+    "inputs": [
+      {
+        "name": "vestingPeriod",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "WinnerDrawn",
     "inputs": [
       {
@@ -5253,6 +6321,11 @@ export const vaultRaffleAbi = [
   {
     "type": "error",
     "name": "DrawInFlight",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidPeriod",
     "inputs": []
   },
   {
@@ -10947,6 +12020,11 @@ export const errorsAbi = [
   },
   {
     "type": "error",
+    "name": "AlreadySampled",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "AuctionRunning",
     "inputs": []
   },
@@ -11259,6 +12337,11 @@ export const errorsAbi = [
   },
   {
     "type": "error",
+    "name": "InvalidPeriod",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "InvalidPrice",
     "inputs": []
   },
@@ -11294,6 +12377,16 @@ export const errorsAbi = [
   },
   {
     "type": "error",
+    "name": "NoRaffle",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoRandomness",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NotAContract",
     "inputs": []
   },
@@ -11310,6 +12403,11 @@ export const errorsAbi = [
   {
     "type": "error",
     "name": "NotEngine",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotForPlayers",
     "inputs": []
   },
   {
@@ -11474,6 +12572,11 @@ export const errorsAbi = [
   {
     "type": "error",
     "name": "RequestIdInUse",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "RoundInFlight",
     "inputs": []
   },
   {

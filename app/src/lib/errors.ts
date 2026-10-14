@@ -44,7 +44,13 @@ const MESSAGES: Record<string, (args: Args) => string> = {
   NotHeld: () => "The vault does not hold this token.",
   WrongStatus: ([status]) => `Not possible in the item's current state (status code ${String(status)}).`,
   UnlockConditionsNotMet: () =>
-    "Unlock conditions are not met: the lock must have ended and the floor must be at least 130% of the purchase price.",
+    "Unlock conditions are not met: today's draw must have picked this holding, the 30-day median floor must reach the multiple its age requires, and the collection's weekly release cap must have room.",
+  AlreadySampled: () => "Today's floor sample for this collection has already been taken.",
+  NoRandomness: () => "The vault has no randomness provider, so there is no unlock draw; holdings unlock only by governance.",
+  RoundInFlight: () => "Today's draw has been requested and is waiting for its random number.",
+  NotForPlayers: () => "This holding is not set aside for players.",
+  NoRaffle: () => "The vault has no raffle to send it to.",
+  InvalidPeriod: () => "Invalid period.",
   GovernanceWindowOpen: ([opensAt]) =>
     `Only the owner can start this auction until the governance window ends on ${when(opensAt)}.`,
   AuctionRunning: () => "The auction is still running: it can be restarted only once its price has rested at the reserve for a day.",
@@ -86,7 +92,7 @@ const MESSAGES: Record<string, (args: Args) => string> = {
   UnknownBet: () => "This bet does not exist or is already settled or refunded.",
   NothingOwed: () => "There is nothing owed to this account.",
   InsufficientBankroll: () => "The bankroll is smaller than the requested amount.",
-  InvalidShare: () => "Invalid project share.",
+  InvalidShare: () => "Invalid share: above the allowed maximum.",
   // TicketRaffle
   NotTokenOwner: () => "You do not own this token.",
   AlreadyReclaimed: () => "The NFT has already been taken back.",
@@ -100,7 +106,7 @@ const MESSAGES: Record<string, (args: Args) => string> = {
   // Lottery
   InvalidCount: () => "Enter a number of tickets of at least 1.",
   // IPLicenseManager
-  NotInVault: () => "Only holdings locked in the vault can be licensed.",
+  NotInVault: () => "Only holdings locked in the vault, and not set aside for players, can be licensed.",
   TierInactive: () => "This licence tier is not available for the collection.",
   ScopeTooLong: () => "The usage scope is too long (280 bytes at most).",
   UnknownLicense: () => "This licence does not exist.",
