@@ -1,0 +1,1 @@
+import{_t as e,ht as t,mt as n}from"./hooks-_VhpHfRj.js";function r(e){return e?{events:n(),first:t()}:{events:[],first:void 0}}var i=t=>t?e():[];export{i as n,r as t};
