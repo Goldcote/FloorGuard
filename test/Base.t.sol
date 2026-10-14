@@ -68,6 +68,7 @@ abstract contract Base is Test {
         prediction = new PredictionMarket(gov, treasury, pushOracle);
         raffle = new VaultRaffle(gov, points, address(vault), randomness);
         vault.setRaffle(raffle);
+        vault.setRandomness(randomness);
         points.setRaffle(address(raffle));
         points.setRate(address(marketplace), POINTS_RATE);
         points.setRate(address(prediction), POINTS_RATE);
@@ -113,5 +114,53 @@ abstract contract Base is Test {
     function _pushFloor(uint256 price) internal {
         vm.prank(gov);
         pushOracle.pushFloor(address(nft), price);
+    }
+
+    /// Push and sample the floor once a day for `days_` days, ending on the last sample (no skip after
+    /// it), so the Vault's 30-day median is `price`.
+    function _sampleFloor(uint256 price, uint256 days_) internal {
+        // one sample per day: wait for the next day if today's has been taken
+        if (vault.lastSampleSlot(address(nft)) > block.timestamp / 1 days) skip(1 days);
+        for (uint256 i; i < days_; ++i) {
+            if (i != 0) skip(1 days);
+            _pushFloor(price);
+            vault.sampleFloor(address(nft));
+        }
+    }
+
+    /// A random word under which the daily draw picks every holding in `ids` at `chanceBps`.
+    function _seedPicking(uint256[] memory ids, uint256 chanceBps) internal pure returns (uint256 word) {
+        for (word = 1;; ++word) {
+            bool all = true;
+            for (uint256 i; i < ids.length && all; ++i) {
+                all = uint256(keccak256(abi.encode(word, ids[i]))) % 10_000 < chanceBps;
+            }
+            if (all) return word;
+        }
+    }
+
+    function _seedPicking(uint256 id, uint256 chanceBps) internal pure returns (uint256) {
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = id;
+        return _seedPicking(ids, chanceBps);
+    }
+
+    /// Run the Vault's daily draw with a chosen random word.
+    function _drawUnlockRound(uint256 word) internal {
+        vault.requestUnlockRound();
+        randomness.fulfill(randomness.lastRequestId(), word);
+    }
+
+    /// Unlock `id` through the moving lock: sample a floor of `floor` daily up to the end of its lock, so
+    /// it is the 30-day median, then draw a word that picks it.
+    function _unlockThroughDraw(uint256 id, uint256 floor) internal {
+        (,,, uint40 acquiredAt, uint40 lockedUntil,,) = vault.holdings(id);
+        uint256 sampleStart = uint256(lockedUntil) > 15 days ? uint256(lockedUntil) - 15 days : 0;
+        if (block.timestamp < sampleStart) vm.warp(sampleStart);
+        _sampleFloor(floor, 16); // a majority of any 30 days of samples
+        if (block.timestamp < lockedUntil) vm.warp(lockedUntil);
+        _pushFloor(floor);
+        _drawUnlockRound(_seedPicking(id, vault.drawChanceBps(block.timestamp - acquiredAt)));
+        vault.unlock(id);
     }
 }

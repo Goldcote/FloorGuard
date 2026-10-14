@@ -51,7 +51,7 @@ contract BuybackEngineTest is Base {
         assertEq(tokenId, 1);
         assertEq(price, 12 ether);
         assertEq(acquiredAt, block.timestamp);
-        assertEq(lockedUntil, block.timestamp + 180 days);
+        assertEq(lockedUntil, block.timestamp + 90 days);
         assertEq(uint8(status), uint8(Vault.Status.Locked));
     }
 

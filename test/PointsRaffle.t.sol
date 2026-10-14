@@ -189,6 +189,12 @@ contract VaultRaffleTest is Base {
         assertEq(points.pointsOf(carol), 600e18);
         assertEq(points.pointsOf(bob), 1_000e18);
 
+        // the prize vests for 30 days first
+        uint256 vestsAt = block.timestamp + 30 days;
+        assertEq(raffle.claimableAt(raffleId), vestsAt);
+        vm.expectRevert(abi.encodeWithSelector(VaultRaffle.TooEarly.selector, vestsAt));
+        raffle.claim(raffleId);
+        skip(30 days);
         vm.prank(alice); // anyone can deliver the prize
         raffle.claim(raffleId);
         assertEq(nft.ownerOf(1), carol);
@@ -230,6 +236,24 @@ contract VaultRaffleTest is Base {
         randomness.fulfill(2, 0);
         (,,,,, address winner) = raffle.raffles(raffleId);
         assertEq(winner, bob);
+    }
+
+    function test_setVestingPeriod_boundedAndAppliesToLaterDraws() public {
+        vm.prank(alice);
+        vm.expectRevert();
+        raffle.setVestingPeriod(0);
+        vm.prank(gov);
+        vm.expectRevert(VaultRaffle.InvalidPeriod.selector);
+        raffle.setVestingPeriod(181 days);
+        vm.prank(gov);
+        raffle.setVestingPeriod(0);
+
+        _earn(bob, 1 ether);
+        skip(7 days);
+        raffle.draw(raffleId);
+        randomness.fulfill(randomness.lastRequestId(), 0);
+        raffle.claim(raffleId); // no vesting
+        assertEq(nft.ownerOf(1), bob);
     }
 
     function test_claim_revertsBeforeWinner() public {

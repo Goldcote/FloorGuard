@@ -56,24 +56,40 @@ contract FlywheelTest is Base {
         assertEq(nft.ownerOf(1), address(vault));
         assertEq(treasury.budgetOf(address(nft)), 0.1 ether);
 
-        // 3. Lock: neither time nor price is met yet.
+        // 3. Lock: nothing takes part in the unlock draw before 90 days.
         assertFalse(vault.canUnlock(vaultId));
-        skip(180 days);
-        assertFalse(vault.canUnlock(vaultId)); // old sales have aged out of the oracle
+        skip(75 days);
+        vm.expectRevert(); // old sales have aged out of the oracle
+        vault.sampleFloor(address(nft));
 
-        // 4. The floor recovers to 13 ETH, above 130% of the 9.9 ETH purchase price.
+        // 4. The floor recovers to 13 ETH, above 130% of the 9.9 ETH purchase price, and holds there:
+        //    sampled daily, it becomes the Vault's 30-day median floor.
         _trade(bob, alice, 13 ether, 3);
+        vault.sampleFloor(address(nft));
+        for (uint256 i; i < 15; ++i) {
+            skip(1 days);
+            _trade(bob, alice, 13 ether, 1);
+            vault.sampleFloor(address(nft));
+        }
+
+        // 5. The daily draw picks the holding, on a day nobody could know in advance.
+        (,,, uint40 acquiredAt,,,) = vault.holdings(vaultId);
+        _drawUnlockRound(_seedPicking(vaultId, vault.drawChanceBps(block.timestamp - acquiredAt)));
         assertTrue(vault.canUnlock(vaultId));
         vault.unlock(vaultId);
 
-        // 5. Governance raffles the NFT to points holders.
+        // 6. Governance raffles the NFT to points holders.
         vm.prank(gov);
         uint256 raffleId = vault.sendToRaffle(vaultId);
         skip(7 days);
         raffle.draw(raffleId);
         uint256 alicePoints = points.pointsOf(alice);
-        randomness.fulfill(1, 0); // point 0 belongs to alice, the first holder registered
+        randomness.fulfill(randomness.lastRequestId(), 0); // point 0 belongs to alice, the first holder
 
+        // 7. The prize vests for 30 days before it can be claimed.
+        vm.expectRevert();
+        raffle.claim(raffleId);
+        skip(30 days);
         raffle.claim(raffleId);
         assertEq(nft.ownerOf(1), alice);
         assertEq(points.pointsOf(alice), alicePoints * 2_000 / 10_000);

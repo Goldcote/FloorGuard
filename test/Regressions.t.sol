@@ -433,9 +433,7 @@ contract RegressionsTest is Base {
     /// An auction cannot be restarted before its price has fallen to the reserve.
     function test_auctionRestartsOnlyOnceThePriceReachedTheReserve() public {
         uint256 vaultId = _holdingBoughtAt10();
-        skip(180 days);
-        _pushFloor(100 ether);
-        vault.unlock(vaultId); // floor at unlock: 100 ETH
+        _unlockThroughDraw(vaultId, 100 ether); // median floor at unlock: 100 ETH
         assertEq(vault.unlockFloorOf(vaultId), 100 ether);
         skip(30 days);
 
@@ -638,9 +636,7 @@ contract RegressionsTest is Base {
     /// The floor recorded at unlock is capped, and a governance unlock clears it.
     function test_unlockFloorIsCappedAndClearedByGovernanceUnlock() public {
         uint256 vaultId = _holdingBoughtAt10();
-        skip(180 days);
-        _pushFloor(10_000 ether); // a pumped reading
-        vault.unlock(vaultId);
+        _unlockThroughDraw(vaultId, 10_000 ether); // a pumped month
         assertEq(vault.unlockFloorOf(vaultId), 208 ether); // 16 x the 13 ETH unlock price
 
         vm.startPrank(gov);

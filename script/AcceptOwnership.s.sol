@@ -41,7 +41,7 @@ contract AcceptOwnership is Script {
             ".randomness"
         ];
         // collect the contracts that are waiting for `expected` to accept
-        address[] memory targets = new address[](keys.length + 3);
+        address[] memory targets = new address[](keys.length + 4);
         uint256 n;
         for (uint256 i; i < keys.length; ++i) {
             n = _add(targets, n, json.readAddress(keys[i]), expected);
@@ -49,6 +49,10 @@ contract AcceptOwnership is Script {
         n = _add(targets, n, json.readAddress(".gamesRandomness"), expected);
         n = _add(targets, n, json.readAddress(".ticketRaffleRandomness"), expected);
         n = _add(targets, n, json.readAddress(".lotteryRandomness"), expected);
+        // deployments made before the Vault had its own unlock draw have no such adapter
+        if (vm.keyExistsJson(json, ".vaultRandomness")) {
+            n = _add(targets, n, json.readAddress(".vaultRandomness"), expected);
+        }
         if (n == 0) {
             console2.log("Nothing is waiting to be accepted.");
             return;

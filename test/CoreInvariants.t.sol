@@ -149,10 +149,30 @@ contract CoreHandler is Test {
             vm.prank(gov);
             vault.governanceUnlock(id);
         } else {
-            (,,,, uint40 lockedUntil,,) = vault.holdings(id);
+            if (vault.isPlayersHolding(id)) {
+                (,,,, uint40 until,,) = vault.holdings(id);
+                if (block.timestamp < until) vm.warp(until);
+                vault.releaseToPlayers(id);
+                return;
+            }
+            (,,, uint40 acquiredAt, uint40 lockedUntil,,) = vault.holdings(id);
+            uint256 sampleFrom = lockedUntil > 15 days ? lockedUntil - 15 days : 0;
+            if (block.timestamp < sampleFrom) vm.warp(sampleFrom);
+            for (uint256 d; d < 16; ++d) {
+                if (d != 0) skip(1 days);
+                _push(floor);
+                vault.sampleFloor(address(nft));
+            }
             if (block.timestamp < lockedUntil) vm.warp(lockedUntil);
             _push(floor);
-            vault.unlock(id); // reverts unless the pushed floor is at least 130% of the purchase price
+            vault.requestUnlockRound(); // reverts if a draw was requested less than a day ago
+            uint256 chance = vault.drawChanceBps(block.timestamp - acquiredAt);
+            uint256 word = 1;
+            while (uint256(keccak256(abi.encode(word, id))) % 10_000 >= chance) ++word;
+            randomness.fulfill(randomness.lastRequestId(), word);
+            // reverts unless the median floor meets the multiple the holding's age needs and the
+            // weekly release cap has room
+            vault.unlock(id);
         }
     }
 
@@ -250,6 +270,8 @@ contract CoreHandler is Test {
     function claimPrize(uint256 seed) external {
         uint256 id = _raffle(seed, VaultRaffle.Status.Won);
         if (id == 0) return;
+        uint256 vestsAt = raffle.claimableAt(id);
+        if (block.timestamp < vestsAt) vm.warp(vestsAt);
         raffle.claim(id);
     }
 

@@ -8,6 +8,8 @@ import {IPoints, IVaultRaffle, IRandomnessProvider, IRandomnessConsumer} from ".
 /// @title VaultRaffle
 /// @notice Raffles vault NFTs to points holders. Nobody buys tickets: each holder's chance is their
 ///         share of all points when the randomness arrives. The winner then loses most of their points.
+///         A prize vests for `vestingPeriod` after the draw before it can be claimed, so a token won
+///         for nothing cannot be dumped on the market the same day.
 /// @dev Point weights are frozen from `draw` until the randomness arrives. Otherwise anyone who saw the
 ///      random word before it landed could add just enough points to steer the result.
 contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
@@ -32,6 +34,7 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     uint256 public constant DRAW_TIMEOUT = 1 days;
     /// @notice Wait between a reset and the next draw, so points cannot be kept frozen without a break.
     uint256 public constant REDRAW_COOLDOWN = 1 hours;
+    uint256 public constant MAX_VESTING_PERIOD = 180 days;
 
     IPoints public immutable points;
     /// @notice The only address allowed to open raffles (the Vault).
@@ -43,6 +46,8 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     ///         when the fees behind the activated points are large against the prize; the owner should
     ///         set this to several times the points one prize's worth of fees would earn.
     uint256 public minPointsToDraw;
+    /// @notice Time between a winner being drawn and the prize becoming claimable.
+    uint256 public vestingPeriod = 30 days;
 
     /// @notice After any draw ends, with a winner or a reset, no draw can be requested before this time. Together with the
     ///         rule of one draw at a time, this leaves a window in which points can be activated.
@@ -53,6 +58,8 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     mapping(uint256 requestId => uint256 raffleId) public raffleOfRequest;
     /// @notice The only randomness request a raffle will accept; cleared by `resetDraw`.
     mapping(uint256 raffleId => uint256 requestId) public currentRequest;
+    /// @notice When a won prize can be claimed.
+    mapping(uint256 raffleId => uint256) public claimableAt;
 
     event RaffleOpened(
         uint256 indexed raffleId, address indexed collection, uint256 indexed tokenId, uint256 drawAfter
@@ -64,6 +71,7 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     event RandomnessSet(address randomness);
     event AnnouncePeriodSet(uint256 announcePeriod);
     event MinPointsToDrawSet(uint256 minPointsToDraw);
+    event VestingPeriodSet(uint256 vestingPeriod);
 
     error NotVault();
     error NotRandomness();
@@ -73,6 +81,7 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     error StaleRequest();
     error DrawInFlight();
     error BelowMinPoints(uint256 activated, uint256 required);
+    error InvalidPeriod();
 
     constructor(address owner_, IPoints points_, address vault_, IRandomnessProvider randomness_)
         Ownable(owner_)
@@ -138,6 +147,7 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
         address winner = points.pick(randomWord);
         r.winner = winner;
         r.status = Status.Won;
+        claimableAt[raffleId] = block.timestamp + vestingPeriod;
         points.resetWinner(winner);
         points.unfreeze();
         // leave a window for points to be activated before the next raffle is drawn
@@ -162,10 +172,11 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
         emit DrawReset(raffleId);
     }
 
-    /// @notice Send the prize to the winner. Anyone may call.
+    /// @notice Send the prize to the winner once it has vested. Anyone may call.
     function claim(uint256 raffleId) external {
         Raffle storage r = raffles[raffleId];
         if (r.status != Status.Won) revert WrongStatus(r.status);
+        if (block.timestamp < claimableAt[raffleId]) revert TooEarly(claimableAt[raffleId]);
         r.status = Status.Claimed;
         IERC721(r.collection).transferFrom(address(this), r.winner, r.tokenId);
         emit PrizeClaimed(raffleId, r.winner);
@@ -180,6 +191,13 @@ contract VaultRaffle is IVaultRaffle, IRandomnessConsumer, Ownable2Step {
     function setMinPointsToDraw(uint256 minPointsToDraw_) external onlyOwner {
         minPointsToDraw = minPointsToDraw_;
         emit MinPointsToDrawSet(minPointsToDraw_);
+    }
+
+    /// @notice Applies to prizes drawn after the change.
+    function setVestingPeriod(uint256 vestingPeriod_) external onlyOwner {
+        if (vestingPeriod_ > MAX_VESTING_PERIOD) revert InvalidPeriod();
+        vestingPeriod = vestingPeriod_;
+        emit VestingPeriodSet(vestingPeriod_);
     }
 
     function setAnnouncePeriod(uint256 announcePeriod_) external onlyOwner {
