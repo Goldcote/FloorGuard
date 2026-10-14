@@ -1,0 +1,1 @@
+import{_t as e,gt as t,yt as n}from"./hooks-Bpt8Wz9K.js";function r(n){return n?{events:t(),first:e()}:{events:[],first:void 0}}var i=e=>e?n():[];export{i as n,r as t};
