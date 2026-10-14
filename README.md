@@ -22,6 +22,10 @@ is, why now, what it can and cannot do, the open problems and how to help. It is
 also available as a designed
 [PDF and Word file](https://github.com/Goldcote/FloorGuard/releases/tag/paper-v1).
 
+**Try the [demo](https://goldcote.github.io/FloorGuard/):** the web app in demo
+mode, in your browser. It is a simulation with play money and simulated time
+running 600 times faster; no wallet or chain is needed.
+
 The idea started as a
 [2024 white paper](https://x.com/captainPURU/status/1825613065502462081) and
 grew into the [v0.1 concept document](docs/WHITEPAPER-v0.1.md), kept as history.
