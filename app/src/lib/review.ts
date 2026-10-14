@@ -39,7 +39,7 @@ export function contractName(d: Deployment | undefined, address: Address): strin
   for (const [key, name] of Object.entries(NAMES) as [keyof Deployment, string][]) {
     if (d[key]?.toLowerCase() === lower) return name;
   }
-  if ([d.randomness, d.gamesRandomness, d.ticketRaffleRandomness, d.lotteryRandomness].some((a) => a.toLowerCase() === lower)) return "Randomness provider";
+  if ([d.randomness, d.gamesRandomness, d.vaultRandomness, d.ticketRaffleRandomness, d.lotteryRandomness].some((a) => a.toLowerCase() === lower)) return "Randomness provider";
   return undefined;
 }
 

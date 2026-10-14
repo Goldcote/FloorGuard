@@ -48,7 +48,8 @@ interface IPoints {
 }
 
 interface IVaultRaffle {
-    function open(address collection, uint256 tokenId) external returns (uint256 raffleId);
+    /// @param value What the Vault paid for the prize; the raffle needs activated points in proportion.
+    function open(address collection, uint256 tokenId, uint256 value) external returns (uint256 raffleId);
 }
 
 interface IRandomnessProvider {

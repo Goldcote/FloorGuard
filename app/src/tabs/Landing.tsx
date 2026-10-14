@@ -12,10 +12,10 @@ import { eth } from "../lib/format";
 import { href } from "../routes";
 import { FairnessWalk } from "../viz/FairnessWalk";
 import { Flywheel, type FlyData, type FlyFlow, type FlyHandle, type FlyNode } from "../viz/Flywheel";
-import { advance, catchAuction, initialModel, modelAuctionPrice, modelBid, modelCurve, modelLock, modelMinBid, raffle, RULES, sellIntoBid, setDay, setFloor, startAuction, trade, unlock, wager, type FlowEvent, type Model } from "../viz/flywheelModel";
+import { advance, catchAuction, drawHolding, initialModel, modelAuctionPrice, modelBid, modelCurve, modelLock, modelMinBid, raffle, RULES, sellIntoBid, setDay, setFloor, skipToUnlock, startAuction, trade, unlock, wager, type FlowEvent, type Model } from "../viz/flywheelModel";
 import { HeroScene } from "../viz/HeroScene";
 import { useDemoTick, useInView, useReducedMotion, useWidth } from "../viz/motion";
-import { PriceLockGauge, Shackle, TimeLockDial } from "../viz/parts";
+import { DrawDial, PriceLockGauge, Shackle } from "../viz/parts";
 
 const launch = (path: string) => () => {
   setMode("demo", false);
@@ -187,12 +187,13 @@ const CHAPTERS: Chapter[] = [
   {
     id: "lock",
     kicker: "04 · The vault",
-    title: "Two locks hold what the bid buys.",
+    title: "A lock no one can time.",
     body: (
       <>
-        A bought token cannot leave until both open: 180 days have passed, and the floor is at least 30% above what the vault
-        paid for it. If the floor never gets there, it stays locked unless the owner releases it. Move time and the floor and
-        watch the locks.
+        From 90 days a bought token is in a daily draw no one can predict, its chance rising with age. Once picked, it unlocks
+        only if the month's median floor is up to 30% above what the vault paid, less as it ages, and a weekly cap limits how
+        many leave. A fixed date would let traders see supply coming. One purchase in five goes to players instead: after 30
+        days it is raffled to points holders. Move time and the floor and run the draw.
       </>
     ),
     focus: ["vault"],
@@ -205,7 +206,7 @@ const CHAPTERS: Chapter[] = [
     body: (
       <>
         An unlocked token goes to a Dutch auction or to a raffle. The auction opens at 16 times its reserve and halves every day
-        until someone catches it; the reserve is the higher of the floor and 130% of the purchase price. A raffle gives the
+        until someone catches it; the reserve is the higher of the floor and the multiple it unlocked at. A raffle gives the
         token to a holder of activated points. Points are earned by paying fees, so they can be bought by trading with
         oneself.
       </>
@@ -351,12 +352,25 @@ function Story() {
     holding && lock && holding.status === "locked" ? (
       <>
         <div className="story-locks">
-          <TimeLockDial acquiredAt={holding.boughtDay * DAY} lockedUntil={(holding.boughtDay + RULES.lockDays) * DAY} now={model.day * DAY} size={84} />
-          <PriceLockGauge purchasePrice={BigInt(Math.round(holding.price * 1e6)) * 10n ** 12n} floor={BigInt(Math.round(model.floor * 1e6)) * 10n ** 12n} />
+          <DrawDial
+            age={(model.day - holding.boughtDay) * DAY}
+            chanceBps={Math.round(lock.chance * 10_000)}
+            eligibleIn={lock.daysLeft * DAY}
+            picked={lock.picked}
+            size={84}
+          >
+            {!lock.eligible ? `Joins in ${Math.ceil(lock.daysLeft)} days.` : lock.picked ? "Picked today." : lock.drawnToday ? "Not picked today." : "Today's draw has not run."}
+          </DrawDial>
+          <PriceLockGauge
+            purchasePrice={BigInt(Math.round(holding.price * 1e6)) * 10n ** 12n}
+            floor={BigInt(Math.round(model.floor * 1e6)) * 10n ** 12n}
+            requiredBps={Math.round(lock.multiple * 10_000)}
+            title={`Floor ${(lock.multiple * 100).toFixed(1)}%`}
+          />
         </div>
         <label className="field">
           <span>Days since the vault bought it: {Math.round(model.day - holding.boughtDay)}</span>
-          <input type="range" min={0} max={240} value={Math.min(240, Math.round(model.day - holding.boughtDay))} onChange={(e) => setModel((m) => setDay(m, holding.boughtDay + Number(e.target.value)))} />
+          <input type="range" min={0} max={400} value={Math.min(400, Math.round(model.day - holding.boughtDay))} onChange={(e) => setModel((m) => setDay(m, holding.boughtDay + Number(e.target.value)))} />
         </label>
         <label className="field">
           <span>
@@ -365,10 +379,16 @@ function Story() {
           <input type="range" min={0.5} max={2} step={0.01} value={model.floor} onChange={(e) => setModel((m) => setFloor(m, Number(e.target.value)))} />
         </label>
         <div className="story-actions">
-          <button type="button" className="btn" onClick={() => act((m) => unlock(m, holding.id))} disabled={!lock.time || !lock.price}>
-            <Shackle open={lock.time && lock.price} size={18} /> Unlock
+          <button type="button" className="btn secondary" onClick={() => act((m) => drawHolding(m, holding.id, Math.random()))} disabled={!lock.eligible || lock.drawnToday}>
+            Run today's draw ({(lock.chance * 100).toFixed(2)}%)
           </button>
-          <span className="muted small">Anyone can call it once both locks are open.</span>
+          <button type="button" className="btn secondary" onClick={() => setModel((m) => advance(m, 1))}>
+            Wait a day
+          </button>
+          <button type="button" className="btn" onClick={() => act((m) => unlock(m, holding.id))} disabled={!lock.picked || !lock.price}>
+            <Shackle open={lock.picked && lock.price} size={18} /> Unlock
+          </button>
+          <span className="muted small">Anyone can call it on a day the draw picked it and the floor is high enough. Example only: the contracts use a 30-day median and a weekly cap.</span>
         </div>
       </>
     ) : holding && holding.status !== "locked" && model.holdings.some((h) => h.status !== "locked") ? (
@@ -408,13 +428,12 @@ function Story() {
             type="button"
             className="btn secondary"
             onClick={() => {
-              const ready = setFloor(setDay(model, holding.boughtDay + RULES.lockDays), Math.max(model.floor, Math.ceil(holding.price * RULES.unlockMultiple * 100) / 100));
-              const result = unlock(ready, holding.id);
+              const result = skipToUnlock(model, holding.id, Math.random);
               setModel(result.model);
               setNote(result.refused);
             }}
           >
-            Skip ahead: 180 days on, floor up 30%, unlock
+            Skip ahead: draw daily until it is picked, then unlock
           </button>
         </div>
       </>

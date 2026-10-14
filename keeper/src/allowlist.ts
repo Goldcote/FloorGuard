@@ -22,7 +22,13 @@ export const ALLOWLIST = {
   lottery: ["draw(uint256)", "resetDraw(uint256)", "abort(uint256)"],
   ticketRaffle: ["close(uint256)", "settle(uint256)", "resetDraw(uint256)", "abort(uint256)"],
   games: ["refund(uint256)"],
-  vault: ["unlock(uint256)", "startAuction(uint256)"],
+  vault: [
+    "sampleFloor(address)",
+    "requestUnlockRound()",
+    "unlock(uint256)",
+    "releaseToPlayers(uint256)",
+    "startAuction(uint256)",
+  ],
 } as const satisfies Record<TargetContract, readonly string[]>;
 
 /** Calls that are on the allowlist but still need an explicit opt-in in the configuration. */

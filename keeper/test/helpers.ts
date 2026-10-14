@@ -9,7 +9,17 @@ export const ABIS: Record<TargetContract, Abi> = {
   lottery: parseAbi(["function draw(uint256 roundId)", "function resetDraw(uint256 roundId)", "function abort(uint256 roundId)", "function buy(address c, uint32 n) payable returns (uint256)", "function withdraw()"]),
   ticketRaffle: parseAbi(["function close(uint256 raffleId)", "function settle(uint256 raffleId)", "function resetDraw(uint256 raffleId)", "function abort(uint256 raffleId)", "function withdraw()"]),
   games: parseAbi(["function refund(uint256 requestId)", "function withdraw()", "function fundBankroll() payable returns (uint256)"]),
-  vault: parseAbi(["function unlock(uint256 vaultId)", "function startAuction(uint256 vaultId)", "function buy(uint256 vaultId) payable", "function governanceUnlock(uint256 vaultId)"]),
+  vault: parseAbi([
+    "function sampleFloor(address collection)",
+    "function requestUnlockRound()",
+    "function unlock(uint256 vaultId)",
+    "function releaseToPlayers(uint256 vaultId) returns (uint256)",
+    "function startAuction(uint256 vaultId)",
+    "function buy(uint256 vaultId) payable",
+    "function governanceUnlock(uint256 vaultId)",
+    "function fulfillRandomness(uint256 requestId, uint256 randomWord)",
+    "function sendToRaffle(uint256 vaultId) returns (uint256)",
+  ]),
 };
 
 export const ADDRESSES: Record<TargetContract, Address> = {

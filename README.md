@@ -31,7 +31,7 @@ This repository is the first implementation.
 flowchart LR
     A[Trading and<br/>prediction markets] -->|fees| B[Treasury budget<br/>per collection]
     B -->|funds| C[Rising floor bid]
-    C -->|buys floor NFTs| D[Vault<br/>locked 180 days<br/>and until floor +30%]
+    C -->|buys floor NFTs| D[Vault<br/>moving lock from 90 days]
     D -->|auction proceeds| B
     D -->|raffled to<br/>fee payers| A
 ```
@@ -46,11 +46,15 @@ flowchart LR
    never more than the collection's budget can pay, and money that arrives late
    does not inherit a rise nobody could have been paid. The owner sets a maximum
    price.
-3. **Vault.** Bought NFTs are locked for at least 180 days and until the floor is
-   30% above the purchase price. They are then auctioned, with proceeds returning
-   to the budget, or raffled. If the floor never gets there they stay locked
-   unless the owner releases them. Selling one returns about enough to buy one
-   back, so auctions do not increase the number of tokens held.
+3. **Vault.** Bought NFTs have a moving lock. From 90 days a daily random draw
+   picks holdings to unlock, so nobody knows the date in advance. A picked
+   holding unlocks only if the month's median floor is high enough (130% of its
+   purchase price at 90 days, falling to 100% at a year), and at most 5% of a
+   collection's holdings unlock in a week. Unlocked holdings are auctioned, with
+   proceeds returning to the budget, or raffled. One purchase in five is instead
+   raffled to players after 30 days, and raffle prizes vest for 30 days. Selling
+   one returns about enough to buy one back, so auctions do not increase the
+   number of tokens held; prizes return tokens to circulation.
 4. **Prediction markets.** Anyone can bet on a collection's floor going up or
    down. 3% of winnings funds buybacks.
 5. **Games.** Dice, coinflip and slots against a house bankroll, and a pooled
@@ -80,7 +84,7 @@ explains how the games' results can be checked.
 | Deployment | Local chain only; simulated on Base Sepolia, not broadcast. See [docs/TESTNET.md](docs/TESTNET.md) |
 | Web app in `app/` | Every flow tested against a local chain with a built-in test account; not yet tested with a real browser wallet. Includes a demo mode that needs no wallet. See [app/README.md](app/README.md) |
 | Keeper bot in `keeper/` | Tested end to end on a local chain; not run on a public network. See [keeper/README.md](keeper/README.md) |
-| Reviews | Eleven automated review passes, an economics review and a front-end security review, recorded in [docs/AUDIT.md](docs/AUDIT.md). The latest changes to the games bankroll ("the house") have not been reviewed |
+| Reviews | Twelve automated review passes, an economics review and a front-end security review, recorded in [docs/AUDIT.md](docs/AUDIT.md). The latest changes to the games bankroll ("the house") have not been reviewed |
 | Audit | None |
 
 A governance token from the concept document is not built. The full list is at the end of the architecture document.

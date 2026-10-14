@@ -21,6 +21,7 @@ contest, is required before the contracts hold real funds.
 | Review 9 | House shares, first design | 2 High, 1 Medium, 3 Low; the design was replaced |
 | Review 10 | Redesigned house shares; fixes from review 8, with simulations | 1 High, 3 Medium, 4 Low |
 | Review 11 | Final house design, re-running both earlier attacks; small Vault and raffle changes | 2 Medium, 4 Low |
+| Review 12 (14 October) | The Vault's moving lock, players' share and prize vesting | 2 Medium, 6 Low; see below |
 | Economics review | Whether the mechanism does what it claims, with models | 5 main findings; see [ECONOMICS-REVIEW.md](ECONOMICS-REVIEW.md) |
 | Static analysis | Slither 0.11.6 on `src/` | No actionable medium or high finding |
 | Web app | Every write flow clicked through with a local test account | 4 bugs fixed |
@@ -29,9 +30,30 @@ Each reviewer worked independently from the code, proved its High findings with
 tests, and reported what it had not verified. No Critical finding was reported
 in any pass.
 
-Test suite at the time of writing: 280 tests (unit, fuzz, stateful invariant and
+Test suite at the time of writing: 303 Foundry tests (280 before review 12) (unit, fuzz, stateful invariant and
 end-to-end). Line coverage of `src/` was 94% when last measured, before the
 slots, lottery and later changes.
+
+## Review 12: the moving lock
+
+The fixed lock (180 days and an oracle floor at 130%) was replaced by a daily
+random draw from 90 days, a 30-day median of daily floor samples, a required
+multiple falling from 130% to 100% over the first year, a weekly release cap, a
+players' share of purchases and 30-day prize vesting. One reviewer worked from
+the code with eight proof-of-concept tests. No High finding.
+
+| Finding | Severity | Outcome |
+|---|---|---|
+| Players' holdings reach the raffle without the owner, and the raffle's points minimum defaulted to zero: one small fee payer could win a valuable prize | Medium | Fixed: a raffle needs activated points in proportion to what the Vault paid for the prize (`pointsPerPrizeWei`, on by default); the owner can take a holding out of the players' share |
+| The median could be tipped after the draw was public: a later sample counted, and one sample pushed an old one out of the ring | Medium | Fixed: unlocks are judged on the median as of the draw request, recorded by the first sample after it; a new request retires the previous word. Holding the median down remains free and is documented |
+| Pushing the median up costs about four wash trades a week, not a day | Medium (docs) | SECURITY.md corrected |
+| The weekly cap is a fixed window and a race between picked holdings | Low | Documented |
+| `governanceUnlock` kept a lower recorded multiple | Low | Fixed |
+| The reserve invariant assumed 130% and fuzzing never unlocked older holdings | Low | Fixed: bound by the recorded multiple; handlers unlock at older ages |
+| A licence on a players' holding lapsed when it went to the raffle | Low | Fixed: players' holdings cannot be licensed |
+| Players' holdings could be stranded without a raffle | Low | Fixed by `removeFromPlayers` |
+| Governance unlocks bypass the cap and relocks do not return a slot | Low | Documented |
+| `isPicked` true for holdings outside the draw; a word stays usable after the provider is removed; old oracle samples survive `setOracle` | Info | First fixed; the others documented |
 
 ## High findings, all fixed
 

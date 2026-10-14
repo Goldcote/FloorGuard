@@ -56,6 +56,7 @@ const REQUIRED_KEYS = [
   "pushFloorOracle",
   "randomness",
   "gamesRandomness",
+  "vaultRandomness",
   "ticketRaffleRandomness",
   "lotteryRandomness",
   "owner",

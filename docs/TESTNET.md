@@ -2,7 +2,8 @@
 
 These steps deploy FloorGuard to Base Sepolia. The deployment has been simulated
 against Base Sepolia (about 30 million gas for all contracts, four randomness
-adapters and a timelock) but has not been
+adapters and a timelock, before the Vault gained a fifth adapter for its daily
+unlock draw) but has not been
 broadcast: no testnet deployment exists yet.
 
 The Chainlink values below were read from Chainlink's
@@ -29,7 +30,7 @@ Fund it with Base Sepolia ETH from a faucet. Well under 0.01 ETH is enough.
 ## 2. A VRF subscription
 
 Create a subscription at [vrf.chain.link](https://vrf.chain.link) on Base
-Sepolia, fund it, and note its id. You will add four consumers to it after
+Sepolia, fund it, and note its id. You will add five consumers to it after
 deploying.
 
 ## 3. Configure
@@ -63,10 +64,11 @@ Addresses are written to `deployments/84532.json`. Commit that file.
 
 ## 5. After deploying
 
-1. Add the `randomness`, `gamesRandomness`, `ticketRaffleRandomness` and
-   `lotteryRandomness` addresses from the deployment file as consumers of the
-   VRF subscription. Raffles and
-   games cannot settle until this is done.
+1. Add the `randomness`, `gamesRandomness`, `vaultRandomness`,
+   `ticketRaffleRandomness` and `lotteryRandomness` addresses from the
+   deployment file as consumers of the VRF subscription. Raffles and games
+   cannot settle, and no holding can unlock on its own, until this is done. The
+   Vault's adapter makes one request a day.
 2. Onboard a collection while the deployer still owns the contracts (see
    `script/AddCollection.s.sol` for all options). After the handover the same
    calls have to come from the new owner.

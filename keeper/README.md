@@ -18,11 +18,11 @@ every call before sending it.
 |---|---|---|---|
 | Prediction markets | `KEEPER_TASK_PREDICTION` | `PredictionMarket.resolve` | A pending market is past `resolveTime` and the oracle has a price with `updatedAt >= resolveTime` that is not older than `maxOracleAge`; or one pool is empty; or the three-day grace period is over. Markets still waiting for a price are reported. |
 | Points | `KEEPER_TASK_POINTS` | `Points.flushMany` | Accounts with `pendingOf > 0`, found from `PointsCredited` events: once a day, and again from an hour before any open raffle can be drawn. Never while `freezeCount != 0`. |
-| Vault raffles | `KEEPER_TASK_VAULT_RAFFLE` | `VaultRaffle.draw`, `resetDraw`, `claim` | `draw` once `drawAfter` and `nextDrawAt` have passed, no draw is in flight, no known account has pending points and `totalPoints >= minPointsToDraw`. `resetDraw` a day after an unanswered request. `claim` for every raffle with a winner. |
+| Vault raffles | `KEEPER_TASK_VAULT_RAFFLE` | `VaultRaffle.draw`, `resetDraw`, `claim` | `draw` once `drawAfter` and `nextDrawAt` have passed, no draw is in flight, no known account has pending points and `totalPoints` reaches `minPointsToDraw` (or the raffle's own `minPointsRequired`, where the contract scales it with the prize's cost). `resetDraw` a day after an unanswered request. `claim` for a raffle with a winner once its prize has vested (`claimableAt`, 30 days after the draw by default). |
 | Lottery | `KEEPER_TASK_LOTTERY` | `Lottery.draw`, `resetDraw`, `abort` | `draw` rounds that have ended; `resetDraw` after a day without randomness; `abort` is opt-in. |
 | Ticket raffles | `KEEPER_TASK_TICKET_RAFFLE` | `TicketRaffle.close`, `settle`, `resetDraw`, `abort` | `close` raffles that have ended or sold out; `settle` raffles with a winner; `resetDraw` after a day without randomness; `abort` is opt-in. |
 | Games | `KEEPER_TASK_GAMES` | `Games.refund` | A bet's randomness is late by `Games.REFUND_TIMEOUT` (six hours). Open bets are found from `BetPlaced`, `BetSettled` and `BetRefunded` events and read back. |
-| Vault | `KEEPER_TASK_VAULT` | `Vault.unlock`, `startAuction` | `unlock` when `canUnlock` is true. `startAuction` is opt-in. |
+| Vault | `KEEPER_TASK_VAULT` | `Vault.sampleFloor`, `requestUnlockRound`, `unlock`, `releaseToPlayers`, `startAuction` | Daily: `sampleFloor` for each watched collection whose sample for the day is missing and whose oracle price is fresh; `requestUnlockRound` once a day when a holding could unlock if picked. `unlock` when `canUnlock` is true. `releaseToPlayers` for players' holdings whose 30-day lock has ended. `startAuction` is opt-in. See [The Vault](#the-vault). |
 | Monitoring | `KEEPER_TASK_MONITOR` | none | See [Monitoring](#monitoring). |
 
 Three kinds of call are **opt-in and off by default**:
@@ -43,6 +43,49 @@ Three kinds of call are **opt-in and off by default**:
   days). The contract allows a restart in the first second the price reaches
   the reserve, which would put it back at 16 times the reserve before anyone
   could buy there; the dwell time is the keeper's own rule.
+
+### The Vault
+
+A holding bought by the engine is locked for at least 90 days (`Vault.MIN_LOCK`).
+From then on it takes part in a daily random draw, with a chance that rises
+with its age (0.5% a day at 90 days, 5% at a year). A holding the draw picks
+unlocks only if the collection's 30-day median floor is at least a multiple
+of its purchase price (130% at 90 days, falling to 100% at a year), and only
+while the collection's weekly release cap (5% of its holdings, at least one)
+has room. Every fifth purchase of a collection (`playersShareBps`, 20%) is set
+aside for players instead: it is locked for 30 days and then goes to the vault
+raffle, never through the draw. Each pass the keeper:
+
+- **Samples the floor.** For every collection it watches (the engine's
+  `BidConfigured` events, `KEEPER_COLLECTIONS`, the demo collection, and every
+  collection the Vault still holds), it calls `sampleFloor` when
+  `lastSampleSlot(collection) <= block.timestamp / 86400` (no sample for the
+  day yet) and the Vault's oracle has a non-zero price no older than
+  `maxOracleAge`, with a minute of margin. A collection with no fresh price is
+  reported (`floor_not_sampled`, info) and skipped. `medianFloor` needs 15
+  samples out of the last 30 days before any holding of the collection can
+  unlock, so the samples are taken whether or not a holding is due.
+- **Requests the day's draw.** `requestUnlockRound` when the Vault has a
+  randomness provider, no request is in flight (or the one in flight has timed
+  out), a day has passed since the last request, and at least one holding takes
+  part (past its lock, not for players) whose collection has a usable median at
+  or above the multiple required at the holding's age and room under the
+  release cap. Every request costs a randomness fee, so no draw is requested
+  that could not unlock anything; anyone else may still request one. Without a
+  provider it warns (`no_randomness`).
+- **Unlocks what the draw picked.** `unlock` for every holding whose
+  `canUnlock` is true, never more per collection than `releaseAllowance`
+  allows. The draw's result can be used for a day after it arrives. A picked
+  holding that cannot unlock is reported with the reason
+  (`picked_below_floor`, `picked_without_median`, `release_cap_reached`);
+  holdings waiting to be picked are counted (`waiting_for_draw`).
+- **Releases the players' share.** `releaseToPlayers` for a holding with
+  `isPlayersHolding` that is still locked and past its `lockedUntil`. The
+  raffle it opens is then drawn and, after vesting, claimed by the vault-raffle
+  task.
+
+The keeper never answers the draw itself: the random word comes from the
+randomness provider.
 
 ## What it does not do
 
@@ -150,7 +193,7 @@ monitoring task warns if the keeper's key is the owner of any contract.
 
 ## Safe by construction
 
-- **One allowlist.** [src/allowlist.ts](src/allowlist.ts) lists the fifteen
+- **One allowlist.** [src/allowlist.ts](src/allowlist.ts) lists the eighteen
   calls above by contract and full signature. ABIs read from disk are checked
   against it at start-up and refused if a listed function is missing, has other
   arguments or is payable. Every action is encoded through it, and the bytes
@@ -219,8 +262,8 @@ Also:
 
 ## What each call costs
 
-Gas used, measured on anvil (solc 0.8.28, optimizer at 200 runs, contracts at
-commit `9896051`) by `test/integration.test.ts`, which prints this table at the
+Gas used, measured on anvil (solc 0.8.28, optimizer at 200 runs, contracts of
+the `moving-lock` branch on 2026-10-14) by `test/integration.test.ts`, which prints this table at the
 end of a run. The draws include a request to `MockRandomness`, which is two
 storage writes; a Chainlink VRF request costs more.
 
@@ -228,9 +271,9 @@ storage writes; a Chainlink VRF request costs more.
 |---|---|
 | `PredictionMarket.resolve` | 65,883 with a price; 62,950 into void |
 | `Points.flushMany` | 67,281 for one account that already has points; 81,858 for two; 146,538 for two of which one is new; 326,142 for the first two accounts ever (the sum tree is initialised once) |
-| `VaultRaffle.draw` | 140,308 |
-| `VaultRaffle.resetDraw` | 39,097 to 56,197 |
-| `VaultRaffle.claim` | 51,570 |
+| `VaultRaffle.draw` | 144,873 |
+| `VaultRaffle.resetDraw` | 39,119 |
+| `VaultRaffle.claim` | 53,849 |
 | `Lottery.draw` | 132,669 the first time, 115,569 after a reset |
 | `Lottery.resetDraw` | 32,516 |
 | `Lottery.abort` | 33,021 |
@@ -238,9 +281,12 @@ storage writes; a Chainlink VRF request costs more.
 | `TicketRaffle.settle` | 131,881 |
 | `TicketRaffle.resetDraw` | 30,936 |
 | `TicketRaffle.abort` | 31,318 |
-| `Games.refund` | 59,568 |
-| `Vault.unlock` | 93,127 |
-| `Vault.startAuction` | 118,377 to start, 79,052 to restart |
+| `Games.refund` | 116,915 the first time, 91,795 after |
+| `Vault.sampleFloor` | 123,461 for a collection's first sample, 89,000 to 93,000 after; 177,000 to 213,000 for the first sample after a draw request, which records the median as it stood then |
+| `Vault.requestUnlockRound` | 124,242 the first time, 75,752 after |
+| `Vault.unlock` | 219,928 (the median sorts up to 30 samples) |
+| `Vault.releaseToPlayers` | 185,974, including opening the raffle |
+| `Vault.startAuction` | 120,592 to start, 81,244 to restart |
 
 Activating a new account costs roughly 80,000 to 90,000 gas and a returning one
 about 15,000 on top of the first. Anyone can make the keeper pay for an
@@ -249,8 +295,13 @@ trade's gas to do it. `KEEPER_FLUSH_MIN_PENDING` and the daily budget bound
 that.
 
 Reads: one pass makes a few dozen `eth_call`s plus a handful per open market,
-raffle, round, bet and vault holding, batched over HTTP, and scans new blocks
-for three event streams. Locked holdings are re-read on every pass.
+raffle, round, bet and vault holding, plus four per watched collection for the
+floor samples, batched over HTTP, and scans new blocks for three event
+streams. Locked holdings are re-read on every pass.
+
+The Vault's daily routine costs, per collection, one `sampleFloor` a day, and
+one `requestUnlockRound` a day for the whole Vault while any holding could
+unlock (plus the provider's fee on a public chain).
 
 ## Trust
 
@@ -283,9 +334,15 @@ timing:
   settled for a week, an abort takes the prize back from the winner.
 - **Restart an auction the moment it reaches its reserve**, so that nobody can
   buy at the reserve.
-- **Unlock at a chosen moment.** The floor recorded at `unlock` sets a lower
-  bound on later auction openings, and the sales oracle can be pushed down for
-  free.
+- **Unlock at a chosen moment.** A picked holding can be unlocked at any time
+  in the day its draw's result lasts, or not at all; the median floor recorded
+  at `unlock` sets a lower bound on later auction openings. With several picked
+  holdings and a release cap, whoever calls first chooses which ones unlock.
+- **Sample the floor at a chosen moment of the day**, or skip a day. One sample
+  out of up to thirty moves the median little, and anyone else can take the
+  day's sample first.
+- **Request the draw, or not.** It cannot choose the random word, but not
+  requesting a round delays every unlock by a day.
 
 None of these needs the keeper's key. They are properties of the contracts;
 the keeper's defaults (flush before draw, resolve at once, report instead of
@@ -330,8 +387,14 @@ npm test
 
 It snapshots the chain, deploys with `script/Deploy.s.sol` (which rewrites
 `deployments/31337.json`; the test restores the previous content), seeds the
-protocol with players other than the owner, and plays about eight months of
+protocol with players other than the owner, and plays about six months of
 chain time with the keeper signing as anvil account #1, which owns nothing. The
 owner-only steps (oracle prices, `sendToRaffle`, `governanceUnlock`) and the
-mock randomness `fulfill` are done by the test. It reverts to the snapshot at
+mock randomness `fulfill` are done by the test. For the Vault it trades every
+other day to keep the sales oracle fresh while the keeper samples the floor
+daily, answers the unlock draw first with a word that misses the holding and
+the next day with one that picks it (`keccak256(abi.encode(word, vaultId)) %
+10000 < drawChanceBps(age)`), and checks that the keeper unlocks it, releases
+the fifth purchase to the players' raffle after 30 days, and claims the raffle
+prize only once it has vested. It reverts to the snapshot at
 the end.

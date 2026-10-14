@@ -68,12 +68,12 @@ contracts' numbers.
 
 | File | What it is |
 |---|---|
-| `curves.ts` | Pure maths: the bid curve and the budget-limited bid, base after a sale, saw-tooth segments, the two locks, the auction price, the sale split, scales. Mirrors the contracts; tested in `test/viz.test.ts`. |
+| `curves.ts` | Pure maths: the bid curve and the budget-limited bid, base after a sale, saw-tooth segments, the vault's moving lock (required floor and draw chance by age, the weekly cap), the auction price, the sale split, scales. Mirrors the contracts; tested in `test/viz.test.ts`. |
 | `flywheelModel.ts` | The landing page's explainer model: the contracts' rules with example amounts. Pure, tested. |
 | `Flywheel.tsx` | The system diagram (SVG), three layouts: `wide` (landing), `strip` (overview), `tall` (phones). `emit(flow)` sends one particle. |
 | `HeroScene.tsx` | The landing hero (canvas): floor line as horizon, the demo vault's holdings on it, the demo bid rising. |
 | `charts.tsx` | `BidChart`, `AuctionChart` (log scale: each halving is one equal step), `HouseChart` (steps per event), `bidState`. |
-| `parts.tsx` | `TokenTile` (a placeholder pattern from the token id; no artwork is loaded), `TimeLockDial`, `PriceLockGauge`, `SplitBar`, `StatePlate`. |
+| `parts.tsx` | `TokenTile` (a placeholder pattern from the token id; no artwork is loaded), `TimeLockDial`, `DrawDial`, `PriceLockGauge`, `SplitBar`, `StatePlate`. |
 | `FairnessWalk.tsx` | Request → proof → roll → payout, operated with a sample number from the browser. |
 | `motion.tsx` | `useFrame` (pauses off-screen and in hidden tabs), `Num` (count-up without layout shift), `useClock`, reduced-motion helpers. |
 | `data.ts` | Reads the visualisations need on top of `lib/reads.ts`. |

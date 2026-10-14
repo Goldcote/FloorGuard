@@ -219,34 +219,31 @@ contract Review7FixesTest is Base {
     /// four, to reach its reserve.
     function test_unlockFloorAfterRelockAndAuctionOpeningAtTheCap() public {
         uint256 vaultId = _holding(10 ether);
-        skip(180 days);
-        _pushFloor(1_000_000 ether);
-        vm.prank(carol);
-        vault.unlock(vaultId);
+        _unlockThroughDraw(vaultId, 1_000_000 ether);
         assertEq(vault.unlockFloorOf(vaultId), 208 ether);
 
         vm.prank(gov);
         vault.relock(vaultId, block.timestamp + 1 days);
         assertEq(vault.unlockFloorOf(vaultId), 208 ether, "kept across a relock");
-        skip(1 days);
-        _pushFloor(14 ether);
-        vault.unlock(vaultId);
+        _unlockThroughDraw(vaultId, 14 ether);
         assertEq(vault.unlockFloorOf(vaultId), 14 ether, "overwritten by the next unlock");
 
         // back to the capped record
         vm.prank(gov);
         vault.relock(vaultId, block.timestamp + 1 days);
-        skip(1 days);
-        _pushFloor(1_000_000 ether);
-        vault.unlock(vaultId);
+        _unlockThroughDraw(vaultId, 1_000_000 ether);
         _pushFloor(13 ether);
         vm.prank(gov);
         vault.startAuction(vaultId);
+        // the holding is older now, so the multiple it needed, and the cap, are a little lower
+        uint256 cap = 10 ether * vault.unlockBpsOf(vaultId) / 10_000 * 16;
+        assertLt(vault.unlockBpsOf(vaultId), 13_000);
+        assertEq(vault.unlockFloorOf(vaultId), cap);
         (uint128 startPrice, uint128 endPrice,) = vault.auctions(vaultId);
         assertEq(endPrice, 13 ether);
-        assertEq(startPrice, 208 ether * 16);
+        assertEq(startPrice, cap * 16);
         skip(4 days);
-        assertEq(vault.auctionPrice(vaultId), 208 ether, "after AUCTION_DURATION still 16x the reserve");
+        assertEq(vault.auctionPrice(vaultId), cap, "after AUCTION_DURATION still 16x the cap");
         skip(4 days);
         assertEq(vault.auctionPrice(vaultId), 13 ether);
     }

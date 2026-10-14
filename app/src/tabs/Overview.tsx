@@ -65,7 +65,7 @@ const MODULE_TONE: Record<string, string> = { Marketplace: "trade", "Floor bid":
 const HOW_IT_WORKS = [
   ["Offers, not listings", "Buyers post ETH offers on one token or on a whole collection, and holders accept. A 2% fee goes to the Treasury; a project can be given up to half of its collection's fees, and the rest is that collection's buyback budget."],
   ["A bid that finds the lowest price", "The protocol quotes a standing bid for each collection. Its curve rises until a holder sells into it, then steps down and rises again. The bid is never more than the budget can pay, and the rise only counts while the budget covers it."],
-  ["A vault that holds", "Bought tokens are locked for at least 180 days and until the floor is 30% above their purchase price. Then they are auctioned, with proceeds returning to the budget, or raffled. If the floor never gets there they stay locked unless the owner releases them."],
+  ["A vault that holds", "From 90 days a bought token is in a daily draw no one can predict. Once picked, it unlocks only if the month's median floor is up to 30% above what was paid (less as it ages), within a weekly cap. Then it is auctioned, with proceeds returning to the budget, or raffled. One purchase in five goes to players: after 30 days it is raffled to points holders."],
   ["Other fees feed the same budget", "Prediction markets (3% of winnings), dice and slots (half of the 2% edge; the bankroll keeps the other half), the lottery and ticket raffles (5% of the pot) and artwork licences all pay into the budget of the collection the user backs."],
   ["Points", "Each fee is credited once as points, split between the two sides of a trade. Activated points are a user's weight in vault raffles. They are not transferable, and they can be bought by trading with oneself."],
   ["What it is not", "There is no token and no promise of a price or a profit. The buying is modest (about one token for every fifty traded), each budget only ever buys its own collection, and the software is unaudited."],
@@ -186,7 +186,7 @@ export function Overview({ collection }: { collection: Address }) {
                   <a className="next-action" href={href("/vault/holdings")}>
                     <span className="next-kicker">Vault · {o.collectionHoldingsInVault} held</span>
                     <strong>See the locks and auctions</strong>
-                    <span className="muted small">180 days and a floor 30% up, then a falling price to catch.</span>
+                    <span className="muted small">A daily draw from 90 days and a floor that must be up, then a falling price to catch.</span>
                   </a>
                   <a className="next-action" href={href("/play/dice")}>
                     <span className="next-kicker">Play · negative expected return</span>

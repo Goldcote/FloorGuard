@@ -129,6 +129,30 @@ export const unlockCall = (d: Deployment, vaultId: bigint): Call => ({
   args: [vaultId],
 });
 
+/** Record today's oracle floor for the collection: one sample a day, used by the 30-day median. Anyone may call. */
+export const sampleFloorCall = (d: Deployment, collection: Address): Call => ({
+  address: d.vault,
+  abi: vaultAbi,
+  functionName: "sampleFloor",
+  args: [collection],
+});
+
+/** Ask the randomness provider for today's unlock draw. Anyone may call, once a day. */
+export const requestUnlockRoundCall = (d: Deployment): Call => ({
+  address: d.vault,
+  abi: vaultAbi,
+  functionName: "requestUnlockRound",
+  args: [],
+});
+
+/** Send a players' holding to the vault raffle once its 30-day lock has ended. Anyone may call. */
+export const releaseToPlayersCall = (d: Deployment, vaultId: bigint): Call => ({
+  address: d.vault,
+  abi: vaultAbi,
+  functionName: "releaseToPlayers",
+  args: [vaultId],
+});
+
 export const startAuctionCall = (d: Deployment, vaultId: bigint): Call => ({
   address: d.vault,
   abi: vaultAbi,

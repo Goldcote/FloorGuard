@@ -12,7 +12,7 @@ code are right. The differences are listed at the end.
 | `Marketplace` | Escrowed ETH offers on one token or on any token of a collection. A holder accepts to swap. 2% fee to the Treasury, ERC-2981 royalties honoured up to a cap. |
 | `Treasury` | Holds fees as a separate buyback budget per collection, after an optional share for the NFT project. Only the BuybackEngine can spend. |
 | `BuybackEngine` | Quotes a standing bid per collection that rises until a holder sells into it. Pays from the collection's budget and sends the NFT to the Vault. |
-| `Vault` | Locks bought NFTs. Unlock needs 180 days and a floor at 130% of the purchase price. Then raffle, relock or Dutch auction. |
+| `Vault` | Locks bought NFTs. From 90 days a daily random draw picks holdings to unlock, if the 30-day median floor is high enough, under a weekly cap. Then raffle, relock or Dutch auction. One purchase in five goes to players' raffles after 30 days. |
 | `PredictionMarket` | Pooled higher/lower bets on a collection's floor. 3% fee on winnings to the Treasury. |
 | `Games` | Dice, coinflip and slots against a house bankroll. Half of the edge on each wager goes to the Treasury; the bankroll keeps the other half. |
 | `Lottery` | A pooled ETH lottery per collection. 5% of each pot goes to the Treasury. |
@@ -30,7 +30,7 @@ flowchart TD
     P[PredictionMarket<br/>3% of winnings] -->|fee, per collection| T
     T -->|pays the seller| B[BuybackEngine<br/>rising floor bid]
     H([Holder]) -->|sells any token| B
-    B -->|NFT| V[Vault<br/>180 days and floor at 130%]
+    B -->|NFT| V[Vault<br/>moving lock from 90 days]
     V -->|Dutch auction proceeds| T
     V -->|prize| R[VaultRaffle]
     M -.->|points for fees| PT[Points]
@@ -191,24 +191,86 @@ more should be supported.
 
 Each buyback creates a holding with its purchase price and time.
 
-- `unlock` is permissionless and succeeds when the lock time has passed **and**
-  the oracle floor is fresh and at least 130% of the purchase price.
-- The owner can `governanceUnlock` early, or `relock` to extend.
+### The moving lock
+
+A fixed unlock date is a date traders can wait for, and an unlock triggered by
+one oracle reading is a trigger anyone can watch or push. Holdings therefore
+unlock on dates nobody knows in advance, against a floor nobody can move in a
+moment, and never all at once.
+
+- **No unlock before 90 days** (`MIN_LOCK`).
+- **A daily draw.** Anyone can call `requestUnlockRound` once a day; the Vault's
+  randomness provider answers with one word, and a word that arrives a day or
+  more late is ignored. The word picks each holding whose 90 days had passed
+  when the draw was requested with a chance that rises with its age, from 0.5%
+  at 90 days to 5% at a year (`drawChanceBps`). With the floor condition met,
+  about two in three holdings unlock by six months and nearly all by a year, but the
+  day is unknown until it comes. A word can be used for a day after it arrives.
+- **A floor that takes a month to move.** Anyone can call `sampleFloor` once a
+  day per collection to record the oracle's floor. The unlock condition reads
+  the lower median of the last 30 days of samples, usable with at least 15, as
+  it stood when the day's draw was requested (`drawMedianFloor`): the first
+  sample after a request records that median before it can push an old sample
+  out, so a sample taken once the draw is known cannot change the outcome.
+  Moving the median takes more than half of a month's samples, not one moment.
+  A collection whose oracle often has no fresh price (the sales oracle needs
+  three sales within seven days; the Vault rejects prices older than three
+  days) may never collect 15 samples; its holdings then unlock only by
+  governance, or once it reads a push oracle.
+- **A required floor that falls with age.** A picked holding unlocks only if
+  that median is at least `requiredFloorBps(age)` of its purchase price: 130% at
+  90 days, falling in a straight line to 100% at a year. A holding bought near a
+  peak is not locked forever once the market has come back, but the Vault never
+  sells below what it paid. The multiple used is recorded (`unlockBpsOf`) and
+  is the holding's unlock price for its auction.
+- **A weekly release cap.** At most 5% of a collection's holdings (counted when
+  the window opens, players' holdings included), and at least one, can unlock in
+  a seven-day window that opens with the first unlock after the last one closed
+  (`releaseAllowance`), so a rally cannot release a whole vintage at once. The
+  windows are fixed, not rolling: up to twice the cap less one can unlock close
+  together across a boundary. Picked holdings compete for the cap, and whoever
+  calls `unlock` first chooses which of them uses it. Governance unlocks do not
+  count, and a relock does not return the slot.
+- `unlock` is permissionless and succeeds when all of the above hold
+  (`canUnlock`).
+- The owner can `governanceUnlock` early, or `relock` to extend. Without a
+  randomness provider, holdings unlock only by governance (a word already
+  received stays usable for the rest of its day). Anyone can trigger one paid
+  randomness request a day, even when no holding could unlock.
+
+### The players' share
+
+`playersShareBps` of purchases (20%, one in five, by default; the owner can set
+0 to 50%) are set aside for players when they are bought, spread evenly by a
+running remainder. Such a holding is locked for 30 days (`PLAYERS_LOCK`) and
+never goes through the draw: after 30 days anyone can call `releaseToPlayers`,
+which sends it to the vault raffle, where points holders (traders and players
+alike) compete for it. The owner can take a holding out of the players' share
+(`removeFromPlayers`), for example while points are too thin for a fair raffle;
+it then joins the moving lock, never before 90 days. Players' holdings cannot be
+licensed. Every token given to players is a token back in
+circulation, so the share trades supply reduction for something to play for:
+with the default, the bid still buys one token for every fifty traded, but
+about one in sixty-two stays off the market.
+
+### Release
+
 - While a holding is unlocked, the owner can `sendToRaffle`, `relock` or
   `startAuction`. If it is still unlocked 30 days after it unlocked (or after an
   auction on it was cancelled), anyone can start the auction.
 - The reserve of an oracle-priced auction is the highest of the oracle floor, the
-  unlock price (130% of the purchase price) and an owner-set minimum for the
-  collection (`minReserveOf`).
-- The auction opens at 16 times its reserve, or 16 times the floor recorded when
-  the holding unlocked if that is higher. The price halves every day and holds
-  at the reserve. The opening price is deliberately far above the market, so the
+  unlock price (the multiple recorded at unlock, 130% after a governance unlock,
+  times the purchase price) and an owner-set minimum for the collection
+  (`minReserveOf`).
+- The auction opens at 16 times its reserve, or 16 times the median floor
+  recorded when the holding unlocked if that is higher. The price halves every
+  day and holds at the reserve. The opening price is deliberately far above the market, so the
   sale price is found by buyers competing on the way down. With a single
   interested buyer the sale price is the reserve. This matters because
   the sales oracle can be pushed down for free: a low reading lowers the reserve
   towards the unlock price but cannot make the auction open below market, unless
-  the market is more than 16 times that opening basis. Whoever calls `unlock`
-  can influence the oracle at that moment, so the recorded floor is a help, not
+  the market is more than 16 times that opening basis. The recorded floor is a
+  30-day median, which is harder to move than one reading but still a help, not
   a guarantee: the owner-set `minReserveOf` is the protection to rely on.
 - An oracle-priced auction that has rested at its reserve for a day without a
   buyer can be restarted by anyone, at fresh oracle prices. Proceeds go to the
@@ -418,6 +480,19 @@ that arrives more than a day late resets the draw instead of picking a winner,
 a request abandoned through `resetDraw` is never accepted later, and a reset
 draw cannot be requested again for an hour.
 
+A raffle cannot be drawn until the activated points are at least
+`minPointsRequired`: the larger of the owner's `minPointsToDraw` and
+`pointsPerPrizeWei` (10,000 by default) times what the Vault paid for the prize.
+At the deployed rate of 2,500 points per ETH of fees that means fees of at least
+four times the prize's cost behind the activated points, the bound below which
+a raffle can be farmed for profit. Prizes waiting for enough points stay in the
+raffle contract.
+
+A won prize vests for `vestingPeriod` (30 days by default, at most 180) before
+`claim` will deliver it. Once a prize is in the winner's wallet it can be sold
+anywhere, like any NFT; the vesting only means a token won for nothing is not
+dumped on the market the day it is won.
+
 ## Oracles
 
 Both implement `IFloorOracle.floorPrice(collection) -> (price, updatedAt)` and
@@ -430,7 +505,8 @@ revert when they have no price. Consumers apply their own staleness limit.
 - `PushFloorOracle` stores what its reporters push.
 
 Deployed defaults: the Vault reads the sales oracle and the PredictionMarket
-reads the push oracle.
+reads the push oracle. The Vault's unlock condition reads its own 30-day median
+of daily samples of its oracle, not the oracle directly.
 
 ## Differences from the v0.1 whitepaper
 
@@ -443,6 +519,7 @@ reads the push oracle.
 | Points per ETH of volume | Points per ETH of fees | Volume can be wash traded for free in some modules; fees cannot |
 | Snapshot of points at raffle time | Weights frozen from the draw request until randomness arrives | Same effect as a snapshot without copying every balance |
 | Royalties not mentioned | ERC-2981 honoured, capped | The 2024 paper's starting point was zero-royalty venues |
+| Vault unlock after a fixed lock at a price threshold | A daily random draw from 90 days, a 30-day median floor, a falling threshold and a weekly cap | A fixed date and a one-reading trigger let traders anticipate and force supply |
 
 ## Chains
 

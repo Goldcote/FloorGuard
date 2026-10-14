@@ -3696,3 +3696,92 @@
   font-size: 11px;
   font-weight: 600;
 }
+
+/* ================================================================ vault: the moving lock */
+
+/* "paid" sits close to a required multiple near 100%: put its label under the track. */
+.gauge-mark.is-near em {
+  bottom: auto;
+  top: calc(100% + 2px);
+}
+
+.vault-draw {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: var(--s4);
+}
+
+.vault-draw > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.vault-draw p {
+  margin: 0;
+}
+
+.vault-draw .figure-label {
+  display: block;
+}
+
+.vault-draw .draw-figure {
+  font-family: var(--display);
+  font-size: var(--fs-lg);
+}
+
+.vault-draw .btn {
+  align-self: flex-start;
+}
+
+.unlock-checks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: var(--fs-sm);
+}
+
+.unlock-checks li {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: var(--s2);
+  align-items: baseline;
+  color: var(--muted);
+}
+
+.unlock-checks li strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.unlock-checks i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  transform: translateY(1px);
+}
+
+.unlock-checks li.is-yes i {
+  border-color: var(--good);
+  background: var(--good);
+}
+
+.unlock-checks li.is-no i {
+  border-color: var(--bad);
+}
+
+.unlock-checks li.is-wait i {
+  border-style: dashed;
+  border-color: var(--warn);
+}
+
+.holding-tags {
+  display: inline-flex;
+  gap: var(--s2);
+  margin-left: var(--s2);
+  vertical-align: middle;
+}

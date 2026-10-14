@@ -17,6 +17,7 @@ is given below.
 | Lottery | Winning ticket is `random % ticketsSold` | 5% of the pot | −5% of the ticket price |
 | Ticket raffle | Winning ticket is `random % ticketsSold` | 5% of ticket revenue | Depends on the prize's value against total ticket sales, which the creator sets; often well below −5% |
 | Vault raffle | The holder of point number `random % totalPoints`, with weights frozen when the draw is requested | None | Not applicable: weights can be bought with fees |
+| Vault unlock draw | Holding `id` is picked when `keccak256(abi.encode(word, id)) % 10000` is below its chance, 50 at 90 days rising to 500 at a year | None | Not a game: it decides when a holding may unlock |
 
 In dice and slots the stake that remains after the edge is played at exactly
 fair odds: a dice win pays `stake / chance`, and the slots table (50x at 0.2%,
@@ -96,5 +97,9 @@ None of them is true yet: nothing has been deployed to a public network.
   activated points; see "Raffle farming" in [SECURITY.md](../SECURITY.md).
 - In a ticket raffle the creator can buy unsold tickets late and dilute other
   buyers; the draw itself is still uniform over tickets.
+- The Vault's daily unlock draw uses the same kind of word. Whoever operates
+  the randomness can withhold a day's word, which only moves unlocks to another
+  day; a word that arrives a day late is ignored. Vault raffle prizes vest for 30
+  days after the draw before they can be claimed.
 - The slot reels shown in the web app are an illustration of the roll. The
   payout comes from the contract.

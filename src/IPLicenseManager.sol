@@ -87,6 +87,8 @@ contract IPLicenseManager is Ownable2Step, ReentrancyGuard {
         // Only locked holdings can be licensed: an unlocked one may go to auction at any moment.
         (address collection, Vault.Status status) = _holding(vaultId);
         if (status != Vault.Status.Locked) revert NotInVault();
+        // A players' holding goes to a raffle as soon as its 30-day lock ends.
+        if (vault.isPlayersHolding(vaultId)) revert NotInVault();
         if (isBanned[msg.sender][vaultId]) revert Banned();
         Tier memory t = tiers[collection][tier];
         if (!t.active) revert TierInactive();

@@ -53,6 +53,7 @@ contract Deploy is Script {
         IPLicenseManager licenses;
         address randomness;
         address gamesRandomness;
+        address vaultRandomness;
         address ticketRaffleRandomness;
         address timelock;
     }
@@ -89,11 +90,15 @@ contract Deploy is Script {
             owner = d.timelock;
         }
 
-        // Each VRF adapter serves one consumer; all four must be added to a VRF subscription.
+        // Each VRF adapter serves one consumer; all five must be added to a VRF subscription. The Vault's
+        // makes one request a day, for its unlock draw.
         d.randomness = _randomness(vrfCoordinator, owner, address(d.raffle));
         d.gamesRandomness = vrfCoordinator == address(0)
             ? d.randomness
             : _randomness(vrfCoordinator, owner, address(d.games));
+        d.vaultRandomness = vrfCoordinator == address(0)
+            ? d.randomness
+            : _randomness(vrfCoordinator, owner, address(d.vault));
         d.ticketRaffleRandomness = vrfCoordinator == address(0)
             ? address(new MockRandomness())
             : _randomness(vrfCoordinator, owner, address(d.ticketRaffle));
@@ -106,6 +111,7 @@ contract Deploy is Script {
         d.treasury.setSpender(address(d.engine));
         d.vault.setEngine(address(d.engine));
         d.vault.setRaffle(d.raffle);
+        d.vault.setRandomness(IRandomnessProvider(d.vaultRandomness));
         d.raffle.setRandomness(IRandomnessProvider(d.randomness));
         d.games.setRandomness(IRandomnessProvider(d.gamesRandomness));
         d.marketplace.setSaleRecorder(d.salesOracle);
@@ -153,6 +159,7 @@ contract Deploy is Script {
         vm.serializeAddress(key, "pushFloorOracle", address(d.pushOracle));
         vm.serializeAddress(key, "randomness", d.randomness);
         vm.serializeAddress(key, "gamesRandomness", d.gamesRandomness);
+        vm.serializeAddress(key, "vaultRandomness", d.vaultRandomness);
         vm.serializeAddress(key, "ticketRaffle", address(d.ticketRaffle));
         vm.serializeAddress(key, "ticketRaffleRandomness", d.ticketRaffleRandomness);
         vm.serializeAddress(key, "ipLicenseManager", address(d.licenses));

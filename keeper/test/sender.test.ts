@@ -6,7 +6,7 @@ import { Cache } from "../src/cache.ts";
 import { silentLogger } from "../src/logger.ts";
 import { Sender, type SenderConfig, bumpFees, chooseFees, fitsBudget } from "../src/sender.ts";
 import type { Action } from "../src/types.ts";
-import { ABIS, ADDRESSES } from "./helpers.ts";
+import { A, ABIS, ADDRESSES } from "./helpers.ts";
 
 // anvil's well-known development key #1
 const account = privateKeyToAccount("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d");
@@ -135,6 +135,25 @@ describe("sender", () => {
     expect(result.status).toBe("failed");
     expect(result.detail).toMatch(/not on the allowlist/);
     expect(n.client.call).not.toHaveBeenCalled();
+    expect(n.sent).toHaveLength(0);
+  });
+
+  it("sends the Vault's daily maintenance calls without an opt-in, and never its randomness callback", async () => {
+    for (const [functionName, args] of [
+      ["sampleFloor", [A(9)]],
+      ["requestUnlockRound", []],
+      ["releaseToPlayers", [4n]],
+    ] as const) {
+      const n = node();
+      const result = await sender(n).s.execute({ task: "vault", contract: "vault", functionName, args, reason: "test" });
+      expect(result.status, functionName).toBe("confirmed");
+      expect(n.sent).toHaveLength(1);
+      expect(n.sent[0]!.to).toBe(ADDRESSES.vault);
+      expect(n.sent[0]!.value).toBe(0n);
+    }
+    const n = node();
+    const fulfill = await sender(n).s.execute({ task: "vault", contract: "vault", functionName: "fulfillRandomness", args: [1n, 2n], reason: "test" });
+    expect(fulfill.status).toBe("failed");
     expect(n.sent).toHaveLength(0);
   });
 
